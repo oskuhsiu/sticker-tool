@@ -100,6 +100,15 @@ a {
   color: var(--muted);
   white-space: nowrap;
 }
+/* 長文字欄位：桌機上佔較寬、手機上換行吃滿整列，避免固定寬度撐出水平捲動 */
+.field.grow {
+  flex: 1 1 16rem;
+}
+.field.grow input {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+}
 input[type='text'],
 input:not([type]),
 input[type='number'],

@@ -13,6 +13,7 @@ fixtures/
 tmp/
 .codex-tmp/
 web/_smoke/
+web/_mobile/
 
 # skill 的 zip 打包檔（重複；原始碼在 .claude/skills/*/）
 .claude/skills/*.zip

@@ -175,9 +175,9 @@ export function Row({ children }: { children: React.ReactNode }) {
   return <div className="form-row">{children}</div>;
 }
 
-export function Field({ label, children }: { label: string; children: React.ReactNode }) {
+export function Field({ label, children, grow }: { label: string; children: React.ReactNode; grow?: boolean }) {
   return (
-    <label className="field">
+    <label className={`field${grow ? ' grow' : ''}`}>
       <span className="field-label">{label}</span>
       {children}
     </label>

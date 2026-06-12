@@ -95,8 +95,8 @@ export function PromptTab() {
         </label>
       </div>
       <Row>
-        <Field label="風格描述">
-          <input value={style} onChange={(e) => setStyle(e.target.value)} style={{ width: '24em' }} />
+        <Field label="風格描述" grow>
+          <input value={style} onChange={(e) => setStyle(e.target.value)} />
         </Field>
         {mode === 'sheet' ? (
           <Field label="張數">
@@ -113,8 +113,8 @@ export function PromptTab() {
             <Field label="影格數（5–20）">
               <input type="number" min={5} max={20} value={frames} onChange={(e) => setFrames(Number(e.target.value))} />
             </Field>
-            <Field label="動作描述">
-              <input value={motion} onChange={(e) => setMotion(e.target.value)} style={{ width: '16em' }} />
+            <Field label="動作描述" grow>
+              <input value={motion} onChange={(e) => setMotion(e.target.value)} />
             </Field>
           </>
         )}
