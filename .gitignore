@@ -19,3 +19,6 @@ web/_smoke/
 
 # OpenRouter API key（openrouter skill 在用，絕不進版控）
 .claude/openrouter.key
+
+# Claude Code 執行期暫存
+.claude/scheduled_tasks.lock
