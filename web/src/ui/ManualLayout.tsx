@@ -116,7 +116,7 @@ export function ManualLayout(props: {
   const moved = offsets.filter((o) => o.x !== 0 || o.y !== 0).length;
 
   return (
-    <details className="layout-editor" open>
+    <details className="layout-editor">
       <summary>手動排版（拖曳對位 → 播放測試 → 打包）</summary>
       <p className="tab-desc">
         淡色殘影＝其他影格的位置。拖曳（或方向鍵，Shift×10）移動目前格使主體/場景對齊殘影；
