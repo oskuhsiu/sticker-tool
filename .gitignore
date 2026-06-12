@@ -1,0 +1,20 @@
+node_modules/
+dist/
+out/
+*.log
+.DS_Store
+
+# 測試檔與實驗/eval 產物（非必要，不進版控）
+test/
+spike/
+fixtures/
+
+# 暫存
+tmp/
+.codex-tmp/
+
+# skill 的 zip 打包檔（重複；原始碼在 .claude/skills/*/）
+.claude/skills/*.zip
+
+# OpenRouter API key（openrouter skill 在用，絕不進版控）
+.claude/openrouter.key

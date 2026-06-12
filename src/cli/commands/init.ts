@@ -1,0 +1,82 @@
+/**
+ * `sticker-tool init`：產生範例 sticker.config.yaml。
+ */
+
+import { mkdir, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import path from 'node:path';
+import { log } from '../util.js';
+
+/** 範例設定檔內容（單一來源；examples/sticker.config.yaml 同此內容） */
+export const EXAMPLE_CONFIG = `# sticker-tool 設定檔範例
+# 用法（AI 產圖兩步走）：
+#   1) 用 char-gen skill 產一張透明組圖（如 out/_sheets/sheet_01.png）
+#   2) sticker-tool gen --config sticker.config.yaml --sheet out/_sheets/sheet_01.png --out out
+#   整段流程可交給 line-sticker-pack skill 指揮。
+#   sticker-tool prompt --config sticker.config.yaml   # 只輸出 prompt（mobile/半自動）
+
+package:
+  name: "My Stickers"
+  count: 8                    # 8/16/24/32/40（動態僅 8/16/24）；角色包 8 最佳、16 會警告、≥24 需 forceOversizeSet
+  # animated: false           # 設 true 為動態包（或在 stickers 用 frames 觸發）
+
+source: ai                    # ai（char-gen 產圖，再 gen --sheet 打包）| local（本機圖片，改用 build）
+
+ai:
+  style: "flat cartoon, bold black outline, soft pastel palette, simple shapes"
+  transparent: true           # 請產圖時直接輸出透明背景 PNG
+  isCharacter: true           # 角色包→強制單張組圖、單次產完（保證同一人）
+  grid: auto                  # auto（由張數決定）或 "4x2"
+  # reference: ref.png        # 選填：角色/風格參考圖（相對本檔路徑）
+  crop: equal                 # equal | equal+rembg（產圖非全透明時補去背）
+  forceOversizeSet: false     # 角色包 >16 張時須設 true 才允許（接受降質）
+  # cellVariations:           # 選填：逐格表情/姿勢（不足自動補通用情緒）
+  #   - "happy waving hello"
+  #   - "crying with big tears"
+
+processing:
+  # removeBackground: auto    # 省略時：local→true、ai→false；auto=偵測殘留才補刀
+  stroke:
+    enabled: true             # 白色描邊
+    width: 8
+    color: "#ffffff"
+  # maxSize: [370, 320]       # 省略時用該類型規格上限
+
+cover: 1                      # 用第幾張產 main/tab
+
+# 動態貼圖設定（kind=animated 時生效）
+animation:
+  maxBytes: 1000000           # LINE 動態單檔 ≤1MB
+  loops: 1                    # 循環 1–4（不可無限）
+  durationSec: 2              # 總播放 ≤4 秒
+  autoFit: true               # 超標自動減色至達標
+  priority: balanced          # colors | frames | balanced
+  minColors: 16
+  minFrames: 5
+  ladder: auto
+
+# local 來源或逐張覆寫（文字疊加）時使用：
+# stickers:
+#   - input: cat01.png
+#     text: { content: "嗨", x: 50, y: 88, size: 40, color: "#000", font: "/path/NotoSansTC-Bold.otf" }
+#   - frames: [wave1.png, wave2.png, wave3.png]   # 有 frames → 動態 APNG
+#     fps: 10
+`;
+
+export interface InitOptions {
+  out: string;
+  force?: boolean;
+}
+
+export async function runInit(opts: InitOptions): Promise<void> {
+  if (existsSync(opts.out) && !opts.force) {
+    log.err(`${opts.out} 已存在。加 --force 覆寫。`);
+    process.exitCode = 1;
+    return;
+  }
+  await mkdir(path.dirname(path.resolve(opts.out)), { recursive: true });
+  await writeFile(opts.out, EXAMPLE_CONFIG, 'utf8');
+  log.ok(`已產生範例設定檔：${opts.out}`);
+  log.info(`下一步：用 char-gen skill 產組圖，再執行  sticker-tool gen --config ${opts.out} --sheet <組圖.png> --out out`);
+  log.info(`（或交給 line-sticker-pack skill 一手指揮整段流程）`);
+}

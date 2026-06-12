@@ -1,0 +1,33 @@
+{
+  "alias": "deepseek-flash",
+  "model": "deepseek/deepseek-v4-flash",
+  "source_url": "https://openrouter.ai/deepseek/deepseek-v4-flash",
+  "fetched_at": "2026-06-11T02:05:56+00:00",
+  "defaults": {},
+  "kind": "chat",
+  "name": "DeepSeek: DeepSeek V4 Flash",
+  "description": "DeepSeek V4 Flash is an efficiency-optimized Mixture-of-Experts model from DeepSeek with 284B total parameters and 13B activated parameters, supporting a 1M-token context window. It is designed for fast inference and...",
+  "architecture": {
+    "input_modalities": [
+      "text"
+    ],
+    "output_modalities": [
+      "text"
+    ]
+  },
+  "context_length": 1048576,
+  "supported_parameters": [
+    "reasoning",
+    "include_reasoning",
+    "temperature",
+    "top_p",
+    "max_tokens",
+    "stop"
+  ],
+  "pricing": {
+    "prompt": "0.0000000983",
+    "completion": "0.0000001966",
+    "input_cache_read": "0.0000000197",
+    "discount": 0
+  }
+}
