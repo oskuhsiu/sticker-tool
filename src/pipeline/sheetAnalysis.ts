@@ -119,30 +119,45 @@ export async function detectBackground(src: Buffer | string): Promise<Background
   return { kind: 'opaque', color };
 }
 
-/** 綠幕色鍵 + despill：綠→透明，邊緣溢綠夾回。回傳 RGBA PNG。 */
+/**
+ * 綠幕色鍵 + despill（soft matte／抗鋸齒）。回傳 RGBA PNG。
+ *
+ * 舊版是二值門檻（判綠→alpha 0、否則 255），曲線/斜邊只會階梯狀鋸齒、邊緣拿不到漸層 alpha。
+ * 新版改用連續 greenness = g − max(r,b) 映射成 alpha：
+ *   greenness ≤ KEY_LO → 全保留(255)；≥ KEY_HI → 全透明(0)；(LO,HI) 之間線性漸層
+ *   → 邊界像素拿到中間 alpha＝抗鋸齒（soft matte）。
+ * 門檻取自實測 9 張 codex 綠幕的 greenness 直方圖：主體集中 <10、綠幕 >120、中間 10–120 是稀疏邊緣谷。
+ * 漸層帶 [12,90] 攤在這條空谷上——LO=12 讓白衣（greenness≈0）等主體穩穩全保留；HI=90 對綠幕主峰(120+)
+ * 留安全邊距，避免不勻綠幕殘留半透明光暈。實測掃帶寬：放寬帶寬一律更抗鋸齒（漸層 px↑）、主體 solid 不減反增
+ * （邊更飽滿、不吃主體）、綠邊維持 0；[12,90] 是「抗鋸齒夠/不貼主峰」的折衷。
+ * 亮度閘 gg>90：綠幕本就亮，藉此避免把暗綠主體細節誤切。
+ * despill 對所有像素做（夾溢綠的 G→消半透明邊緣的綠光暈）；alpha 由「原始」RGB 算，despill 只改輸出顏色。
+ * 全逐像素、確定性、無 ML／agent，mobile 版可照搬。
+ */
+const KEY_LO = 12; // greenness ≤ 此 → 全保留（主體側）
+const KEY_HI = 90; // greenness ≥ 此 → 全透明（綠幕側）
 export async function chromaKeyGreen(src: Buffer | string): Promise<Buffer> {
   const { data, info } = await sharp(src).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
   const { width: W, height: H, channels: ch } = info;
   const out = Buffer.alloc(W * H * 4);
   for (let p = 0; p < W * H; p++) {
     const i = p * ch;
-    let r = data[i]!;
+    const r = data[i]!;
     let gg = data[i + 1]!;
-    let b = data[i + 2]!;
-    const a = data[i + 3]!;
-    if (isGreenPx(r, gg, b)) {
-      out[p * 4] = r;
-      out[p * 4 + 1] = gg;
-      out[p * 4 + 2] = b;
-      out[p * 4 + 3] = 0;
-    } else {
-      const mx = Math.max(r, b);
-      if (gg > mx + 20) gg = mx + 20; // despill：溢綠夾到非綠通道附近
-      out[p * 4] = r;
-      out[p * 4 + 1] = gg;
-      out[p * 4 + 2] = b;
-      out[p * 4 + 3] = a;
+    const b = data[i + 2]!;
+    const a0 = data[i + 3]!;
+    const mx = Math.max(r, b);
+    const greenness = gg - mx;
+    let keyA = 255;
+    if (gg > 90) {
+      if (greenness >= KEY_HI) keyA = 0;
+      else if (greenness > KEY_LO) keyA = Math.round((255 * (KEY_HI - greenness)) / (KEY_HI - KEY_LO));
     }
+    if (gg > mx + 20) gg = mx + 20; // despill：溢綠夾到非綠通道附近
+    out[p * 4] = r;
+    out[p * 4 + 1] = gg;
+    out[p * 4 + 2] = b;
+    out[p * 4 + 3] = Math.min(a0, keyA); // 保留原圖既有透明
   }
   return sharp(out, { raw: { width: W, height: H, channels: 4 } }).png().toBuffer();
 }
