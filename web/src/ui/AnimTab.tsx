@@ -4,18 +4,20 @@
  *   整包：每張貼圖一組連續影格 → 8/16/24 張動態貼圖上架包（main 為 APNG）。
  */
 
-import { useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ANIMATED_SPEC, maxBounds } from '@core/spec.js';
 import type { RemoveBgMode } from '@core/types.js';
 import { validateAnimatedImage, validateCount, validatePack } from '@core/validate.js';
 import { decodeBlob, yieldToUI, type Raster } from '../webpipe/raster.js';
 import { cutSheet } from '../webpipe/sheetAnalysis.js';
+import { setApngNumPlays } from '../webpipe/apng.js';
 import { processAnimated, type ProcessedAnimated } from '../webpipe/processAnimated.js';
 import { buildAnimatedMain, buildTab } from '../webpipe/mainTab.js';
 import { buildPackZip, downloadBytes, safeName } from '../webpipe/zip.js';
 import { Field, FilePick, LogPane, PngPreview, Row, ValidationView, kb, sortFiles, useLogger } from './common.jsx';
 import { PackResult, type PackResultData } from './packResult.jsx';
 import { DEFAULT_TEXT_STYLE, makeAnimation, makeStroke, makeText, parseGridText, type SharedTextStyle } from './defaults.js';
+import { ManualLayout } from './ManualLayout.jsx';
 import { reportCut } from './cutReport.js';
 import { useModelProgress } from './modelProgress.js';
 import type { ValidationResult } from '@core/types.js';
@@ -50,14 +52,49 @@ function SheetMode() {
   const [duration, setDuration] = useState(2);
   const [loops, setLoops] = useState(1);
   const [name, setName] = useState('anim');
+  const [autoRemoveBg, setAutoRemoveBg] = useState(true);
+  const [pickColor, setPickColor] = useState<[number, number, number] | null>(null);
+  const [gridGuard, setGridGuard] = useState(true);
+  const [loopPreview, setLoopPreview] = useState(true);
+  const [maxColors, setMaxColors] = useState(0);
+  const [replayKey, setReplayKey] = useState(0);
   const [busy, setBusy] = useState(false);
+  // 切好的影格（手動排版用）；id 區分每次切格，讓編輯器重設偏移
+  const [editor, setEditor] = useState<{ frames: Raster[]; id: number } | null>(null);
   const [result, setResult] = useState<{ png: Uint8Array; caption: string; validation: ValidationResult } | null>(null);
   const logger = useLogger();
   const modelStatus = useModelProgress();
 
+  // 編好的 APNG 循環次數是 LINE 規格的 1–4；預覽循環＝把副本的 acTL num_plays 改 0（無限）
+  const previewPng = useMemo(
+    () => (result && loopPreview ? setApngNumPlays(result.png.slice(), 0) : result?.png),
+    [result, loopPreview],
+  );
+
+  /** 影格 → fit → APNG → 結果（切格流程與手動排版共用） */
+  async function buildFrom(frames: Raster[], label: string): Promise<void> {
+    const proc = await processAnimated(frames, {
+      bounds: maxBounds('animated'),
+      removeBackground: false, // cutSheet 已去背
+      animation: makeAnimation({ loops, durationSec: duration, stabilize: false, maxColors }),
+    });
+    for (const n of proc.notes) logger.log('info', n);
+    const validation = validateAnimatedImage(proc.info);
+    logger.log(
+      'ok',
+      `${label}：${proc.info.width}×${proc.info.height}  ${proc.info.frames}格×${proc.info.loops}loop  ${kb(proc.info.bytes)}`,
+    );
+    setResult({
+      png: proc.png,
+      caption: `${name}.png  ${proc.info.width}×${proc.info.height}  ${proc.info.frames}格  ${kb(proc.info.bytes)}`,
+      validation,
+    });
+  }
+
   async function run() {
     logger.clear();
     setResult(null);
+    setEditor(null);
     setBusy(true);
     try {
       const file = sheet[0];
@@ -76,27 +113,43 @@ function SheetMode() {
       const raster = await decodeBlob(file);
       // align 'grid'：元件式抽格＋按原圖等分格座標對齊——場景固定不閃，
       // 不再做頭錨點穩定化（錨點平移會把場景物件推出畫布）
-      const cut = await cutSheet(raster, { cols: grid.cols, rows: grid.rows, count, align: 'grid' });
+      const cut = await cutSheet(raster, {
+        cols: grid.cols,
+        rows: grid.rows,
+        count,
+        align: 'grid',
+        key: { autoRemove: autoRemoveBg, pickColor },
+      });
       reportCut(cut, logger);
+
+      const inf = cut.analysis.inferredGrid;
+      const mismatch =
+        (inf.cols !== null && inf.cols !== grid.cols) || (inf.rows !== null && inf.rows !== grid.rows);
+      if (gridGuard && mismatch) {
+        logger.log(
+          'err',
+          `網格防呆：內容看起來是 ${inf.cols ?? grid.cols}×${inf.rows ?? grid.rows}，與指定的 ` +
+            `${grid.cols}×${grid.rows} 不符，已停止（切下去會嚴重漂移）。請修正網格再跑；` +
+            `確定網格沒錯的話，取消勾選「網格防呆」即可強制繼續。`,
+        );
+        return;
+      }
       logger.log('info', '影格已按原圖格線對齊（場景固定）→ 跳過錨點穩定化');
 
-      const proc = await processAnimated(cut.cells, {
-        bounds: maxBounds('animated'),
-        removeBackground: false, // cutSheet 已去背
-        animation: makeAnimation({ loops, durationSec: duration, stabilize: false }),
-      });
-      for (const n of proc.notes) logger.log('info', n);
+      setEditor({ frames: cut.cells, id: Date.now() });
+      await buildFrom(cut.cells, '動畫 APNG');
+    } catch (e) {
+      logger.log('err', e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
 
-      const validation = validateAnimatedImage(proc.info);
-      logger.log(
-        'ok',
-        `動畫 APNG：${proc.info.width}×${proc.info.height}  ${proc.info.frames}格×${proc.info.loops}loop  ${kb(proc.info.bytes)}`,
-      );
-      setResult({
-        png: proc.png,
-        caption: `${name}.png  ${proc.info.width}×${proc.info.height}  ${proc.info.frames}格  ${kb(proc.info.bytes)}`,
-        validation,
-      });
+  async function packManual(frames: Raster[]) {
+    setBusy(true);
+    try {
+      logger.log('step', `手動排版打包（${frames.length} 格，畫布 ${frames[0]?.width}×${frames[0]?.height}）…`);
+      await buildFrom(frames, '手動排版 APNG');
     } catch (e) {
       logger.log('err', e instanceof Error ? e.message : String(e));
     } finally {
@@ -109,8 +162,16 @@ function SheetMode() {
       <p className="tab-desc">
         把一張「連續影格組圖」（每格是動作的一個影格）按元件偵測逐格實際範圍（格線僅參照、越線不切斷）→
         按原圖格線對齊（場景固定不閃）→ 編成一段 APNG。影格組圖可用「產圖 Prompt」分頁的動態模式產 prompt。
+        自動對齊不滿意時可用「手動排版」逐格拖曳對位再打包。
       </p>
-      <FilePick label="影格組圖（frames-sheet）" files={sheet} onChange={setSheet} />
+      <FilePick
+        label="影格組圖（frames-sheet）"
+        files={sheet}
+        onChange={(files) => {
+          setSheet(files);
+          setPickColor(null); // 換圖後點選色失效
+        }}
+      />
       <Row>
         <Field label="網格（如 4x4）">
           <input value={gridText} onChange={(e) => setGridText(e.target.value)} style={{ width: '6em' }} />
@@ -128,6 +189,26 @@ function SheetMode() {
           <input value={name} onChange={(e) => setName(e.target.value)} />
         </Field>
       </Row>
+      <Row>
+        <Field label="自動去背（綠幕/單色色鍵）">
+          <input type="checkbox" checked={autoRemoveBg} onChange={(e) => setAutoRemoveBg(e.target.checked)} />
+        </Field>
+        <Field label="網格防呆（網格與內容不符時擋下）">
+          <input type="checkbox" checked={gridGuard} onChange={(e) => setGridGuard(e.target.checked)} />
+        </Field>
+        <Field label="預覽循環播放">
+          <input type="checkbox" checked={loopPreview} onChange={(e) => setLoopPreview(e.target.checked)} />
+        </Field>
+        <Field label="減色（檔案較小）">
+          <select value={maxColors} onChange={(e) => setMaxColors(Number(e.target.value))}>
+            <option value={0}>自動（超過 1MB 才減）</option>
+            <option value={256}>最多 256 色</option>
+            <option value={128}>最多 128 色</option>
+            <option value={64}>最多 64 色</option>
+          </select>
+        </Field>
+      </Row>
+      {autoRemoveBg && <ColorPickFromImage file={sheet[0] ?? null} value={pickColor} onChange={setPickColor} />}
       <div className="run-row">
         <button className="btn primary" disabled={busy || sheet.length === 0} onClick={() => void run()}>
           {busy ? '處理中…' : '切格並產生動畫'}
@@ -135,20 +216,97 @@ function SheetMode() {
         {modelStatus && <span className="model-status">{modelStatus}</span>}
       </div>
       <LogPane lines={logger.lines} />
-      {result && (
+      {editor && (
+        <ManualLayout
+          key={editor.id}
+          frames={editor.frames}
+          durationSec={duration}
+          busy={busy}
+          onPack={(frames) => void packManual(frames)}
+        />
+      )}
+      {result && previewPng && (
         <div className="pack-result">
           <div className="pack-actions">
             <button className="btn primary" onClick={() => downloadBytes(`${safeName(name)}.png`, result.png, 'image/png')}>
               下載 APNG（{kb(result.png.length)}）
             </button>
+            <button className="btn" onClick={() => setReplayKey((k) => k + 1)}>
+              ↻ 重播
+            </button>
           </div>
           <ValidationView result={result.validation} />
           <div className="sticker-grid">
-            <PngPreview bytes={result.png} caption={result.caption} big />
+            <PngPreview
+              key={`${replayKey}-${loopPreview}`}
+              bytes={previewPng}
+              caption={`${result.caption}${loopPreview ? '（預覽循環播放；下載檔為設定的循環次數）' : ''}`}
+              big
+            />
           </div>
         </div>
       )}
     </>
+  );
+}
+
+/** 從上傳的組圖點選背景色（非綠幕、自動偵測選錯色時手動指定色鍵顏色） */
+function ColorPickFromImage(props: {
+  file: File | null;
+  value: [number, number, number] | null;
+  onChange: (c: [number, number, number] | null) => void;
+}) {
+  const { file, value, onChange } = props;
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !file || !open) return;
+    let cancelled = false;
+    void createImageBitmap(file).then((bmp) => {
+      if (cancelled || !canvasRef.current) {
+        bmp.close();
+        return;
+      }
+      canvasRef.current.width = bmp.width;
+      canvasRef.current.height = bmp.height;
+      canvasRef.current.getContext('2d')?.drawImage(bmp, 0, 0);
+      bmp.close();
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [file, open]);
+
+  if (!file) return null;
+  return (
+    <details className="colorpick" open={open} onToggle={(e) => setOpen(e.currentTarget.open)}>
+      <summary>
+        背景色：{value ? `rgb(${value.join(',')})（點選色）` : '自動偵測（綠幕→綠；其他→邊框平均色）'}
+      </summary>
+      <p className="tab-desc">背景不是綠幕、或自動偵測的顏色不對時，直接點圖中的「背景」處指定色鍵顏色。</p>
+      <div className="run-row">
+        {value && <span className="swatch" style={{ background: `rgb(${value.join(',')})` }} />}
+        {value && (
+          <button className="btn small" onClick={() => onChange(null)}>
+            清除（回自動偵測）
+          </button>
+        )}
+      </div>
+      <canvas
+        ref={canvasRef}
+        className="pick-canvas"
+        onClick={(e) => {
+          const canvas = e.currentTarget;
+          const rect = canvas.getBoundingClientRect();
+          const x = Math.floor((e.clientX - rect.left) * (canvas.width / rect.width));
+          const y = Math.floor((e.clientY - rect.top) * (canvas.height / rect.height));
+          const d = canvas.getContext('2d')?.getImageData(x, y, 1, 1).data;
+          if (d) onChange([d[0]!, d[1]!, d[2]!]);
+        }}
+      />
+    </details>
   );
 }
 
@@ -161,6 +319,7 @@ function PackMode() {
   const [duration, setDuration] = useState(2);
   const [loops, setLoops] = useState(1);
   const [stabilize, setStabilize] = useState(true);
+  const [maxColorsPack, setMaxColorsPack] = useState(0);
   const [removeBgMode, setRemoveBgMode] = useState<'false' | 'auto' | 'true'>('false');
   const [strokeOn, setStrokeOn] = useState(false);
   const [strokeWidth, setStrokeWidth] = useState(8);
@@ -193,7 +352,7 @@ function PackMode() {
         return;
       }
       const removeBackground: RemoveBgMode = removeBgMode === 'auto' ? 'auto' : removeBgMode === 'true';
-      const animation = makeAnimation({ loops, durationSec: duration, stabilize });
+      const animation = makeAnimation({ loops, durationSec: duration, stabilize, maxColors: maxColorsPack });
       const stroke = makeStroke(strokeOn, strokeWidth, strokeColor);
       const texts = textsRaw.split('\n');
       const bounds = maxBounds('animated');
@@ -294,6 +453,14 @@ function PackMode() {
         </Field>
         <Field label="主體穩定化">
           <input type="checkbox" checked={stabilize} onChange={(e) => setStabilize(e.target.checked)} />
+        </Field>
+        <Field label="減色（檔案較小）">
+          <select value={maxColorsPack} onChange={(e) => setMaxColorsPack(Number(e.target.value))}>
+            <option value={0}>自動（超過 1MB 才減）</option>
+            <option value={256}>最多 256 色</option>
+            <option value={128}>最多 128 色</option>
+            <option value={64}>最多 64 色</option>
+          </select>
         </Field>
         <Field label="白色描邊">
           <input type="checkbox" checked={strokeOn} onChange={(e) => setStrokeOn(e.target.checked)} />

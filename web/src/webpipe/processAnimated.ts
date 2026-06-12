@@ -100,6 +100,7 @@ export async function processAnimated(
     delayMs,
     maxBytes: opts.animation.maxBytes,
     minColors: opts.animation.minColors,
+    maxColors: opts.animation.maxColors,
     minFrames: opts.animation.minFrames,
     priority: opts.animation.priority,
     ladder: opts.animation.ladder,

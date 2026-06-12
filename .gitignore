@@ -8,6 +8,7 @@ out/
 test/
 spike/
 fixtures/
+eval/
 
 # 暫存
 tmp/

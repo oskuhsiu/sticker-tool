@@ -73,6 +73,7 @@ export const AnimationSchema = z
     autoFit: z.boolean().default(true),
     priority: z.enum(['colors', 'frames', 'balanced']).default('balanced'),
     minColors: z.number().int().positive().default(16),
+    maxColors: z.number().int().min(0).default(0),
     minFrames: z.number().int().min(5).default(5),
     ladder: z.union([z.literal('auto'), z.array(LadderRungSchema)]).default('auto'),
     stabilize: StabilizeSchema,

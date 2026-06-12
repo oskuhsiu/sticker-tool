@@ -9,7 +9,7 @@ const bgLabel = (bg: CutSheetResult['analysis']['background']): string => {
   if (bg.kind === 'transparent') return '透明';
   if (bg.kind === 'green') return '綠幕（色鍵去背）';
   const [r, g, b] = bg.color;
-  return `不透明 rgb(${r | 0},${g | 0},${b | 0})（語意去背）`;
+  return `不透明 rgb(${r | 0},${g | 0},${b | 0})（單色色鍵去背）`;
 };
 
 export function reportCut(cut: CutSheetResult, logger: Logger): void {

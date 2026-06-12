@@ -34,6 +34,57 @@ export function equalCuts(total: number, n: number): number[] {
   return Array.from({ length: n + 1 }, (_, i) => Math.round((i * total) / n));
 }
 
+export interface InferAxisOptions {
+  /** 占用 ≤ peak×lowFrac 視為「縫」，預設 0.12（與 planCutsFromProfile 同義） */
+  lowFrac?: number;
+  /** 縫最小寬度 px（濾雜訊），預設 3 */
+  minGutterPx?: number;
+  /** 分段寬度 max/min 超過此值＝縫被道具跨格遮斷或誤判 → 不下結論，預設 1.8 */
+  maxWidthRatio?: number;
+}
+
+/**
+ * 由占用剖面推斷「內容實際有幾欄/列」：內容範圍（去掉頭尾留白）內的低占用帶＝格間縫，
+ * 縫數+1＝格數。只有在分段寬度大致均勻（AI 組圖是等格）時才下結論，否則回 null。
+ * 用途：網格防呆——使用者指定 5×4 但內容是 4×4 時，切格會整組錯位漂移（實測 2026-06）。
+ */
+export function inferAxisCells(occ: number[], opts: InferAxisOptions = {}): number | null {
+  const { lowFrac = 0.12, minGutterPx = 3, maxWidthRatio = 1.8 } = opts;
+  const peak = Math.max(...occ) || 0;
+  if (peak <= 0) return null;
+  const th = peak * lowFrac;
+  let first = -1;
+  let last = -1;
+  for (let i = 0; i < occ.length; i++) {
+    if (occ[i]! > th) {
+      if (first < 0) first = i;
+      last = i;
+    }
+  }
+  if (first < 0 || last - first < 8) return null;
+
+  const bands: Array<[number, number]> = [];
+  let s = -1;
+  for (let i = first; i <= last; i++) {
+    if (occ[i]! <= th) {
+      if (s < 0) s = i;
+    } else if (s >= 0) {
+      bands.push([s, i - 1]);
+      s = -1;
+    }
+  }
+  const gutters = bands.filter(([a, b]) => b - a + 1 >= minGutterPx);
+
+  // 分段寬度均勻度：縫被跨格道具遮斷會合併出 2 倍寬的段 → 寬度比超標 → 不下結論
+  const edges = [first - 0.5, ...gutters.map(([a, b]) => (a + b) / 2), last + 0.5];
+  const widths: number[] = [];
+  for (let k = 0; k + 1 < edges.length; k++) widths.push(edges[k + 1]! - edges[k]!);
+  const wmin = Math.min(...widths);
+  const wmax = Math.max(...widths);
+  if (wmin <= 0 || wmax / wmin > maxWidthRatio) return null;
+  return gutters.length + 1;
+}
+
 /** 在 [lo,hi]（含）內找所有「占用 ≤ th」的連續帶，回傳 [start,end] 串 */
 function lowBands(occ: number[], lo: number, hi: number, th: number): Array<[number, number]> {
   const bands: Array<[number, number]> = [];

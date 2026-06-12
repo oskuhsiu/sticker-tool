@@ -21,7 +21,7 @@
  */
 
 import sharp from 'sharp';
-import { planCutsFromProfile, type CutPlan } from '../core/sheet.js';
+import { inferAxisCells, planCutsFromProfile, type CutPlan } from '../core/sheet.js';
 import { extractCells, type CellMeta } from '../core/cells.js';
 import { removeBackgroundLocal } from './removeBackground.js';
 
@@ -40,6 +40,8 @@ export interface SheetAnalysis {
   ys: number[];
   xPlan: CutPlan;
   yPlan: CutPlan;
+  /** 由前景縫隙推斷的實際網格（單軸不確定＝null）；網格防呆用 */
+  inferredGrid: { cols: number | null; rows: number | null };
   warnings: string[];
 }
 
@@ -175,6 +177,16 @@ export async function analyzeSheet(
   const xPlan = planCutsFromProfile(colOcc, cols);
   const yPlan = planCutsFromProfile(rowOcc, rows);
 
+  const inferredGrid = { cols: inferAxisCells(colOcc), rows: inferAxisCells(rowOcc) };
+  const colsMismatch = inferredGrid.cols !== null && inferredGrid.cols !== cols;
+  const rowsMismatch = inferredGrid.rows !== null && inferredGrid.rows !== rows;
+  if (colsMismatch || rowsMismatch) {
+    warnings.push(
+      `內容縫隙顯示組圖約為 ${inferredGrid.cols ?? '?'}×${inferredGrid.rows ?? '?'}，` +
+        `與指定網格 ${cols}×${rows} 不符——切出的影格會錯位漂移，請確認網格設定。`,
+    );
+  }
+
   if (background.kind === 'opaque') {
     const [r, g, b] = background.color;
     warnings.push(
@@ -183,7 +195,7 @@ export async function analyzeSheet(
     );
   }
 
-  return { background, keyed, width: info.width, height: info.height, xs: xPlan.cuts, ys: yPlan.cuts, xPlan, yPlan, warnings };
+  return { background, keyed, width: info.width, height: info.height, xs: xPlan.cuts, ys: yPlan.cuts, xPlan, yPlan, inferredGrid, warnings };
 }
 
 export interface CutSheetResult {

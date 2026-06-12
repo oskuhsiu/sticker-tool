@@ -87,6 +87,8 @@ export interface AnimationConfig {
   priority: AnimPriority;
   /** 量化色數下限（品質地板） */
   minColors: number;
+  /** 量化色數上限：0=不設限（容許無損）；如 256＝一開始就減色（檔案小） */
+  maxColors: number;
   /** 影格下限（LINE 動態最少 5） */
   minFrames: number;
   /** 'auto'=內建品質階梯；或自訂階梯 */

@@ -82,6 +82,7 @@ export async function buildAnimatedMain(
     delayMs,
     maxBytes: animation.maxBytes,
     minColors: animation.minColors,
+    maxColors: animation.maxColors,
     minFrames: animation.minFrames,
     priority: animation.priority,
     ladder: animation.ladder,

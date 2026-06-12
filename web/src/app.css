@@ -354,3 +354,66 @@ textarea {
   line-height: 1.5;
   margin: 0;
 }
+
+/* 手動排版編輯器 */
+.layout-editor {
+  margin: 0.8rem 0;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  padding: 0.5rem 0.8rem;
+}
+.layout-editor summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+.layout-canvas {
+  display: block;
+  max-width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: grab;
+  touch-action: none;
+  outline-color: var(--accent);
+}
+.layout-canvas:active {
+  cursor: grabbing;
+}
+.frame-strip {
+  display: flex;
+  gap: 0.3rem;
+  flex-wrap: wrap;
+  margin: 0.5rem 0;
+}
+.layout-status {
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 背景選色 */
+.colorpick {
+  margin: 0.4rem 0 0.8rem;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  padding: 0.5rem 0.8rem;
+}
+.colorpick summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+.pick-canvas {
+  display: block;
+  max-width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: crosshair;
+}
+.swatch {
+  display: inline-block;
+  width: 1.4rem;
+  height: 1.4rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}

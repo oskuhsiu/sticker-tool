@@ -2,12 +2,14 @@
  * 組圖切格（瀏覽器版）：偵測背景 → 去背成透明 → 由前景占用剖面規劃「參照」切線
  * → 元件式抽格（@core/cells：格線僅參照、逐格偵測實際範圍、越線不切斷、空格回報）。
  * 純逐像素邏輯與 CLI 版一致；切線規劃與抽格直接重用 @core 的純函式。
+ *
+ * 去背一律走色鍵（綠幕／單色），不用 @imgly 語意模型——sheet 流程曾卡在 ~80MB
+ * 模型下載；不透明背景改用「邊框平均色」或「使用者點選色」做單色色鍵。
  */
 
-import { planCutsFromProfile, type CutPlan } from '@core/sheet.js';
+import { inferAxisCells, planCutsFromProfile, type CutPlan } from '@core/sheet.js';
 import { extractCells, type CellMeta } from '@core/cells.js';
 import type { Raster } from './raster.js';
-import { removeBackgroundLocal } from './removeBackground.js';
 
 export type Background =
   | { kind: 'transparent' }
@@ -24,7 +26,16 @@ export interface SheetAnalysis {
   ys: number[];
   xPlan: CutPlan;
   yPlan: CutPlan;
+  /** 由前景縫隙推斷的實際網格（單軸不確定＝null）；網格防呆用 */
+  inferredGrid: { cols: number | null; rows: number | null };
   warnings: string[];
+}
+
+export interface KeyOptions {
+  /** 自動去背（預設 true）；false＝直接用原圖 alpha（圖須已是透明底） */
+  autoRemove?: boolean;
+  /** 使用者點選的背景色：指定時一律用此色做單色色鍵（蓋過自動偵測） */
+  pickColor?: [number, number, number] | null;
 }
 
 const ALPHA_OPAQUE = 128;
@@ -103,12 +114,50 @@ export function chromaKeyGreen(src: Raster): Raster {
   return { data: out, width: W, height: H };
 }
 
-/** 依背景型態把整張 sheet 去背成透明前景。 */
-export async function keyBackground(src: Raster, bg: Background): Promise<Raster> {
+/**
+ * 單色色鍵（soft matte）：與背景色的 Chebyshev 距離映射 alpha——
+ * ≤LO 全透明（背景）、≥HI 全保留（主體）、之間線性漸層（抗鋸齒）。
+ * 平塗背景的雜訊只有幾個色階，LO=20 足以蓋掉；HI=64 之外視為主體。
+ * 注意：主體與背景同色處（如白衣白底）會一起被打穿——產圖時避免同色背景。
+ */
+const SOLID_LO = 20;
+const SOLID_HI = 64;
+export function chromaKeySolid(src: Raster, color: [number, number, number]): Raster {
+  const { data, width: W, height: H } = src;
+  const [r0, g0, b0] = color;
+  const out = new Uint8ClampedArray(W * H * 4);
+  for (let p = 0; p < W * H; p++) {
+    const i = p * 4;
+    const d = Math.max(
+      Math.abs(data[i]! - r0),
+      Math.abs(data[i + 1]! - g0),
+      Math.abs(data[i + 2]! - b0),
+    );
+    let keyA = 255;
+    if (d <= SOLID_LO) keyA = 0;
+    else if (d < SOLID_HI) keyA = Math.round((255 * (d - SOLID_LO)) / (SOLID_HI - SOLID_LO));
+    out[i] = data[i]!;
+    out[i + 1] = data[i + 1]!;
+    out[i + 2] = data[i + 2]!;
+    out[i + 3] = Math.min(data[i + 3]!, keyA);
+  }
+  return { data: out, width: W, height: H };
+}
+
+/**
+ * 依背景型態把整張 sheet 去背成透明前景。
+ * 全程色鍵（無 ML 模型）：綠幕→綠色鍵；不透明→單色色鍵（點選色或邊框平均色）。
+ */
+export function keyBackground(src: Raster, bg: Background, opts: KeyOptions = {}): Raster {
+  if (opts.autoRemove === false) return src;
+  if (opts.pickColor) return chromaKeySolid(src, opts.pickColor);
   if (bg.kind === 'transparent') return src;
   if (bg.kind === 'green') return chromaKeyGreen(src);
-  // opaque：色鍵分不開白衣服/白底 → 用語意模型整張去背
-  return removeBackgroundLocal(src);
+  return chromaKeySolid(src, [
+    Math.round(bg.color[0]),
+    Math.round(bg.color[1]),
+    Math.round(bg.color[2]),
+  ]);
 }
 
 /** 每欄/列的前景（alpha>門檻）像素數 */
@@ -128,25 +177,45 @@ function foregroundProfiles(keyed: Raster): { colOcc: number[]; rowOcc: number[]
 }
 
 /** 切格前的完整程式分析：偵測背景 → 去背 → 規劃參照切線。 */
-export async function analyzeSheet(src: Raster, grid: { cols: number; rows: number }): Promise<SheetAnalysis> {
+export async function analyzeSheet(
+  src: Raster,
+  grid: { cols: number; rows: number },
+  key: KeyOptions = {},
+): Promise<SheetAnalysis> {
   const { cols, rows } = grid;
   const warnings: string[] = [];
   const background = detectBackground(src);
-  const keyed = await keyBackground(src, background);
+  const keyed = keyBackground(src, background, key);
   const { colOcc, rowOcc } = foregroundProfiles(keyed);
 
   const xPlan = planCutsFromProfile(colOcc, cols);
   const yPlan = planCutsFromProfile(rowOcc, rows);
 
-  if (background.kind === 'opaque') {
-    const [r, g, b] = background.color;
+  const inferredGrid = { cols: inferAxisCells(colOcc), rows: inferAxisCells(rowOcc) };
+  const colsMismatch = inferredGrid.cols !== null && inferredGrid.cols !== cols;
+  const rowsMismatch = inferredGrid.rows !== null && inferredGrid.rows !== rows;
+  if (colsMismatch || rowsMismatch) {
     warnings.push(
-      `背景非透明（近 rgb(${r | 0},${g | 0},${b | 0})）：已用語意模型整張去背。` +
-        `若主體與背景同色（如白衣白底）邊緣可能殘留，最乾淨的做法是產圖時直接要求透明底。`,
+      `內容縫隙顯示組圖約為 ${inferredGrid.cols ?? '?'}×${inferredGrid.rows ?? '?'}，` +
+        `與指定網格 ${cols}×${rows} 不符——切出的影格會錯位漂移，請確認網格設定。`,
     );
   }
 
-  return { background, keyed, width: keyed.width, height: keyed.height, xs: xPlan.cuts, ys: yPlan.cuts, xPlan, yPlan, warnings };
+  if (key.autoRemove === false) {
+    warnings.push('已關閉自動去背：直接使用原圖 alpha（圖須已是透明底，否則切格會失敗）。');
+  } else if (key.pickColor) {
+    const [r, g, b] = key.pickColor;
+    warnings.push(`以點選色 rgb(${r},${g},${b}) 做單色色鍵去背；主體與背景同色處會一起變透明。`);
+  } else if (background.kind === 'opaque') {
+    const [r, g, b] = background.color;
+    warnings.push(
+      `背景非透明（近 rgb(${r | 0},${g | 0},${b | 0})）：以邊框平均色做單色色鍵去背。` +
+        `若主體與背景同色（如白衣白底）會被一起打穿——可改用「從圖選色」指定背景色，` +
+        `最乾淨的做法是產圖時用綠幕或透明底。`,
+    );
+  }
+
+  return { background, keyed, width: keyed.width, height: keyed.height, xs: xPlan.cuts, ys: yPlan.cuts, xPlan, yPlan, inferredGrid, warnings };
 }
 
 export interface CutSheetResult {
@@ -168,11 +237,11 @@ export interface CutSheetResult {
  */
 export async function cutSheet(
   src: Raster,
-  opts: { cols: number; rows: number; count: number; align?: 'center' | 'grid' },
+  opts: { cols: number; rows: number; count: number; align?: 'center' | 'grid'; key?: KeyOptions },
 ): Promise<CutSheetResult> {
   const { cols, rows, count, align = 'center' } = opts;
   if (cols < 1 || rows < 1) throw new RangeError(`網格 ${cols}×${rows} 不合法`);
-  const analysis = await analyzeSheet(src, { cols, rows });
+  const analysis = await analyzeSheet(src, { cols, rows }, opts.key);
 
   const ex = extractCells(analysis.keyed, { cols, rows, count, xs: analysis.xs, ys: analysis.ys, align });
 

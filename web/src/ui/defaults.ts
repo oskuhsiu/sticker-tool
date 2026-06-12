@@ -5,7 +5,13 @@
 
 import type { AnimationConfig, StrokeSpec, TextSpec } from '@core/types.js';
 
-export function makeAnimation(opts: { loops: number; durationSec: number; stabilize: boolean }): AnimationConfig {
+export function makeAnimation(opts: {
+  loops: number;
+  durationSec: number;
+  stabilize: boolean;
+  /** 減色上限：0=自動（超標才減）；256/128/64＝一開始就減（檔案小） */
+  maxColors?: number;
+}): AnimationConfig {
   return {
     maxBytes: 1_000_000,
     loops: opts.loops,
@@ -13,6 +19,7 @@ export function makeAnimation(opts: { loops: number; durationSec: number; stabil
     autoFit: true,
     priority: 'balanced',
     minColors: 16,
+    maxColors: opts.maxColors ?? 0,
     minFrames: 5,
     ladder: 'auto',
     stabilize: {

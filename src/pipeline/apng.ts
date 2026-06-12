@@ -103,14 +103,18 @@ function frameSeq(frameCount: number, minFrames: number): number[] {
   return seq;
 }
 
-/** 依優先序產生 (colors, frames) 品質階梯 */
+/** 依優先序產生 (colors, frames) 品質階梯；maxColors>0＝強制減色上限（排除無損、夾住階梯） */
 export function autoLadder(
   priority: AnimPriority,
   frameCount: number,
   minColors: number,
   minFrames: number,
+  maxColors = 0,
 ): LadderRung[] {
-  const colors = COLOR_STEPS.filter((c) => c === 0 || c >= minColors);
+  const colors = COLOR_STEPS.filter((c) =>
+    c === 0 ? maxColors === 0 : c >= minColors && (maxColors === 0 || c <= maxColors),
+  );
+  if (colors.length === 0) colors.push(Math.max(minColors, 16));
   const frames = frameSeq(frameCount, Math.max(5, minFrames));
   const steps: LadderRung[] = [];
   const push = (c: number, f: number) => {
@@ -124,17 +128,18 @@ export function autoLadder(
     // 先減影格（保色數高），再降色
     for (const c of colors) for (const f of frames) push(c, f);
   } else {
-    // balanced：先保「色≥48 且 格≥8」
+    // balanced：先保「色≥48 且 格≥8」（48 受 maxColors 夾住）
     const protectF = Math.max(8, minFrames);
-    const hi = colors.filter((c) => c === 0 || c >= 48);
-    const lo = colors.filter((c) => c !== 0 && c < 48);
+    const midC = Math.max(Math.min(48, maxColors || 48), Math.max(minColors, 16));
+    const hi = colors.filter((c) => c === 0 || c >= midC);
+    const lo = colors.filter((c) => c !== 0 && c < midC);
     const framesToProtect = frames.filter((f) => f >= protectF);
     const framesBelow = frames.filter((f) => f < protectF);
-    // 1) 全影格，色 high→48
+    // 1) 全影格，色 high→midC
     for (const c of hi) push(c, frameCount);
-    // 2) 色=48，影格 full→8
-    for (const f of framesToProtect) push(48, f);
-    // 3) 影格=protect 底線，色 48→min
+    // 2) 色=midC，影格 full→8
+    for (const f of framesToProtect) push(midC, f);
+    // 3) 影格=protect 底線，色 midC→min
     for (const c of lo) push(c, protectF);
     // 4) 色=min，影格 8→minFrames
     for (const f of framesBelow) push(Math.max(minColors, 16), f);
@@ -148,6 +153,8 @@ export interface AutoFitOptions {
   delayMs: number;
   maxBytes: number;
   minColors: number;
+  /** 量化色數上限：0=不設限（容許無損） */
+  maxColors: number;
   minFrames: number;
   priority: AnimPriority;
   ladder: 'auto' | LadderRung[];
@@ -168,7 +175,7 @@ export async function encodeApngAutoFit(
 ): Promise<AutoFitResult> {
   const steps =
     opts.ladder === 'auto'
-      ? autoLadder(opts.priority, frames.length, opts.minColors, opts.minFrames)
+      ? autoLadder(opts.priority, frames.length, opts.minColors, opts.minFrames, opts.maxColors)
       : opts.ladder;
 
   let best: AutoFitResult | null = null;

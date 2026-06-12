@@ -108,14 +108,18 @@ function frameSeq(frameCount: number, minFrames: number): number[] {
   return seq;
 }
 
-/** 依優先序產生 (colors, frames) 品質階梯（與 CLI 版一致） */
+/** 依優先序產生 (colors, frames) 品質階梯（與 CLI 版一致）；maxColors>0＝強制減色上限 */
 export function autoLadder(
   priority: AnimPriority,
   frameCount: number,
   minColors: number,
   minFrames: number,
+  maxColors = 0,
 ): LadderRung[] {
-  const colors = COLOR_STEPS.filter((c) => c === 0 || c >= minColors);
+  const colors = COLOR_STEPS.filter((c) =>
+    c === 0 ? maxColors === 0 : c >= minColors && (maxColors === 0 || c <= maxColors),
+  );
+  if (colors.length === 0) colors.push(Math.max(minColors, 16));
   const frames = frameSeq(frameCount, Math.max(5, minFrames));
   const steps: LadderRung[] = [];
   const push = (c: number, f: number) => {
@@ -128,12 +132,13 @@ export function autoLadder(
     for (const c of colors) for (const f of frames) push(c, f);
   } else {
     const protectF = Math.max(8, minFrames);
-    const hi = colors.filter((c) => c === 0 || c >= 48);
-    const lo = colors.filter((c) => c !== 0 && c < 48);
+    const midC = Math.max(Math.min(48, maxColors || 48), Math.max(minColors, 16));
+    const hi = colors.filter((c) => c === 0 || c >= midC);
+    const lo = colors.filter((c) => c !== 0 && c < midC);
     const framesToProtect = frames.filter((f) => f >= protectF);
     const framesBelow = frames.filter((f) => f < protectF);
     for (const c of hi) push(c, frameCount);
-    for (const f of framesToProtect) push(48, f);
+    for (const f of framesToProtect) push(midC, f);
     for (const c of lo) push(c, protectF);
     for (const f of framesBelow) push(Math.max(minColors, 16), f);
   }
@@ -146,6 +151,8 @@ export interface AutoFitOptions {
   delayMs: number;
   maxBytes: number;
   minColors: number;
+  /** 量化色數上限：0=不設限（容許無損） */
+  maxColors: number;
   minFrames: number;
   priority: AnimPriority;
   ladder: 'auto' | LadderRung[];
@@ -163,7 +170,7 @@ export interface AutoFitResult {
 export function encodeApngAutoFit(frames: Raster[], opts: AutoFitOptions): AutoFitResult {
   const steps =
     opts.ladder === 'auto'
-      ? autoLadder(opts.priority, frames.length, opts.minColors, opts.minFrames)
+      ? autoLadder(opts.priority, frames.length, opts.minColors, opts.minFrames, opts.maxColors)
       : opts.ladder;
 
   let best: AutoFitResult | null = null;

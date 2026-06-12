@@ -60,6 +60,10 @@ sticker-tool gen --config sticker.config.yaml --sheet out/_sheets/sheet_01.png -
 # 影格一律來自本機路徑（每個 sticker 在設定檔給 frames: [...]）。
 # AI 影格先用 char-gen skill 產出 frame_01.png…，再把路徑寫進 config：
 sticker-tool anim --config anim.config.yaml --out out
+
+# 單組圖模式：一張 frames-sheet（4x4=16 格）→ 一段 APNG
+sticker-tool anim --sheet sheet.png --grid 4x4 --duration 2 --loops 1 --out out
+# 網格與內容不符（如內容 4×4 卻給 5x4）會由前景縫隙推斷並警告——切下去會整組錯位漂移
 ```
 
 ### 只產 prompt（mobile / 半自動）
@@ -89,6 +93,7 @@ animation:                 # 動態包
   loops: 1                 # 1–4（不可無限）
   durationSec: 2           # loops × 單輪 ≤ 4s
   autoFit: true            # 超標自動減色至 ≤1MB
+  maxColors: 0             # 減色上限：0=自動（超標才減）；256/128/64=一開始就減（檔案小）
 stickers:                  # local 或逐張覆寫（疊字 / 動態影格）
   - frames: [a.png, b.png, c.png]
     fps: 10
