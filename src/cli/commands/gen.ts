@@ -87,7 +87,7 @@ export async function runGen(opts: GenOptions): Promise<void> {
     return;
   }
 
-  // 2) 逐張組圖切格（cutSheet：偵測背景→去背→gutter 切→校正，全程式分析）
+  // 2) 逐張組圖切格（cutSheet：偵測背景→去背→元件式抽格（格線僅參照、越線不切斷）→ 各自置中）
   const cells: Buffer[] = [];
   for (let s = 0; s < layout.sheets; s++) {
     const remaining = cfg.count - s * layout.cellsPerSheet;

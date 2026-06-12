@@ -1,11 +1,12 @@
 /**
- * 組圖切格（瀏覽器版）：偵測背景 → 去背成透明 → 由前景占用剖面把切線吸到真實透明縫
- * → 切格 → 校正（pad 統一大小、量測被切開/空格、靜態再做中線校準）。
- * 純逐像素邏輯與 CLI 版一致；切線規劃重用 @core/sheet 的 planCutsFromProfile。
+ * 組圖切格（瀏覽器版）：偵測背景 → 去背成透明 → 由前景占用剖面規劃「參照」切線
+ * → 元件式抽格（@core/cells：格線僅參照、逐格偵測實際範圍、越線不切斷、空格回報）。
+ * 純逐像素邏輯與 CLI 版一致；切線規劃與抽格直接重用 @core 的純函式。
  */
 
 import { planCutsFromProfile, type CutPlan } from '@core/sheet.js';
-import { cropRaster, padRaster, type Raster } from './raster.js';
+import { extractCells, type CellMeta } from '@core/cells.js';
+import type { Raster } from './raster.js';
 import { removeBackgroundLocal } from './removeBackground.js';
 
 export type Background =
@@ -15,7 +16,7 @@ export type Background =
 
 export interface SheetAnalysis {
   background: Background;
-  /** 去背成透明後的整張 sheet；後續切格由它切 */
+  /** 去背成透明後的整張 sheet；後續抽格由它抽 */
   keyed: Raster;
   width: number;
   height: number;
@@ -26,28 +27,7 @@ export interface SheetAnalysis {
   warnings: string[];
 }
 
-/** 某格切格後的校正量測 */
-export interface CellReport {
-  index: number;
-  fgRatio: number;
-  sliced: boolean;
-  touch: string;
-  bleed: number;
-  empty: boolean;
-  recentered: boolean;
-}
-
-export interface Calibration {
-  cells: Raster[];
-  reports: CellReport[];
-  slicedCount: number;
-  cellW: number;
-  cellH: number;
-}
-
 const ALPHA_OPAQUE = 128;
-const BLEED_TH = 0.5;
-const EMPTY_TH = 0.02;
 const isGreenPx = (r: number, g: number, b: number): boolean => g > 90 && g - r > 40 && g - b > 40;
 
 /** 取邊框（2px 框）像素樣本，判背景型態 */
@@ -147,7 +127,7 @@ function foregroundProfiles(keyed: Raster): { colOcc: number[]; rowOcc: number[]
   return { colOcc, rowOcc };
 }
 
-/** 切格前的完整程式分析：偵測背景 → 去背 → 規劃 gutter 切線。 */
+/** 切格前的完整程式分析：偵測背景 → 去背 → 規劃參照切線。 */
 export async function analyzeSheet(src: Raster, grid: { cols: number; rows: number }): Promise<SheetAnalysis> {
   const { cols, rows } = grid;
   const warnings: string[] = [];
@@ -158,14 +138,6 @@ export async function analyzeSheet(src: Raster, grid: { cols: number; rows: numb
   const xPlan = planCutsFromProfile(colOcc, cols);
   const yPlan = planCutsFromProfile(rowOcc, rows);
 
-  const noGutterX = xPlan.gutterFound.filter((v) => !v).length;
-  const noGutterY = yPlan.gutterFound.filter((v) => !v).length;
-  if (noGutterX || noGutterY) {
-    warnings.push(
-      `有 ${noGutterX} 條直線、${noGutterY} 條橫線找不到乾淨透明縫（主體跨格塞滿）：已取占用最小處切，` +
-        `但建議重產組圖時讓網格留明顯間隙、主體不越格線。`,
-    );
-  }
   if (background.kind === 'opaque') {
     const [r, g, b] = background.color;
     warnings.push(
@@ -177,213 +149,37 @@ export async function analyzeSheet(src: Raster, grid: { cols: number; rows: numb
   return { background, keyed, width: keyed.width, height: keyed.height, xs: xPlan.cuts, ys: yPlan.cuts, xPlan, yPlan, warnings };
 }
 
-/** 置中 pad 到 W×H（透明底） */
-function padCenter(r: Raster, W: number, H: number): Raster {
-  if (r.width === W && r.height === H) return r;
-  const left = Math.floor((W - r.width) / 2);
-  const top = Math.floor((H - r.height) / 2);
-  return padRaster(r, { left, right: W - r.width - left, top, bottom: H - r.height - top });
-}
-
-/** 量一格的「前景占比」與四邊各自的「沿邊前景占比」（bleed） */
-function inspectCell(r: Raster): { fgRatio: number; edge: { L: number; R: number; T: number; B: number } } {
-  const { data, width: W, height: H } = r;
-  const op = (x: number, y: number): number => (data[(y * W + x) * 4 + 3]! > ALPHA_OPAQUE ? 1 : 0);
-  let fg = 0;
-  for (let p = 0; p < W * H; p++) if (data[p * 4 + 3]! > ALPHA_OPAQUE) fg++;
-  let L = 0;
-  let R = 0;
-  for (let y = 0; y < H; y++) {
-    L += Math.max(op(0, y), op(1, y));
-    R += Math.max(op(W - 1, y), op(W - 2, y));
-  }
-  let T = 0;
-  let B = 0;
-  for (let x = 0; x < W; x++) {
-    T += Math.max(op(x, 0), op(x, 1));
-    B += Math.max(op(x, H - 1), op(x, H - 2));
-  }
-  return { fgRatio: fg / (W * H), edge: { L: L / H, R: R / H, T: T / W, B: B / W } };
-}
-
-interface Comp {
-  area: number;
-  minx: number;
-  miny: number;
-  maxx: number;
-  maxy: number;
-}
-
-/** 4-連通元件標記（alpha>門檻） */
-function labelComponents(data: Uint8ClampedArray, W: number, H: number): { labels: Int32Array; comps: Comp[] } {
-  const labels = new Int32Array(W * H);
-  const comps: Comp[] = [];
-  const stack: number[] = [];
-  for (let s = 0; s < W * H; s++) {
-    if (data[s * 4 + 3]! <= ALPHA_OPAQUE || labels[s]) continue;
-    const id = comps.length + 1;
-    labels[s] = id;
-    stack.length = 0;
-    stack.push(s);
-    let area = 0;
-    let minx = W;
-    let miny = H;
-    let maxx = 0;
-    let maxy = 0;
-    while (stack.length) {
-      const q = stack.pop()!;
-      const qx = q % W;
-      const qy = (q / W) | 0;
-      area++;
-      if (qx < minx) minx = qx;
-      if (qx > maxx) maxx = qx;
-      if (qy < miny) miny = qy;
-      if (qy > maxy) maxy = qy;
-      if (qx > 0 && data[(q - 1) * 4 + 3]! > ALPHA_OPAQUE && !labels[q - 1]) { labels[q - 1] = id; stack.push(q - 1); }
-      if (qx < W - 1 && data[(q + 1) * 4 + 3]! > ALPHA_OPAQUE && !labels[q + 1]) { labels[q + 1] = id; stack.push(q + 1); }
-      if (qy > 0 && data[(q - W) * 4 + 3]! > ALPHA_OPAQUE && !labels[q - W]) { labels[q - W] = id; stack.push(q - W); }
-      if (qy < H - 1 && data[(q + W) * 4 + 3]! > ALPHA_OPAQUE && !labels[q + W]) { labels[q + W] = id; stack.push(q + W); }
-    }
-    comps.push({ area, minx, miny, maxx, maxy });
-  }
-  return { labels, comps };
-}
-
-/**
- * 中線校準：主體置中 + 清掉鄰格滲入殘片（與主體 bbox 有明顯間隙的遠處元件）。
- * 動態包不要 recenter（會破壞跨格對齊）——交給 stabilize。
- */
-const GAP_FRAC = 0.06;
-function recenterCell(r: Raster): { raster: Raster; moved: boolean; dropped: number } {
-  const { data, width: W, height: H } = r;
-  const { labels, comps } = labelComponents(data, W, H);
-  if (!comps.length) return { raster: r, moved: false, dropped: 0 };
-
-  let mainIdx = 0;
-  for (let i = 1; i < comps.length; i++) if (comps[i]!.area > comps[mainIdx]!.area) mainIdx = i;
-  const m = comps[mainIdx]!;
-  const margin = Math.round(Math.min(W, H) * GAP_FRAC);
-
-  const keep = new Uint8Array(comps.length + 1);
-  let dropped = 0;
-  for (let i = 0; i < comps.length; i++) {
-    const c = comps[i]!;
-    const near =
-      !(c.maxx < m.minx - margin || c.minx > m.maxx + margin || c.maxy < m.miny - margin || c.miny > m.maxy + margin);
-    if (i === mainIdx || near) keep[i + 1] = 1;
-    else dropped++;
-  }
-
-  const out = new Uint8ClampedArray(W * H * 4);
-  let minx = W;
-  let miny = H;
-  let maxx = 0;
-  let maxy = 0;
-  for (let p = 0; p < W * H; p++) {
-    if (labels[p] && keep[labels[p]!]) {
-      out[p * 4] = data[p * 4]!;
-      out[p * 4 + 1] = data[p * 4 + 1]!;
-      out[p * 4 + 2] = data[p * 4 + 2]!;
-      out[p * 4 + 3] = data[p * 4 + 3]!;
-      const x = p % W;
-      const y = (p / W) | 0;
-      if (x < minx) minx = x;
-      if (x > maxx) maxx = x;
-      if (y < miny) miny = y;
-      if (y > maxy) maxy = y;
-    }
-  }
-  if (maxx < minx) return { raster: r, moved: false, dropped: 0 };
-
-  const bw = maxx - minx + 1;
-  const bh = maxy - miny + 1;
-  const centeredX = Math.abs((minx + maxx) / 2 - (W - 1) / 2) <= 1;
-  const centeredY = Math.abs((miny + maxy) / 2 - (H - 1) / 2) <= 1;
-  if (dropped === 0 && centeredX && centeredY) return { raster: r, moved: false, dropped: 0 };
-
-  const cropped = cropRaster({ data: out, width: W, height: H }, minx, miny, bw, bh);
-  return { raster: padCenter(cropped, W, H), moved: true, dropped };
-}
-
-/**
- * 切格後校正：逐格量測 + pad 成統一大小；recenter=true（靜態預設）再做中線校準。
- */
-export function calibrateCells(
-  raw: Raster[],
-  grid: { cols: number; rows: number; recenter?: boolean },
-): Calibration {
-  const { cols, rows, recenter = true } = grid;
-  const cellW = Math.max(...raw.map((r) => r.width));
-  const cellH = Math.max(...raw.map((r) => r.height));
-
-  const reports: CellReport[] = [];
-  const cells: Raster[] = [];
-  for (let i = 0; i < raw.length; i++) {
-    const { fgRatio, edge } = inspectCell(raw[i]!);
-    const c = i % cols;
-    const rrow = (i / cols) | 0;
-    const sides: Array<[string, number, boolean]> = [
-      ['L', edge.L, c > 0],
-      ['R', edge.R, c < cols - 1],
-      ['T', edge.T, rrow > 0],
-      ['B', edge.B, rrow < rows - 1],
-    ];
-    let touch = '';
-    let bleed = 0;
-    for (const [name, val, internal] of sides) {
-      if (!internal) continue;
-      if (val > bleed) bleed = val;
-      if (val > BLEED_TH) touch += name;
-    }
-    const empty = fgRatio < EMPTY_TH;
-    let cell = padCenter(raw[i]!, cellW, cellH);
-    let recentered = false;
-    if (recenter && !empty) {
-      const r = recenterCell(cell);
-      cell = r.raster;
-      recentered = r.moved;
-    }
-    reports.push({ index: i, fgRatio: +fgRatio.toFixed(3), sliced: touch.length > 0, touch, bleed: +bleed.toFixed(3), empty, recentered });
-    cells.push(cell);
-  }
-  return { cells, reports, slicedCount: reports.filter((r) => r.sliced).length, cellW, cellH };
-}
-
 export interface CutSheetResult {
+  /** 同尺寸（canvasW×canvasH）已對齊放置的格 */
   cells: Raster[];
   analysis: SheetAnalysis;
-  calibration: Calibration;
+  cellsMeta: CellMeta[];
+  canvasW: number;
+  canvasH: number;
+  /** 場景精修對齊的最大平移 px（align 'grid' 才有） */
+  sceneShiftMax: number;
   /** 切出的格已去背（透明前景）→ 下游不必再去背 */
   keyed: boolean;
 }
 
 /**
- * 一站式：分析（偵測背景→去背→規劃 gutter 切線）→ 切格 → 校正。
- * 取前 count 格（row-major）。切出的格已是去背後的透明前景。
+ * 一站式：分析（偵測背景→去背→規劃參照切線）→ 元件式抽格（取前 count 格，row-major）。
+ * align：'center'（靜態，各自置中）｜'grid'（動態影格，按原圖等分格座標對齊、場景固定不閃）。
  */
 export async function cutSheet(
   src: Raster,
-  opts: { cols: number; rows: number; count: number; recenter?: boolean },
+  opts: { cols: number; rows: number; count: number; align?: 'center' | 'grid' },
 ): Promise<CutSheetResult> {
-  const { cols, rows, count, recenter = true } = opts;
+  const { cols, rows, count, align = 'center' } = opts;
   if (cols < 1 || rows < 1) throw new RangeError(`網格 ${cols}×${rows} 不合法`);
   const analysis = await analyzeSheet(src, { cols, rows });
-  const { xs, ys, keyed } = analysis;
 
-  const raw: Raster[] = [];
-  for (let r = 0; r < rows && raw.length < count; r++) {
-    for (let c = 0; c < cols && raw.length < count; c++) {
-      const left = xs[c]!;
-      const top = ys[r]!;
-      const width = xs[c + 1]! - left;
-      const height = ys[r + 1]! - top;
-      raw.push(cropRaster(keyed, left, top, width, height));
-    }
-  }
-  if (raw.length < count) {
-    throw new Error(`組圖只切得出 ${raw.length} 格，少於要求的 ${count} 格（網格 ${cols}×${rows}）`);
-  }
+  const ex = extractCells(analysis.keyed, { cols, rows, count, xs: analysis.xs, ys: analysis.ys, align });
 
-  const calibration = calibrateCells(raw, { cols, rows, recenter });
-  return { cells: calibration.cells, analysis, calibration, keyed: true };
+  const cells: Raster[] = ex.cells.map((c) => ({
+    data: new Uint8ClampedArray(c.buffer, c.byteOffset, c.byteLength) as Uint8ClampedArray<ArrayBuffer>,
+    width: ex.canvasW,
+    height: ex.canvasH,
+  }));
+  return { cells, analysis, cellsMeta: ex.metas, canvasW: ex.canvasW, canvasH: ex.canvasH, sceneShiftMax: ex.sceneShiftMax, keyed: true };
 }

@@ -49,7 +49,6 @@ function SheetMode() {
   const [framesN, setFramesN] = useState<string>('');
   const [duration, setDuration] = useState(2);
   const [loops, setLoops] = useState(1);
-  const [stabilize, setStabilize] = useState(true);
   const [name, setName] = useState('anim');
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<{ png: Uint8Array; caption: string; validation: ValidationResult } | null>(null);
@@ -75,14 +74,16 @@ function SheetMode() {
 
       logger.log('step', `切格 ${grid.cols}×${grid.rows}（取前 ${count} 格）← ${file.name}`);
       const raster = await decodeBlob(file);
-      // 動態不做逐格中線校準（recenter:false）：跨格對齊交給 stabilize，逐格置中會抖動
-      const cut = await cutSheet(raster, { cols: grid.cols, rows: grid.rows, count, recenter: false });
+      // align 'grid'：元件式抽格＋按原圖等分格座標對齊——場景固定不閃，
+      // 不再做頭錨點穩定化（錨點平移會把場景物件推出畫布）
+      const cut = await cutSheet(raster, { cols: grid.cols, rows: grid.rows, count, align: 'grid' });
       reportCut(cut, logger);
+      logger.log('info', '影格已按原圖格線對齊（場景固定）→ 跳過錨點穩定化');
 
       const proc = await processAnimated(cut.cells, {
         bounds: maxBounds('animated'),
         removeBackground: false, // cutSheet 已去背
-        animation: makeAnimation({ loops, durationSec: duration, stabilize }),
+        animation: makeAnimation({ loops, durationSec: duration, stabilize: false }),
       });
       for (const n of proc.notes) logger.log('info', n);
 
@@ -106,8 +107,8 @@ function SheetMode() {
   return (
     <>
       <p className="tab-desc">
-        把一張「連續影格組圖」（每格是動作的一個影格）切格 → 主體穩定化（殺跨格漂移）→ 對齊畫布 →
-        編成一段 APNG。影格組圖可用「產圖 Prompt」分頁的動態模式產 prompt。
+        把一張「連續影格組圖」（每格是動作的一個影格）按元件偵測逐格實際範圍（格線僅參照、越線不切斷）→
+        按原圖格線對齊（場景固定不閃）→ 編成一段 APNG。影格組圖可用「產圖 Prompt」分頁的動態模式產 prompt。
       </p>
       <FilePick label="影格組圖（frames-sheet）" files={sheet} onChange={setSheet} />
       <Row>
@@ -122,9 +123,6 @@ function SheetMode() {
         </Field>
         <Field label="循環次數（1–4）">
           <input type="number" min={1} max={4} value={loops} onChange={(e) => setLoops(Number(e.target.value))} />
-        </Field>
-        <Field label="主體穩定化">
-          <input type="checkbox" checked={stabilize} onChange={(e) => setStabilize(e.target.checked)} />
         </Field>
         <Field label="輸出檔名">
           <input value={name} onChange={(e) => setName(e.target.value)} />

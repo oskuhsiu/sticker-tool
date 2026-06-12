@@ -5,10 +5,11 @@
  *     config 的 stickers[].frames（本機影格路徑，char-gen 產出）→ 8/16/24 張動態貼圖上架包。
  *
  *   單組圖模式 `anim --sheet <組圖> --grid 4x4 [--frames N --duration 2 --loops 1]`
- *     把「一張 frames-sheet」（char-gen 的單段動作組圖）切格 → 穩定化 → fit → 一段動畫 APNG。
- *     這是上次缺的入口；省去手動切格 + 外部編碼。
+ *     把「一張 frames-sheet」（char-gen 的單段動作組圖）元件式抽格（格線僅參照）→
+ *     按原圖格線對齊（場景固定）→ fit → 一段動畫 APNG。
  *
- * 兩模式都走 processAnimated 的確定性管線：去背 → 主體穩定化（殺漂移）→ fit → APNG。
+ * 整包模式走 processAnimated 的確定性管線：去背 → 主體穩定化（殺漂移）→ fit → APNG；
+ * 單組圖模式抽格時已對齊 → 跳過錨點穩定化（錨點平移會把場景物件推出畫布）。
  */
 
 import path from 'node:path';
@@ -79,12 +80,15 @@ async function runSingleSheet(opts: AnimOptions, outDir: string): Promise<void> 
   if (opts.loops) animation = { ...animation, loops: opts.loops };
 
   log.step(`切格 ${cols}×${rows}（取前 ${count} 格）← ${path.basename(sheetPath)}`);
-  // cutSheet：偵測背景→去背→由前景占用剖面把切線吸到真實透明縫→切→校正（全程式分析，不需人工微調）
-  // 動態不做逐格中線校準（recenter:false）：跨格對齊交給 processAnimated 的 stabilize（head 錨點），逐格置中會造成抖動
-  const cut = await cutSheet(sheetPath, { cols, rows, count, recenter: false });
+  // cutSheet：偵測背景→去背→元件式抽格（格線僅參照、逐格偵測實際範圍、越線不切斷）
+  // align 'grid'：按原圖等分格座標對齊放置——AI 構圖時場景在每格內位置一致，保留此座標系動畫就不閃
+  const cut = await cutSheet(sheetPath, { cols, rows, count, align: 'grid' });
   reportCut(cut);
   // 切出的格已去背 → 下游不重複去背（除非 config 明確要求 true）
   const frames = cut.cells;
+  // grid 對齊已把場景固定 → 關掉頭錨點穩定化（錨點平移會把場景物件推出畫布）
+  animation = { ...animation, stabilize: { ...animation.stabilize, enabled: false } };
+  log.info('影格已按原圖格線對齊（場景固定）→ 跳過錨點穩定化');
 
   const proc = await processAnimated(frames, {
     bounds: maxBounds('animated'),
