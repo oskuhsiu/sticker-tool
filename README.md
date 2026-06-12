@@ -17,6 +17,13 @@
 - **動態貼圖 APNG**：連續影格 → APNG，循環 1–4 次（非無限），auto-fit 到 ≤1MB（多數情況保全影格）。
 - **完整上架包**：`main.png`（動態包為 APNG）、`tab.png`、`01.png…` 序號圖、`.zip`，並逐項驗證 LINE 規格。
 
+## 網頁版（GitHub Pages）
+
+CLI 功能（除 AI 產圖外）已有**純靜態網頁版**：[`web/`](web/)。瀏覽器內完成去背（onnx wasm）、
+切格、fit、描邊、疊字、APNG、打包驗證，圖片不離開裝置；`prompt` 功能變成「產圖 Prompt」分頁，
+接任何外部 AI 產圖工具補上產圖環節。push `master` 後由 GitHub Actions 自動部署
+（Settings → Pages → Source 選 GitHub Actions），詳見 [web/README.md](web/README.md)。
+
 ## 安裝
 
 需 Node.js ≥ 20。AI 產圖由 char-gen skill 透過已登入的 [codex CLI](https://github.com/openai/codex) 完成（吃 codex 自身登入，**不需** OpenAI API key）；只做本機圖片打包則不需 codex。

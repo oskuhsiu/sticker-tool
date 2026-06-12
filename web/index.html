@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>sticker-tool — LINE 貼圖打包工具</title>
+    <!-- coi：用 service worker 補上 COOP/COEP，讓 onnxruntime-web 能用多執行緒 wasm 加速去背。
+         不支援或失敗時自動退回單執行緒，功能不受影響。 -->
+    <script src="./coi-serviceworker.js"></script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./src/main.tsx"></script>
+  </body>
+</html>

@@ -1,0 +1,31 @@
+{
+  "name": "sticker-tool-web",
+  "private": true,
+  "version": "0.1.0",
+  "description": "sticker-tool 的純靜態網頁版（GitHub Pages 可部署）：瀏覽器內去背/切格/fit/疊字/APNG/打包",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "smoke": "node scripts/smoke.mjs"
+  },
+  "dependencies": {
+    "@imgly/background-removal": "1.4.5",
+    "fflate": "^0.8.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "upng-js": "^2.1.0"
+  },
+  "devDependencies": {
+    "@imgly/background-removal-data": "^1.4.5",
+    "@types/react": "^18.3.5",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "playwright": "^1.60.0",
+    "typescript": "^5.6.2",
+    "vite": "^5.4.8",
+    "vite-plugin-static-copy": "^1.0.6"
+  }
+}
