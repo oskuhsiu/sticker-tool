@@ -87,6 +87,7 @@ program
   .option('--frames <n>', '單組圖模式：取前 N 格（預設＝grid 全部）', intArg)
   .option('--duration <sec>', '單組圖模式：總時長秒（覆寫）', floatArg)
   .option('--loops <n>', '循環次數 1–4（覆寫）', intArg)
+  .option('--dump-frames', '單組圖模式：把切出的逐格影格落地成 <out>/<name>_frames/frame_NN.png（除錯/量測用）')
   .option('-o, --out <dir>', '輸出目錄', 'out')
   .option('-c, --count <n>', '覆寫張數（整包 8/16/24）', intArg)
   .option('-n, --name <name>', '輸出檔名（單組圖）/包名（整包）')
@@ -98,6 +99,7 @@ program
       frames: raw.frames,
       duration: raw.duration,
       loops: raw.loops,
+      dumpFrames: raw.dumpFrames,
       out: raw.out,
       count: raw.count,
       name: raw.name,
