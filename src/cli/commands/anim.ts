@@ -42,8 +42,10 @@ export interface AnimOptions {
   duration?: number;
   /** 循環次數 1–4（覆寫） */
   loops?: number;
-  /** 單組圖模式：把切出的逐格影格落地（除錯/量測用） */
+  /** 單組圖模式：把切出的逐格影格（fit 後，與 APNG 一致）落地（除錯/量測用） */
   dumpFrames?: boolean;
+  /** 單組圖模式：把未經 fit 縮放的原始切格落地（除錯/量測用） */
+  dumpCells?: boolean;
 }
 
 function parseGrid(s: string): { cols: number; rows: number } {
@@ -106,6 +108,20 @@ async function runSingleSheet(opts: AnimOptions, outDir: string): Promise<void> 
   log.ok(
     `動畫 APNG：${outPath}  ${proc.info.width}×${proc.info.height}  ${proc.info.frames}格×${proc.info.loops}loop  ${(proc.info.bytes / 1024).toFixed(0)}KB`,
   );
+
+  // --dump-cells：把「未經 fit 縮放」的原始切格（cut.cells，畫布 canvasW×canvasH、已去背）落地
+  if (opts.dumpCells) {
+    const cellsDir = path.join(outDir, `${name}_cells`);
+    await mkdir(cellsDir, { recursive: true });
+    await Promise.all(
+      cut.cells.map((buf, i) =>
+        writeFile(path.join(cellsDir, `cell_${String(i + 1).padStart(2, '0')}.png`), buf),
+      ),
+    );
+    log.info(
+      `原始切格已落地（${cut.cells.length} 格，每格 ${cut.canvasW}×${cut.canvasH}，未 fit 縮放）→ ${cellsDir}/cell_NN.png`,
+    );
+  }
 
   // --dump-frames：把 APNG 內的逐格（已切格＋去背＋fit）落地，方便逐格量測/查鬼影，不必反拆 APNG
   if (opts.dumpFrames) {
