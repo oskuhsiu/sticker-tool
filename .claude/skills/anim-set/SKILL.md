@@ -51,7 +51,7 @@ char-gen（產／建立多視角 master）
 
 - **[REFERENCE]**：使用 `-i` 帶入的角色 turnaround master 為唯一身分基準。
 - **[LOCK]（每張 master 固定）**：臉型／五官比例／髮型髮色／體型／年齡感／畫風與參考圖完全一致；**逐一列出 ① 抽出的 2–4 個 signature features**（這是抗漂移主力，每個動作照抄同一份）；**取 `{view}` 視角、以 `{viewExpressionBase}` 表情當對齊基準**（多視角 master 必寫，否則 codex 不知對齊哪個）。
-- **[TASK]**：填入 `meta.outputContract`（把 `{grid}`、`{frames}` 換成該動作值——含背景優先序、gutter／越格／錨點、執行規則防呆），**結尾硬寫檔名與解析度**：`存成當前工作目錄下的 <id>.png，PNG，每格至少 320px`。
+- **[TASK]**：填入 `meta.outputContract`（把 `{grid}`、`{frames}` 換成該動作值——含背景優先序、gutter／越格／錨點、執行規則防呆；8×2 的整張解析度／每格尺寸已寫在 contract 內），**結尾硬寫檔名**：`存成當前工作目錄下的 <id>.png，PNG`。（解析度別自己硬塞「每格 ≥320px」：8 欄時 codex 寬度上限 ~1920 ÷ 8 ≈ 240px/格，要求 320 反而逼它破壞 2.3:1 外框；切格後 fit 會downscale 到 320×270，240px/格夠用。）
 - **[VARIATION]**：`動作主題＝{nameZh}，{frames} 格{loop ? "循環（終點順接起點）" : ""}，每格明確如下：` 後接逐行 `格N：{storyboard[N-1]}`。
 - **[NEGATIVE]（固定＋專屬）**：不改臉型／髮長／年齡／畫風、不增刪 signature features、不加文字浮水印、不畫背景（留透明）；再加該動作的 `negativeLock[]`。
 
