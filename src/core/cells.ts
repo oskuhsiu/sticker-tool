@@ -292,6 +292,66 @@ function refineSceneAlignment(cells: Uint8Array[], W: number, H: number, skip: b
   return offsets;
 }
 
+const ANCHOR_FRAC = 0.4; // 下半身錨：取每格內容底部 40%（腳腿）的質心當基準
+
+const median = (a: number[]): number => {
+  const s = [...a].sort((x, y) => x - y);
+  return s[s.length >> 1]!;
+};
+
+/**
+ * 主體錨定（下半身）：每格量「下半身質心 X」與「腳底基線 Y」，回傳把各格對齊到中位數所需的
+ * per-cell {dx, dy} 修正。
+ *   X＝內容底部 ANCHOR_FRAC（腳腿）的實心像素質心——釘左右走位（codex 在綠幕格內不保證水平置中）。
+ *   Y＝腳底基線（內容最底 y，地面接觸線）——這是 codex 在綠幕組圖裡保持一致的乾淨訊號
+ *      （同一排內各格腳底實測只差 4–6px）；用質心 Y 會被腿長/腳姿變化帶偏，用腳底基線才釘得準。
+ * 頭部在上方不被錨，「點頭/打瞌睡」這類該有的頭部起伏完整保留。
+ * 注意：Y 對齊腳底＝假設角色站在地面；對「整個人離地跳起」的動作會把離地量壓掉——
+ *   目前動作庫都是站姿（地面接觸固定），跳躍類動作應改走關鍵格+補幀，不適用此錨。
+ */
+function anchorLowerBody(
+  cells: Uint8Array[],
+  W: number,
+  H: number,
+  skip: boolean[],
+): { dx: number[]; dy: number[] } {
+  const n = cells.length;
+  const cx: Array<number | null> = new Array(n).fill(null);
+  const cy: Array<number | null> = new Array(n).fill(null);
+  for (let i = 0; i < n; i++) {
+    if (skip[i]) continue;
+    const c = cells[i]!;
+    let top = H;
+    let bottom = -1;
+    for (let y = 0; y < H; y++) {
+      let any = false;
+      for (let x = 0; x < W; x++) {
+        if (c[(y * W + x) * 4 + 3]! > ALPHA_OPAQUE) { any = true; break; }
+      }
+      if (any) { if (y < top) top = y; bottom = y; }
+    }
+    if (bottom < 0) continue;
+    const yStart = Math.max(top, Math.round(bottom - (bottom - top + 1) * ANCHOR_FRAC));
+    let sx = 0;
+    let cnt = 0;
+    for (let y = yStart; y <= bottom; y++) {
+      for (let x = 0; x < W; x++) {
+        if (c[(y * W + x) * 4 + 3]! > ALPHA_OPAQUE) { sx += x; cnt++; }
+      }
+    }
+    if (cnt) { cx[i] = sx / cnt; cy[i] = bottom; } // X=下半身質心，Y=腳底基線
+  }
+  const validX = cx.filter((v): v is number => v !== null);
+  const validY = cy.filter((v): v is number => v !== null);
+  if (validX.length < 2) return { dx: new Array<number>(n).fill(0), dy: new Array<number>(n).fill(0) };
+  const tx = median(validX);
+  const ty = median(validY);
+  return {
+    dx: cx.map((v) => (v === null ? 0 : Math.round(tx - v))),
+    dy: cy.map((v) => (v === null ? 0 : Math.round(ty - v))),
+  };
+}
+
 export function extractCells(sheet: RGBASheet, opts: ExtractOptions): ExtractedCells {
   const { cols, rows, count, xs, ys, align } = opts;
   const { data, width: W, height: H } = sheet;
@@ -447,6 +507,30 @@ export function extractCells(sheet: RGBASheet, opts: ExtractOptions): ExtractedC
         if (!hasContent(i)) continue;
         dx[i]! -= minDx;
         dy[i]! -= minDy;
+      }
+      computeCanvas();
+    }
+
+    // 主體錨定（下半身 2D）：切出的格皆為去背後的純主體、無靜態背景；場景精修以「中位數場景」
+    // 對齊，主體本身大幅平移時 median 變模糊、對不準（實測 sleep 殘留 ~38px 水平、~12px 垂直漂移）。
+    // 再補一道「下半身質心 X+Y」對齊，把各格腳腿釘在同一位置——X 殺左右走位、Y 殺整身上下浮動；
+    // 頭部在上方不被錨，點頭/瞌睡的頭部起伏完整保留。
+    const { dx: xAdj, dy: yAdj } = anchorLowerBody(assemble(), canvasW, canvasH, skip);
+    if (xAdj.some((a) => a !== 0) || yAdj.some((a) => a !== 0)) {
+      let minDx2 = Infinity;
+      let minDy2 = Infinity;
+      for (let i = 0; i < count; i++) {
+        if (!hasContent(i)) continue;
+        dx[i]! += xAdj[i]!;
+        dy[i]! += yAdj[i]!;
+        sceneShiftMax = Math.max(sceneShiftMax, Math.abs(xAdj[i]!), Math.abs(yAdj[i]!));
+        if (dx[i]! < minDx2) minDx2 = dx[i]!;
+        if (dy[i]! < minDy2) minDy2 = dy[i]!;
+      }
+      for (let i = 0; i < count; i++) {
+        if (!hasContent(i)) continue;
+        dx[i]! -= minDx2;
+        dy[i]! -= minDy2;
       }
       computeCanvas();
     }
