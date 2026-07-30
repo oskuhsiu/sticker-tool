@@ -36,7 +36,10 @@
 - 已完成的 master APNG 會寫入 Project ZIP；重新匯入後由 processMasterApngSticker.ts:112 重編，且刻意以 removeBackground: false 運作。因此正常重新開啟 Project 不需要重新載入影片或模型。
 - COI service worker 已提供 WASM 多執行緒所需的 cross-origin isolation 基礎，但不能證明模型能在特定裝置完成。
 - web/package.json 尚未直接依賴 onnxruntime-web；目前安裝的 1.17.3 只是 IMG.LY 的 transitive dependency。
-- 研究文件確認第三方 Lite export 宣稱固定 512 × 512、fp16 ONNX 約 94 MB、1024 版本曾 OOM；手機實測、確切輸入輸出名稱／normalize 方式與該 export 的授權仍未由本專案驗證。
+- 隔離 browser spike 已確認 fp16 ONNX 的 input 是 float32 input_image [1,3,512,512]、output 是
+  float32 output_image [1,1,512,512] logits；前處理是 RGB ImageNet normalize，output 需 sigmoid
+  後回縮。桌面 headless Chrome WASM 單張 crop 成功，但本 app 的 WebGPU／worker／部署路徑、手機及
+  第三方權重授權仍未驗證。
 
 ### 由現況推論
 
@@ -48,8 +51,8 @@
 ### 尚未驗證，必須是導入 gate
 
 - third-party ONNX 產物的 license、revision、轉檔來源、檔案 SHA-256 與可再現取得方式。
-- 模型 input/output 名稱、tensor shape、RGB preprocessing、logits sigmoid、mask resize 與 alpha 合成方式。
-- WebGPU session 加上實際 warm-up 是否成功；WASM 是否能作為可用 fallback。
+- WebGPU session 加上實際 warm-up 是否成功；雖然 WASM 已在桌面 headless Chrome 跑過單張 crop，
+  它是否能作為完整工作與手機的可用 fallback 仍未知。
 - 3 × 2 黑底影片的文字保存、邊緣色溢、跨幀閃爍、完整 60 crop 耗時與記憶體穩定性。
 - worker 中的 ONNX Runtime WebGPU／WASM session 是否可穩定運作。
 
@@ -64,7 +67,7 @@
 | 所有 web 分頁都改用 BiRefNet | 刪除 | Build、Sheet、Anim 已使用不同 pipeline；此改動會無端影響已運作的使用情境。 |
 | 正式支援手機 | 刪除，待實機矩陣完成再重新提出 | iOS 沒有已確認的 WebGPU 快速路徑，Android 裝置差異尚未量測。 |
 | 模型出錯時自動改色鍵並當作成功 | 刪除 | 色鍵與語意去背結果不同；靜默切換會使使用者誤以為 AI 成功。 |
-| 先做 temporal smoothing、defringe 或模型替換 | 刪除 | 目前連 Lite export 在本 app 的靜態輸出都未驗證；這些是第二層問題。 |
+| 先做 temporal smoothing、defringe 或模型替換 | 刪除 | 已驗證的只有隔離靜態 spike，不是本 app 的影片品質；這些仍是第二層問題。 |
 
 ### Step 2 — 刪除建議
 

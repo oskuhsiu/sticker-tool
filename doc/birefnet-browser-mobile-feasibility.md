@@ -195,6 +195,12 @@ BiRefNet 本質上是圖片模型。官方[影片 notebook](https://github.com/Z
 - 模型卡公開的固定輸入、輸出、模型大小、1024 失敗原因及 512 限制。
 - ONNX Runtime Web 官方文件目前列出的 execution provider／browser 支援狀態。
 - BiRefNet 官方影片範例採逐幀圖片推論。
+- 2026-07-30 的隔離本機 Chrome browser spike：以 fp16 ONNX 建立 WASM session 成功，session 約
+  6.9 秒；兩個 512×512 單張 crop 推論分別約 11.7 秒與 10.1 秒。淺藍底人物與「黑髮／黑描邊
+  疊在不透明黑底」壓力案例都產生了合理 alpha mask；黑髮沒有整片被移除。
+
+這個 spike 只驗證了桌面 headless Chrome 的單張 WASM 推論與靜態視覺結果。它沒有 WebGPU、
+worker、完整影片工作、GitHub Pages 部署、手機或跨幀穩定性的證據。
 
 ### 由上述事實推論
 
@@ -205,12 +211,13 @@ BiRefNet 本質上是圖片模型。官方[影片 notebook](https://github.com/Z
 
 ### 尚未驗證
 
-- 模型在本專案瀏覽器程式中的實際載入與輸出。
 - 任何手機的推論速度、記憶體峰值及穩定性。
 - 目前真實影片的文字保存率與跨幀閃爍程度。
 - BiRefNet Lite 512 對本專案素材是否確實優於 IMG.LY medium。
+- WebGPU、worker 和 production-shaped app path 的實際載入、warm-up 與輸出。
 
-本次評估期間沒有可連線的互動瀏覽器，因此不能把模型作者的成功案例或文件相容性表當成本專案已經跑通的證據。
+因此，本次的 WASM spike 不能把模型作者的成功案例或文件相容性表升格為本專案的桌面 WebGPU、
+GitHub Pages 或手機支援證據。
 
 ## 參考資料
 
