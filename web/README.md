@@ -16,13 +16,15 @@ sticker-tool 的**純靜態網頁版**——CLI 的功能搬進瀏覽器，可�
 ### 影片 → APNG
 
 - 支援目前瀏覽器能解碼的本機 MP4/MOV/WebM；來源影片與圖片一樣不會上傳。
-- 使用者先選可編輯起訖秒數、8/16/24 張網格與 10–60 個 master 取樣點。工具依時間軸逐點
+- 使用者先選可編輯起訖秒數、任意正整數來源格數、固定網格與 10–60 個 master 取樣點。來源格數
+  可以少於 LINE 包規定的 8 張，方便先建立 master／Project；工具依時間軸逐點
   seek，每個來源畫格同時裁給所有格子，再每 10 格 flush 成 lossless master APNG。
+- 影片的單色色鍵預設關閉，避免黑底同時挖掉黑髮、眼睛或文字描邊；只在主體完全不含背景色時開啟。
 - master 建完即釋放影片 decoder。逐張開始/結束秒數、5–20 格、1/2/3/4 秒、loops 與減色
   都從 master APNG 解碼重編，不再回讀影片。
 - 「原切版本」固定不覆寫；「目前版本」保存已套用的調整，並顯示 timestamps、delays、
   不同畫格數、透明/前景 pixels、尺寸與 bytes。
-- LINE ZIP 只含 main/tab/編號 APNG，且 validation error 時停用正式下載。Project ZIP 另含
+- LINE ZIP 仍只接受 8/16/24 張，只含 main/tab/編號 APNG，且 validation error 時停用正式下載。Project ZIP 另含
   master chunks、原切/目前成品、metrics 與 manifest，可重新上傳直接回到已調整狀態。
   Project ZIP 預設不含來源影片，也不處理來源音軌。
 

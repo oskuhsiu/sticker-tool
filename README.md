@@ -190,6 +190,11 @@ count, and color reduction can then be changed without reopening the video. A LI
 chunks, immutable baseline renders, current adjusted renders, metrics, and a versioned manifest; it
 does not contain the source video or audio.
 
+The video source grid may contain any positive number of cells, including fewer than the 8 stickers
+required for a LINE animated pack. Such sources can still produce editable APNGs and a Project ZIP;
+the LINE ZIP validation gate continues to require 8, 16, or 24 stickers. Solid-color keying is off by
+default because a black background may share pixels with hair, eyes, clothing, or text outlines.
+
 ## LINE constraints targeted by the project
 
 | Constraint | Static | Animated |
