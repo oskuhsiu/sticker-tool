@@ -1,7 +1,7 @@
 # sticker-tool web
 
 sticker-tool 的**純靜態網頁版**——CLI 的功能搬進瀏覽器，可直接部署到 GitHub Pages。
-全程在瀏覽器內運算（Canvas + wasm），**圖片不會上傳到任何伺服器**。
+全程在瀏覽器內運算（Canvas + wasm），**圖片與影片不會上傳到任何伺服器**。
 
 ## 功能（對應 CLI 指令）
 
@@ -10,7 +10,21 @@ sticker-tool 的**純靜態網頁版**——CLI 的功能搬進瀏覽器，可�
 | 本機圖片打包 | `build` | 多張圖 → 去背 → fit → 描邊 → ≤1MB → main/tab → zip |
 | 組圖切格 | `gen` | 組圖（透明/綠幕/不透明底）→ 偵測背景 → 去背 → gutter 切格 → 校正 → 靜態包 |
 | 動態 APNG | `anim` | 單組圖 → 一段 APNG；或整包（每貼圖一組影格）→ 動態上架包 |
+| 影片 → APNG | —（Web only） | 固定格線影片 → master APNG → 逐張調整 → LINE ZIP / Project ZIP |
 | 產圖 Prompt | `prompt` | 產生餵外部 AI 工具的組圖 prompt（靜態 + 動態影格） |
+
+### 影片 → APNG
+
+- 支援目前瀏覽器能解碼的本機 MP4/MOV/WebM；來源影片與圖片一樣不會上傳。
+- 使用者先選可編輯起訖秒數、8/16/24 張網格與 10–60 個 master 取樣點。工具依時間軸逐點
+  seek，每個來源畫格同時裁給所有格子，再每 10 格 flush 成 lossless master APNG。
+- master 建完即釋放影片 decoder。逐張開始/結束秒數、5–20 格、1/2/3/4 秒、loops 與減色
+  都從 master APNG 解碼重編，不再回讀影片。
+- 「原切版本」固定不覆寫；「目前版本」保存已套用的調整，並顯示 timestamps、delays、
+  不同畫格數、透明/前景 pixels、尺寸與 bytes。
+- LINE ZIP 只含 main/tab/編號 APNG，且 validation error 時停用正式下載。Project ZIP 另含
+  master chunks、原切/目前成品、metrics 與 manifest，可重新上傳直接回到已調整狀態。
+  Project ZIP 預設不含來源影片，也不處理來源音軌。
 
 ### 動態 APNG（單組圖模式）的選項
 
@@ -49,8 +63,10 @@ CLI 的 `init` 不需要（網頁表單即設定檔）；AI 產圖不內建（ch
 npm install
 npm run dev        # 開發伺服器
 npm run build      # typecheck + build → dist/
+npm run test:video # Project ZIP encode/export/import/decode round-trip
 npm run preview    # 本機 serve dist/
 npm run smoke      # 端到端冒煙測試（需先 preview；用法見 scripts/smoke.mjs 開頭）
+npm run smoke:video -- http://127.0.0.1:4179/ # 需 ffmpeg；影片 workflow E2E
 ```
 
 ## 部署到 GitHub Pages

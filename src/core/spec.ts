@@ -45,6 +45,8 @@ export const ANIMATED_SPEC = {
   maxFrames: 20,
   /** 總播放長度上限（秒）：loops × 單輪時長 ≤ 4s */
   maxDurationSec: 4,
+  /** LINE accepts only these per-loop playback durations. */
+  playbackDurationsSec: [1, 2, 3, 4] as const,
   /** 循環次數下限（LINE 不接受無限循環/0） */
   minLoops: 1,
   /** 循環次數上限 */

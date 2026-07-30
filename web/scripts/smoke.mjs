@@ -126,7 +126,10 @@ try {
   await page.goto(BASE, { waitUntil: 'load' });
   await page.waitForTimeout(800); // 容 COI service worker 註冊/可能的一次重載
   await page.waitForSelector('text=本機圖片打包');
-  results.push('✓ 頁面載入、四分頁渲染');
+  await page.waitForSelector('.tabs >> text=影片 → APNG');
+  const tabCount = await page.locator('.tabs .tab').count();
+  if (tabCount !== 5) throw new Error(`應渲染 5 個獨立分頁，實際 ${tabCount}`);
+  results.push('✓ 頁面載入、五分頁渲染（影片 workflow 獨立）');
 
   // --- 1) 本機圖片打包（關去背：不動 onnx 模型，驗證其餘整條管線） ---
   await page.click('.tabs >> text=本機圖片打包');

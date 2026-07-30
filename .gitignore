@@ -24,3 +24,10 @@ web/_mobile/
 
 # Claude Code 執行期暫存
 .claude/scheduled_tasks.lock
+
+# Agent session handoff
+handoff.md
+
+# Local agent context
+AGENTS.md
+ARCHITECTURE.md

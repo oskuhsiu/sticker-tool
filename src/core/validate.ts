@@ -28,6 +28,14 @@ export interface ImageInfo {
   frames?: number;
   /** 動態：循環次數（acTL num_plays；0 = 無限） */
   loops?: number;
+  /** 動態：解碼後單輪總長（ms）。提供時必須精確為 1/2/3/4 秒。 */
+  durationMs?: number;
+  /** 解碼後不同視覺畫格數；提供時至少為 2。 */
+  distinctFrames?: number;
+  /** 解碼後所有畫格的透明像素總數。 */
+  transparentPixels?: number;
+  /** 解碼後所有畫格的非透明前景像素總數。 */
+  foregroundPixels?: number;
 }
 
 function err(code: string, message: string, target?: string): ValidationIssue {
@@ -119,6 +127,18 @@ export function validateAnimatedImage(info: ImageInfo, target?: string): Validat
   if (!isEven(info.width) || !isEven(info.height)) {
     issues.push(err('anim.even', `長寬須為偶數，收到 ${info.width}×${info.height}`, target));
   }
+  if (!info.hasAlpha) {
+    issues.push(err('anim.alpha', '動態貼圖須有透明 alpha 通道', target));
+  }
+  if (info.transparentPixels !== undefined && info.transparentPixels < 1) {
+    issues.push(err('anim.transparentPixels', '動態貼圖沒有任何透明像素，背景可能尚未去除', target));
+  }
+  if (info.foregroundPixels !== undefined && info.foregroundPixels < 1) {
+    issues.push(err('anim.empty', '動態貼圖所有畫格皆為空白', target));
+  }
+  if (info.distinctFrames !== undefined && info.distinctFrames < 2) {
+    issues.push(err('anim.identical', '動態貼圖至少需要兩個不同的視覺畫格', target));
+  }
   if (info.frames !== undefined) {
     if (info.frames < ANIMATED_SPEC.minFrames || info.frames > ANIMATED_SPEC.maxFrames) {
       issues.push(
@@ -136,6 +156,20 @@ export function validateAnimatedImage(info: ImageInfo, target?: string): Validat
         err(
           'anim.loops',
           `循環次數須為 ${ANIMATED_SPEC.minLoops}–${ANIMATED_SPEC.maxLoops}（不可無限循環），收到 ${info.loops}`,
+          target,
+        ),
+      );
+    }
+  }
+  if (info.durationMs !== undefined) {
+    const allowedMs = ANIMATED_SPEC.playbackDurationsSec.map((seconds) => seconds * 1000);
+    if (!allowedMs.includes(info.durationMs)) {
+      issues.push(err('anim.duration', `單輪播放時間須為 1000/2000/3000/4000ms，收到 ${info.durationMs}ms`, target));
+    } else if (info.loops !== undefined && info.durationMs * info.loops > ANIMATED_SPEC.maxDurationSec * 1000) {
+      issues.push(
+        err(
+          'anim.totalDuration',
+          `單輪 ${info.durationMs}ms × ${info.loops} loops 超過總播放 ${ANIMATED_SPEC.maxDurationSec} 秒`,
           target,
         ),
       );

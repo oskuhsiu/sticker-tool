@@ -8,8 +8,10 @@
     "dev": "vite",
     "typecheck": "tsc --noEmit",
     "build": "tsc --noEmit && vite build",
+    "test:video": "../node_modules/.bin/tsx --tsconfig tsconfig.json scripts/video-project-roundtrip.mts",
     "preview": "vite preview",
-    "smoke": "node scripts/smoke.mjs"
+    "smoke": "node scripts/smoke.mjs",
+    "smoke:video": "node scripts/video-smoke.mjs"
   },
   "dependencies": {
     "@imgly/background-removal": "1.4.5",

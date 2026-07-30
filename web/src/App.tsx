@@ -1,5 +1,5 @@
 /**
- * sticker-tool web：四個分頁對應 CLI 的 build / gen / anim / prompt。
+ * sticker-tool web：既有四個 CLI workflow，加上獨立的影片轉 APNG 專案流程。
  * （init 不需要——網頁表單即設定檔；AI 產圖不內建——用 Prompt 分頁接外部工具。）
  */
 
@@ -8,11 +8,13 @@ import { BuildTab } from './ui/BuildTab.jsx';
 import { SheetTab } from './ui/SheetTab.jsx';
 import { AnimTab } from './ui/AnimTab.jsx';
 import { PromptTab } from './ui/PromptTab.jsx';
+import { VideoTab } from './ui/VideoTab.jsx';
 
 const TABS = [
   { key: 'build', label: '本機圖片打包', el: <BuildTab /> },
   { key: 'sheet', label: '組圖切格', el: <SheetTab /> },
   { key: 'anim', label: '動態 APNG', el: <AnimTab /> },
+  { key: 'video', label: '影片 → APNG', el: <VideoTab /> },
   { key: 'prompt', label: '產圖 Prompt', el: <PromptTab /> },
 ] as const;
 

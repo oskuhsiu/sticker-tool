@@ -32,6 +32,10 @@ export interface ProcessedAnimated {
   notes: string[];
   /** fit 後對齊的影格（供產動態 main.png 用） */
   fittedFrames: Raster[];
+  /** 最終 APNG 相對於輸入 fitted sequence 實際採用的索引。 */
+  usedFrameIndices: number[];
+  /** 最終 APNG 每格的整數毫秒延遲。 */
+  frameDelaysMs: number[];
 }
 
 const DEFAULT_BOUNDS: Bounds = { width: ANIMATED_SPEC.maxWidth, height: ANIMATED_SPEC.maxHeight };
@@ -121,5 +125,12 @@ export async function processAnimated(
     frames: apngInfo.frames,
     loops: apngInfo.loops,
   };
-  return { png: fit.png, info, notes, fittedFrames: fitted };
+  return {
+    png: fit.png,
+    info,
+    notes,
+    fittedFrames: fit.usedFrameIndices.map((index) => fitted[index]!),
+    usedFrameIndices: fit.usedFrameIndices,
+    frameDelaysMs: fit.delaysMs,
+  };
 }
