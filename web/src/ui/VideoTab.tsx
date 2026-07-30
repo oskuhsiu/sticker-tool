@@ -5,7 +5,7 @@ import {
   planVideoGrid,
   type VideoGridPlan,
 } from '@core/videoCrop.js';
-import { validateCount, validatePack } from '@core/validate.js';
+import { validatePack } from '@core/validate.js';
 import { decodeApngFrames } from '../webpipe/apng.js';
 import { buildAnimatedMain, buildTab } from '../webpipe/mainTab.js';
 import {
@@ -59,12 +59,6 @@ function seconds(ms: number): number {
 
 function milliseconds(sec: number): number {
   return Math.round(sec * 1000);
-}
-
-function defaultGrid(count: number): { cols: number; rows: number } {
-  if (count === 16) return { cols: 4, rows: 4 };
-  if (count === 24) return { cols: 6, rows: 4 };
-  return { cols: 4, rows: 2 };
 }
 
 function hexToRgb(hex: string): [number, number, number] | null {
@@ -286,7 +280,7 @@ export function VideoTab() {
   const [editableStartSec, setEditableStartSec] = useState(0);
   const [editableEndSec, setEditableEndSec] = useState(4);
   const [masterFrames, setMasterFrames] = useState(30);
-  const [autoRemoveBackground, setAutoRemoveBackground] = useState(true);
+  const [autoRemoveBackground, setAutoRemoveBackground] = useState(false);
   const [usePickColor, setUsePickColor] = useState(false);
   const [pickColor, setPickColor] = useState('#00ff00');
   const [name, setName] = useState('Video Animated Stickers');
@@ -317,6 +311,8 @@ export function VideoTab() {
     setProject(null);
     setLinePack(null);
     setPreviewPng(null);
+    setAutoRemoveBackground(false);
+    setUsePickColor(false);
     sourceRef.current?.dispose();
     sourceRef.current = null;
     const abort = new AbortController();
@@ -346,11 +342,6 @@ export function VideoTab() {
     const source = sourceRef.current;
     if (!source || !metadata || !gridPlan) {
       logger.log('err', '請先上傳可解碼的影片並設定有效網格');
-      return;
-    }
-    const countValidation = validateCount('animated', count);
-    if (!countValidation.ok) {
-      logger.log('err', countValidation.issues[0]?.message ?? '貼圖張數不合法');
       return;
     }
     const startMs = milliseconds(editableStartSec);
@@ -627,22 +618,23 @@ export function VideoTab() {
           <p className="tab-desc">
             {metadata.fileName} · {metadata.width}×{metadata.height} · {seconds(metadata.durationMs)} 秒。
             瀏覽器會依下列時間點逐格擷取；不是估算影片原生 FPS，也不會默默降低你設定的 master 格數。
+            來源格數只控制裁切與 Project，可少於 8；LINE ZIP 仍只接受 8、16 或 24 張。
           </p>
           <Row>
-            <Field label="貼圖張數">
-              <select
+            <Field label="來源貼圖格數">
+              <input
+                type="number"
+                min={1}
+                max={cols * rows}
                 value={count}
                 onChange={(event) => {
                   const value = Number(event.target.value);
-                  const grid = defaultGrid(value);
                   setCount(value);
-                  setCols(grid.cols);
-                  setRows(grid.rows);
-                  setCover(Math.min(cover, value));
+                  if (Number.isInteger(value) && value > 0) {
+                    setCover(Math.min(Math.max(1, cover), value));
+                  }
                 }}
-              >
-                {ANIMATED_SPEC.counts.map((value) => <option key={value} value={value}>{value}</option>)}
-              </select>
+              />
             </Field>
             <Field label="欄">
               <input type="number" min={1} max={12} value={cols} onChange={(event) => setCols(Number(event.target.value))} />
@@ -669,7 +661,7 @@ export function VideoTab() {
             <Field label="封面第幾張">
               <input type="number" min={1} max={count} value={cover} onChange={(event) => setCover(Number(event.target.value))} />
             </Field>
-            <Field label="色鍵去背">
+            <Field label="單色色鍵去背">
               <input type="checkbox" checked={autoRemoveBackground} onChange={(event) => setAutoRemoveBackground(event.target.checked)} />
             </Field>
             {autoRemoveBackground && (
@@ -681,6 +673,9 @@ export function VideoTab() {
               </>
             )}
           </Row>
+          <p className="tab-desc">
+            單色色鍵預設關閉；它只適合主體完全不含背景色的素材。黑底影片若含黑髮、眼睛或文字描邊，請保持關閉。
+          </p>
           {!gridPlan && <div className="video-inline-error">網格容量不足、數值無效，或網格大於影片尺寸。</div>}
           {previewPng && gridPlan && <GridPreview png={previewPng} grid={gridPlan} />}
           <div className="run-row">

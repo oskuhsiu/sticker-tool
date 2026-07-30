@@ -76,10 +76,34 @@ try {
   await page.click('.tabs >> text=影片 → APNG');
   await page.setInputFiles('[data-tab="video"] input[type=file][accept^="video"]', videoPath);
   await page.waitForSelector('[data-tab="video"] >> text=建立可編輯 master APNG', { timeout: 30_000 });
-  await page.selectOption('[data-tab="video"] select >> nth=1', '10');
+  const keyCheckbox = page.getByLabel('單色色鍵去背');
+  if (await keyCheckbox.isChecked()) throw new Error('影片單色色鍵去背應預設關閉');
+  await page.getByLabel('來源貼圖格數').fill('6');
+  await page.getByLabel('欄').fill('3');
+  await page.getByLabel('列').fill('2');
+  await page.getByLabel('master 取樣格數').selectOption('10');
   await page.click('[data-tab="video"] >> text=切影片並建立 master / 原切版本');
   await page.waitForSelector('[data-tab="video"] >> text=APNG 調整模式', { timeout: 180_000 });
-  const previews = await page.locator('[data-tab="video"] .video-compare-grid img').count();
+  let previews = await page.locator('[data-tab="video"] .video-compare-grid img').count();
+  if (previews !== 12) throw new Error(`6 格來源的原切/current 預覽應有 12 張，實際 ${previews}`);
+  results.push('✓ 來源格數可低於 LINE 下限：3×2 → 6 組 master/baseline/current');
+
+  await page.click('[data-tab="video"] >> text=建立 LINE 上架包');
+  await page.waitForSelector('[data-tab="video"] >> text=animated 貼圖張數須為 8/16/24，收到 6', { timeout: 120_000 });
+  const invalidLineButton = page.getByRole('button', { name: /下載 LINE ZIP/ });
+  if (await invalidLineButton.isEnabled()) throw new Error('6 張來源不應啟用 LINE ZIP 下載');
+  results.push('✓ 6 張 Project 可編輯，但 LINE ZIP validation gate 仍拒絕');
+
+  await page.setInputFiles('[data-tab="video"] input[type=file][accept^="video"]', videoPath);
+  await page.waitForSelector('[data-tab="video"] >> text=建立可編輯 master APNG', { timeout: 30_000 });
+  await page.getByLabel('來源貼圖格數').fill('8');
+  await page.getByLabel('欄').fill('4');
+  await page.getByLabel('列').fill('2');
+  await page.getByLabel('master 取樣格數').selectOption('10');
+  await page.getByLabel('單色色鍵去背').check();
+  await page.click('[data-tab="video"] >> text=切影片並建立 master / 原切版本');
+  await page.waitForSelector('[data-tab="video"] >> text=APNG 調整模式', { timeout: 180_000 });
+  previews = await page.locator('[data-tab="video"] .video-compare-grid img').count();
   if (previews !== 16) throw new Error(`原切/current 預覽應有 16 張，實際 ${previews}`);
   results.push('✓ MP4 逐時間點解碼 → 4×2 裁切 → 8 組 master/baseline/current');
 
