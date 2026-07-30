@@ -497,6 +497,55 @@ textarea {
   font-size: 0.84rem;
   margin: 0.35rem 0;
 }
+.ai-warning-option {
+  gap: 0.35rem;
+}
+.ai-warning-option-status {
+  color: var(--warn);
+  font-size: 0.82rem;
+}
+.ai-warning-backdrop {
+  position: fixed;
+  z-index: 20;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgb(0 0 0 / 55%);
+}
+.ai-warning-dialog {
+  width: min(100%, 34rem);
+  max-height: calc(100dvh - 2rem);
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 1rem;
+  background: var(--card);
+  box-shadow: 0 18px 48px rgb(0 0 0 / 35%);
+}
+.ai-warning-dialog h3 {
+  margin: 0 0 0.7rem;
+}
+.ai-warning-dialog p {
+  margin: 0.7rem 0;
+  line-height: 1.55;
+}
+.ai-warning-mobile {
+  border: 1px solid var(--warn);
+  border-radius: 8px;
+  padding: 0.65rem;
+}
+.ai-warning-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.6rem;
+  margin-top: 1rem;
+}
+.ai-warning-dialog :focus-visible,
+.ai-warning-option :focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
 .video-compare-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));

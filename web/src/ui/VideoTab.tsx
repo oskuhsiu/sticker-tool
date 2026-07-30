@@ -30,6 +30,7 @@ import {
   type VideoMetadata,
 } from '../webpipe/videoSource.js';
 import { Field, LogPane, PngPreview, Row, ValidationView, kb, useLogger } from './common.jsx';
+import { currentDeviceHint } from './deviceHints.js';
 import { makeAnimation } from './defaults.js';
 
 interface VideoProjectState {
@@ -290,11 +291,51 @@ export function VideoTab() {
   const [busy, setBusy] = useState(false);
   const [renderIndex, setRenderIndex] = useState<number | null>(null);
   const [progress, setProgress] = useState('');
+  const [aiWarningOpen, setAiWarningOpen] = useState(false);
+  const aiWarningTriggerRef = useRef<HTMLButtonElement>(null);
+  const aiWarningDialogRef = useRef<HTMLDivElement>(null);
+  const aiWarningCloseRef = useRef<HTMLButtonElement>(null);
+  const mobileOrTablet = useMemo(() => currentDeviceHint() !== 'unknown', []);
 
   useEffect(() => () => {
     abortRef.current?.abort();
     sourceRef.current?.dispose();
   }, []);
+
+  useEffect(() => {
+    if (!aiWarningOpen) return;
+    const dialog = aiWarningDialogRef.current;
+    const focusFrame = window.requestAnimationFrame(() => aiWarningCloseRef.current?.focus());
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setAiWarningOpen(false);
+        return;
+      }
+      if (event.key !== 'Tab' || !dialog) return;
+      const focusable = Array.from(dialog.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      ));
+      if (focusable.length === 0) {
+        event.preventDefault();
+        return;
+      }
+      const currentIndex = focusable.indexOf(document.activeElement as HTMLElement);
+      if (event.shiftKey && currentIndex <= 0) {
+        event.preventDefault();
+        focusable[focusable.length - 1]!.focus();
+      } else if (!event.shiftKey && currentIndex === focusable.length - 1) {
+        event.preventDefault();
+        focusable[0]!.focus();
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.cancelAnimationFrame(focusFrame);
+      document.removeEventListener('keydown', handleKeyDown);
+      aiWarningTriggerRef.current?.focus();
+    };
+  }, [aiWarningOpen]);
 
   const gridPlan = useMemo(() => {
     if (!metadata) return null;
@@ -672,6 +713,21 @@ export function VideoTab() {
                 {usePickColor && <input type="color" value={pickColor} onChange={(event) => setPickColor(event.target.value)} />}
               </>
             )}
+            <div className="field ai-warning-option">
+              <span className="field-label">AI 去背（實驗資訊）</span>
+              <button
+                ref={aiWarningTriggerRef}
+                type="button"
+                className="btn small"
+                disabled={busy}
+                aria-haspopup="dialog"
+                aria-expanded={aiWarningOpen}
+                onClick={() => setAiWarningOpen(true)}
+              >
+                查看目前限制
+              </button>
+              <span className="ai-warning-option-status">尚未整合</span>
+            </div>
           </Row>
           <p className="tab-desc">
             單色色鍵預設關閉；它只適合主體完全不含背景色的素材。黑底影片若含黑髮、眼睛或文字描邊，請保持關閉。
@@ -760,6 +816,53 @@ export function VideoTab() {
           <h3>3. 原切版本 / 目前版本</h3>
           <CompareGrid baseline={project.baseline} current={project.current} />
         </>
+      )}
+      {aiWarningOpen && (
+        <div
+          className="ai-warning-backdrop"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setAiWarningOpen(false);
+          }}
+        >
+          <div
+            ref={aiWarningDialogRef}
+            className="ai-warning-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="ai-warning-title"
+            aria-describedby="ai-warning-description"
+          >
+            <h3 id="ai-warning-title">AI 去背：目前限制</h3>
+            <div id="ai-warning-description">
+              <p>
+                BiRefNet 的 browser spike 已能產生去背遮罩，但這個版本尚未把模型、worker 與影片裁切流程正式整合。
+                因此現在不會偷偷改跑單色色鍵，也不會把它標成可用功能。
+              </p>
+              <p>
+                已觀察的桌面 WASM 單張 512×512 crop 約需 10–12 秒；首次使用還要下載約 94 MB 的模型。
+                真正影片會對每一格、每一個時間點各跑一次，並不適合即時處理。
+              </p>
+              {mobileOrTablet && (
+                <p className="ai-warning-mobile">
+                  行動裝置提醒：這類工作可能很久、耗電，或因記憶體不足而停止；目前尚未完成手機實測，建議使用桌面版 Chrome／Edge。
+                </p>
+              )}
+              <p>
+                目前可用的背景選項仍是「不去背」與「單色色鍵去背」。模型整合完成後，這裡會改為需要明確確認的啟用步驟。
+              </p>
+            </div>
+            <div className="ai-warning-actions">
+              <button
+                ref={aiWarningCloseRef}
+                type="button"
+                className="btn primary"
+                onClick={() => setAiWarningOpen(false)}
+              >
+                知道了
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </section>
   );
