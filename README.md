@@ -5,7 +5,7 @@
 It provides two execution surfaces:
 
 - A Node.js CLI for deterministic image processing, APNG encoding, validation, and ZIP packaging.
-- A static React web app that performs the work in the browser without uploading user images.
+- A static React web app that processes locally by default and can explicitly send individual video crops to a temporary BiRefNet session started by the user in Google Colab.
 
 AI image generation is intentionally outside the application. Use any image generator, the prompt builder, or the project-local skills under `.claude/skills/`, then give the resulting images to the CLI or web app.
 
@@ -22,6 +22,7 @@ AI image generation is intentionally outside the application. Use any image gene
 - `main.png`, `tab.png`, numbered sticker files, ZIP packaging, and shared metadata-based LINE checks.
 - Browser-side previews, downloads, grid mismatch warnings, and manual animation alignment.
 - Prompt generation for static sticker sheets and animation frame sheets.
+- A standalone Colab + BiRefNet tutorial with a downloadable Notebook, an astronaut benchmark, and CPU/GPU/model choices.
 
 ## Requirements
 
@@ -180,7 +181,13 @@ npm run preview
 
 The GitHub Pages workflow builds and deploys the site on pushes to either `main` or `master`. See [web/README.md](web/README.md) for browser-specific behavior and smoke-test instructions.
 
-The web app processes image and video pixels locally. Its general photo background-removal path uses a self-hosted browser model downloaded from the deployed site and cached by the browser. Sprite-sheet, single-sheet animation, and video workflows use deterministic transparent/green/solid-color keying instead of that model.
+The web app processes image and video pixels locally by default. Its general photo background-removal path uses a self-hosted browser model downloaded from the deployed site and cached by the browser. Sprite-sheet and single-sheet animation workflows use deterministic transparent/green/solid-color keying instead of that model.
+
+The independent `#/colab-birefnet` guide provides a downloadable [Colab Notebook](examples/colab/sticker-tool-birefnet-colab.ipynb). Users choose BiRefNet lite, full, or dynamic and `auto`/GPU/CPU. Lite/full use a selected 512 or 1024 square input; dynamic treats that choice as a maximum edge, does not upscale smaller crops, preserves aspect ratio, and rounds both dimensions down to multiples of 32. Before any user material is sent, the Notebook runs an included `skimage.data.astronaut()` benchmark and shows the source, mask, transparent result, actual inference size, model load time, and seconds per crop. If the result is acceptable, the last cell starts a temporary FastAPI endpoint through a Cloudflare Quick Tunnel.
+
+Current Colab images may preinstall Google ADK, Gradio, and FastHTML versions whose FastAPI, Starlette, and Hugging Face Hub requirements conflict with the pinned BiRefNet environment. The Notebook removes those three unused packages before installing its fixed dependencies. This affects only the disposable runtime and does not remove any package from the user's account or Drive.
+
+The optional Video → APNG Colab branch sends one already-cropped PNG at a time to that temporary endpoint, receives a bounded grayscale mask, and applies alpha locally. The original video, audio, complete source frame, downloads, and Project ZIP never leave the browser. The rotating `*.trycloudflare.com/remove` URL and random session key stay only in current React memory. Colab and Quick Tunnel runtimes are temporary and unguaranteed; restarting either requires a new connection.
 
 The **Video → APNG** tab accepts a browser-decodable local video such as MP4, MOV, or WebM. It samples
 an explicit editable time window, applies one stable grid to every sampled frame, and writes bounded
@@ -194,6 +201,11 @@ The video source grid may contain any positive number of cells, including fewer 
 required for a LINE animated pack. Such sources can still produce editable APNGs and a Project ZIP;
 the LINE ZIP validation gate continues to require 8, 16, or 24 stickers. Solid-color keying is off by
 default because a black background may share pixels with hair, eyes, clothing, or text outlines.
+Colab BiRefNet is also off by default and requires an explicit confirmation. The UI reports
+`sample timestamps × grid cells` as the approximate number of sequential remote inferences so users
+can multiply it by the Notebook benchmark before starting a large job. Master sampling defaults to
+20 frames, matching LINE Creators App's High smoothness setting; higher master counts remain available
+for finer timeline editing while final LINE APNG output is always constrained to 5–20 frames.
 
 ## LINE constraints targeted by the project
 
@@ -222,6 +234,7 @@ src/cli/        Command-line entry point and commands
 web/src/ui/     React workflow tabs and result views
 web/src/webpipe Browser image-processing adapters
 web/src/ui/VideoTab.tsx Browser-only video-to-APNG project workflow
+examples/colab/ Downloadable Colab Notebook and its reproducible generator
 .claude/skills/ Project-local generation and packaging workflows
 ```
 

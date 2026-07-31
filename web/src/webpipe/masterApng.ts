@@ -36,6 +36,13 @@ export interface MasterApngSet {
   stickers: MasterApngSticker[];
 }
 
+/**
+ * Optional remote/background model hook.  It is deliberately applied after a
+ * cell is cropped, so a video source and its unrelated cells never leave the
+ * browser as one full frame.
+ */
+export type CropBackgroundRemover = (input: Raster, signal?: AbortSignal) => Promise<Raster>;
+
 function sourceDelays(timestampsMs: number[]): number[] {
   if (timestampsMs.length === 1) return [100];
   return timestampsMs.map((timestamp, index) => {
@@ -50,9 +57,11 @@ export async function buildMasterApngSet(args: {
   timestampsMs: number[];
   autoRemoveBackground: boolean;
   pickColor?: [number, number, number] | null;
+  removeCropBackground?: CropBackgroundRemover;
   chunkFrames?: number;
   signal?: AbortSignal;
   onProgress?: (completed: number, total: number) => void;
+  onRemovalProgress?: (completed: number, total: number) => void;
 }): Promise<MasterApngSet> {
   const chunkFrames = Math.max(2, Math.min(20, Math.round(args.chunkFrames ?? 10)));
   if (args.timestampsMs.length < 5) throw new Error('master APNG 至少需要 5 個來源時間點');
@@ -70,6 +79,8 @@ export async function buildMasterApngSet(args: {
   const pending = stickers.map(() => [] as Raster[]);
   let background: ReturnType<typeof detectBackground> | null = null;
   let chunkStart = 0;
+  let removedCrops = 0;
+  const totalCrops = args.timestampsMs.length * stickers.length;
 
   const flush = () => {
     if (pending[0]?.length === 0) return;
@@ -99,15 +110,23 @@ export async function buildMasterApngSet(args: {
   for (let frameIndex = 0; frameIndex < args.timestampsMs.length; frameIndex++) {
     if (args.signal?.aborted) throw new DOMException('影片處理已取消', 'AbortError');
     const sourceFrame = await args.source.frameAt(args.timestampsMs[frameIndex]!, args.signal);
-    if (!background) background = detectBackground(sourceFrame);
-    const keyed = keyBackground(sourceFrame, background, {
-      autoRemove: args.autoRemoveBackground,
-      pickColor: args.pickColor,
-    });
+    let keyed = sourceFrame;
+    if (!args.removeCropBackground) {
+      if (!background) background = detectBackground(sourceFrame);
+      keyed = keyBackground(sourceFrame, background, {
+        autoRemove: args.autoRemoveBackground,
+        pickColor: args.pickColor,
+      });
+    }
     for (let stickerIndex = 0; stickerIndex < stickers.length; stickerIndex++) {
       const rect = args.grid.rects[stickerIndex]!;
       const sticker = stickers[stickerIndex]!;
-      const cropped = cropRaster(keyed, rect.left, rect.top, rect.width, rect.height);
+      let cropped = cropRaster(keyed, rect.left, rect.top, rect.width, rect.height);
+      if (args.removeCropBackground) {
+        cropped = await args.removeCropBackground(cropped, args.signal);
+        removedCrops++;
+        args.onRemovalProgress?.(removedCrops, totalCrops);
+      }
       pending[stickerIndex]!.push(resizeRaster(cropped, sticker.width, sticker.height));
     }
     args.onProgress?.(frameIndex + 1, args.timestampsMs.length);

@@ -29,7 +29,12 @@ import {
   type BrowserVideoSource,
   type VideoMetadata,
 } from '../webpipe/videoSource.js';
+import {
+  colabBirefnetEndpointHost,
+  removeBackgroundWithColabBirefnet,
+} from '../webpipe/colabBirefnet.js';
 import { Field, LogPane, PngPreview, Row, ValidationView, kb, useLogger } from './common.jsx';
+import { useColabBirefnetConnection } from './colabBirefnetConnection.jsx';
 import { currentDeviceHint } from './deviceHints.js';
 import { makeAnimation } from './defaults.js';
 
@@ -53,6 +58,8 @@ interface LinePackState {
   tab: Uint8Array;
   validation: ReturnType<typeof validatePack>;
 }
+
+type VideoBackgroundRemovalMode = 'none' | 'color-key' | 'colab-birefnet';
 
 function seconds(ms: number): number {
   return Math.round(ms / 100) / 10;
@@ -272,7 +279,10 @@ export function VideoTab() {
   const sourceRef = useRef<BrowserVideoSource | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const logger = useLogger();
-
+  const {
+    connection: colabBirefnetConnection,
+    registerActiveRemoval,
+  } = useColabBirefnetConnection();
   const [metadata, setMetadata] = useState<VideoMetadata | null>(null);
   const [previewPng, setPreviewPng] = useState<Uint8Array | null>(null);
   const [count, setCount] = useState(8);
@@ -280,8 +290,8 @@ export function VideoTab() {
   const [rows, setRows] = useState(2);
   const [editableStartSec, setEditableStartSec] = useState(0);
   const [editableEndSec, setEditableEndSec] = useState(4);
-  const [masterFrames, setMasterFrames] = useState(30);
-  const [autoRemoveBackground, setAutoRemoveBackground] = useState(false);
+  const [masterFrames, setMasterFrames] = useState<number>(ANIMATED_SPEC.maxFrames);
+  const [backgroundRemovalMode, setBackgroundRemovalMode] = useState<VideoBackgroundRemovalMode>('none');
   const [usePickColor, setUsePickColor] = useState(false);
   const [pickColor, setPickColor] = useState('#00ff00');
   const [name, setName] = useState('Video Animated Stickers');
@@ -296,7 +306,6 @@ export function VideoTab() {
   const aiWarningDialogRef = useRef<HTMLDivElement>(null);
   const aiWarningCloseRef = useRef<HTMLButtonElement>(null);
   const mobileOrTablet = useMemo(() => currentDeviceHint() !== 'unknown', []);
-
   useEffect(() => () => {
     abortRef.current?.abort();
     sourceRef.current?.dispose();
@@ -352,7 +361,7 @@ export function VideoTab() {
     setProject(null);
     setLinePack(null);
     setPreviewPng(null);
-    setAutoRemoveBackground(false);
+    setBackgroundRemovalMode('none');
     setUsePickColor(false);
     sourceRef.current?.dispose();
     sourceRef.current = null;
@@ -374,6 +383,7 @@ export function VideoTab() {
     } catch (error) {
       logger.log('err', error instanceof Error ? error.message : String(error));
     } finally {
+      if (abortRef.current === abort) abortRef.current = null;
       setBusy(false);
       setProgress('');
     }
@@ -383,6 +393,13 @@ export function VideoTab() {
     const source = sourceRef.current;
     if (!source || !metadata || !gridPlan) {
       logger.log('err', '請先上傳可解碼的影片並設定有效網格');
+      return;
+    }
+    const colabConfig = backgroundRemovalMode === 'colab-birefnet'
+      ? colabBirefnetConnection?.config
+      : null;
+    if (backgroundRemovalMode === 'colab-birefnet' && !colabConfig) {
+      logger.log('err', 'Colab BiRefNet 尚未設定；請先開啟「Colab + BiRefNet 教學」並貼入目前 runtime 的 endpoint 與 session key');
       return;
     }
     const startMs = milliseconds(editableStartSec);
@@ -404,20 +421,33 @@ export function VideoTab() {
     setLinePack(null);
     const abort = new AbortController();
     abortRef.current = abort;
+    const unregisterActiveRemoval = colabConfig ? registerActiveRemoval(abort) : null;
     try {
       logger.log(
         'step',
-        `逐時間點解碼 ${timestampsMs.length} 格；每格同時裁成 ${count} 張，並每 10 格寫入 master APNG…`,
+        colabConfig
+          ? `逐時間點解碼 ${timestampsMs.length} 格；每格裁成 ${count} 張後，依序送至你的 Colab BiRefNet（共 ${timestampsMs.length * count} 個 crop）…`
+          : `逐時間點解碼 ${timestampsMs.length} 格；每格同時裁成 ${count} 張，並每 10 格寫入 master APNG…`,
       );
       const master = await buildMasterApngSet({
         source,
         grid: gridPlan,
         timestampsMs,
-        autoRemoveBackground,
-        pickColor: usePickColor ? hexToRgb(pickColor) : null,
+        autoRemoveBackground: backgroundRemovalMode === 'color-key',
+        pickColor: backgroundRemovalMode === 'color-key' && usePickColor ? hexToRgb(pickColor) : null,
+        removeCropBackground: colabConfig
+          ? (input, signal) => removeBackgroundWithColabBirefnet(input, colabConfig, { signal })
+          : undefined,
         chunkFrames: 10,
         signal: abort.signal,
-        onProgress: (done, total) => setProgress(`建立 master：${done}/${total} 個來源時間點`),
+        onProgress: (done, total) => setProgress(
+          colabConfig
+            ? `Colab BiRefNet：${done * count}/${total * count} 個裁切格完成`
+            : `建立 master：${done}/${total} 個來源時間點`,
+        ),
+        onRemovalProgress: colabConfig
+          ? (done, total) => setProgress(`Colab BiRefNet：${done}/${total} 個裁切格完成`)
+          : undefined,
       });
       const baseSettings = master.stickers.map(() => defaultSettings(startMs, endMs, timestampsMs.length));
       const baseline: VideoRenderSnapshot[] = [];
@@ -455,6 +485,8 @@ export function VideoTab() {
     } catch (error) {
       logger.log('err', error instanceof Error ? error.message : String(error));
     } finally {
+      unregisterActiveRemoval?.();
+      if (abortRef.current === abort) abortRef.current = null;
       setBusy(false);
       setProgress('');
     }
@@ -619,6 +651,10 @@ export function VideoTab() {
   const dirtyCount = project
     ? project.settings.filter((settings, index) => !settingsEqual(settings, project.current[index]!.settings)).length
     : 0;
+  const colabRequestEstimate = Number.isInteger(masterFrames) && Number.isInteger(count)
+    && masterFrames > 0 && count > 0
+    ? masterFrames * count
+    : null;
 
   return (
     <section>
@@ -702,10 +738,25 @@ export function VideoTab() {
             <Field label="封面第幾張">
               <input type="number" min={1} max={count} value={cover} onChange={(event) => setCover(Number(event.target.value))} />
             </Field>
-            <Field label="單色色鍵去背">
-              <input type="checkbox" checked={autoRemoveBackground} onChange={(event) => setAutoRemoveBackground(event.target.checked)} />
+            <Field label="去背方式">
+              <select
+                value={backgroundRemovalMode}
+                onChange={(event) => {
+                  const next = event.target.value as VideoBackgroundRemovalMode;
+                  if (next === 'colab-birefnet') {
+                    setAiWarningOpen(true);
+                    return;
+                  }
+                  setBackgroundRemovalMode(next);
+                  if (next !== 'color-key') setUsePickColor(false);
+                }}
+              >
+                <option value="none">不去背</option>
+                <option value="color-key">單色色鍵</option>
+                <option value="colab-birefnet">Colab BiRefNet（實驗性，臨時 session）</option>
+              </select>
             </Field>
-            {autoRemoveBackground && (
+            {backgroundRemovalMode === 'color-key' && (
               <>
                 <Field label="指定背景色">
                   <input type="checkbox" checked={usePickColor} onChange={(event) => setUsePickColor(event.target.checked)} />
@@ -713,24 +764,26 @@ export function VideoTab() {
                 {usePickColor && <input type="color" value={pickColor} onChange={(event) => setPickColor(event.target.value)} />}
               </>
             )}
-            <div className="field ai-warning-option">
-              <span className="field-label">AI 去背（實驗資訊）</span>
-              <button
-                ref={aiWarningTriggerRef}
-                type="button"
-                className="btn small"
-                disabled={busy}
-                aria-haspopup="dialog"
-                aria-expanded={aiWarningOpen}
-                onClick={() => setAiWarningOpen(true)}
-              >
-                查看目前限制
-              </button>
-              <span className="ai-warning-option-status">尚未整合</span>
-            </div>
+            <button
+              ref={aiWarningTriggerRef}
+              type="button"
+              className="btn small"
+              disabled={busy}
+              aria-haspopup="dialog"
+              aria-expanded={aiWarningOpen}
+              onClick={() => setAiWarningOpen(true)}
+            >
+              {backgroundRemovalMode === 'colab-birefnet' ? 'Colab 去背設定' : 'Colab BiRefNet 說明'}
+            </button>
+            {backgroundRemovalMode === 'colab-birefnet' && colabBirefnetConnection && (
+              <span className="ai-warning-option-status">
+                已啟用：{colabBirefnetEndpointHost(colabBirefnetConnection.config.endpointUrl)}
+              </span>
+            )}
           </Row>
           <p className="tab-desc">
             單色色鍵預設關閉；它只適合主體完全不含背景色的素材。黑底影片若含黑髮、眼睛或文字描邊，請保持關閉。
+            Colab BiRefNet 只在你明確確認後啟用，每次只會送出一張裁切格，不會上傳整段影片。
           </p>
           {!gridPlan && <div className="video-inline-error">網格容量不足、數值無效，或網格大於影片尺寸。</div>}
           {previewPng && gridPlan && <GridPreview png={previewPng} grid={gridPlan} />}
@@ -829,36 +882,66 @@ export function VideoTab() {
             className="ai-warning-dialog"
             role="dialog"
             aria-modal="true"
-            aria-labelledby="ai-warning-title"
-            aria-describedby="ai-warning-description"
+            aria-labelledby="colab-birefnet-title"
+            aria-describedby="colab-birefnet-description"
           >
-            <h3 id="ai-warning-title">AI 去背：目前限制</h3>
-            <div id="ai-warning-description">
+            <h3 id="colab-birefnet-title">啟用實驗性 Colab BiRefNet 去背？</h3>
+            <div id="colab-birefnet-description">
               <p>
-                BiRefNet 的 browser spike 已能產生去背遮罩，但這個版本尚未把模型、worker 與影片裁切流程正式整合。
-                因此現在不會偷偷改跑單色色鍵，也不會把它標成可用功能。
+                你必須先開啟自己的 Google Colab runtime，在
+                <a href="#/colab-birefnet" onClick={() => setAiWarningOpen(false)}> Colab + BiRefNet 教學</a>
+                跑完 astronaut benchmark；只有結果與速度可接受時，才啟動臨時 API 並貼回連線資料。
               </p>
               <p>
-                已觀察的桌面 WASM 單張 512×512 crop 約需 10–12 秒；首次使用還要下載約 94 MB 的模型。
-                真正影片會對每一格、每一個時間點各跑一次，並不適合即時處理。
+                啟用後，瀏覽器會先本機解碼影片，再依序將每張已裁切 PNG 透過 HTTPS 送到
+                {colabBirefnetConnection
+                  ? ` ${colabBirefnetEndpointHost(colabBirefnetConnection.config.endpointUrl)}`
+                  : ' 你的臨時 Colab endpoint'}。
+                原始影片、完整來源 frame、音訊與 Project ZIP 都不會上傳。
+              </p>
+              {colabRequestEstimate !== null && (
+                <p className="ai-warning-mobile">
+                  依目前設定，這次會發出約 <strong>{colabRequestEstimate}</strong> 次去背請求
+                  （{masterFrames} 個時間點 × {count} 個裁切格）。估計純推論時間約是 Notebook
+                  顯示的每 crop 秒數乘以這個數字。
+                </p>
+              )}
+              <p className="ai-warning-mobile">
+                免費 Colab runtime 與 Quick Tunnel 都可能中斷，沒有 SLA，也不是永久 endpoint。
+                請先用 1 個裁切格與 10 個時間點完成 smoke test。
               </p>
               {mobileOrTablet && (
                 <p className="ai-warning-mobile">
-                  行動裝置提醒：這類工作可能很久、耗電，或因記憶體不足而停止；目前尚未完成手機實測，建議使用桌面版 Chrome／Edge。
+                  行動裝置仍要本機解碼影片、逐格壓縮與上傳，可能很久、耗電或因記憶體不足停止。
+                  建議先用桌面版 Chrome／Edge。
                 </p>
               )}
               <p>
-                目前可用的背景選項仍是「不去背」與「單色色鍵去背」。模型整合完成後，這裡會改為需要明確確認的啟用步驟。
+                Endpoint 與 session key 只存在這次頁面的 React 記憶體；不會寫入 URL、storage、
+                cookie、Project ZIP、下載檔或處理記錄。重新整理或 runtime 重啟後要重新輸入。
               </p>
             </div>
             <div className="ai-warning-actions">
+              {colabBirefnetConnection && (
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => {
+                    setBackgroundRemovalMode('colab-birefnet');
+                    setUsePickColor(false);
+                    setAiWarningOpen(false);
+                  }}
+                >
+                  我已測速，啟用去背
+                </button>
+              )}
               <button
                 ref={aiWarningCloseRef}
                 type="button"
                 className="btn primary"
                 onClick={() => setAiWarningOpen(false)}
               >
-                知道了
+                {colabBirefnetConnection ? '取消' : '知道了'}
               </button>
             </div>
           </div>

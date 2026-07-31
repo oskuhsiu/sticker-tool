@@ -1,5 +1,6 @@
 /**
  * 端到端冒煙測試（headless Chrome × vite preview 的 dist 產物）：
+ *   0. Colab + BiRefNet 獨立教學頁：可直接開啟與回主工具
  *   1. 本機圖片打包：8 張透明底圖 → 靜態包 → 驗證全過
  *   2. 組圖切格：4×2 綠幕組圖 → 色鍵去背切格 → 靜態包 → 驗證全過
  *   3. 動態 APNG（單組圖）：4×4 透明底影格組圖 → APNG → 驗證全過
@@ -123,13 +124,18 @@ async function expectText(tab, selectorText, timeout = 60_000) {
 }
 
 try {
-  await page.goto(BASE, { waitUntil: 'load' });
+  await page.goto(`${BASE.replace(/#.*/, '')}#/colab-birefnet`, { waitUntil: 'load' });
   await page.waitForTimeout(800); // 容 COI service worker 註冊/可能的一次重載
+  await page.waitForSelector('[data-page="colab-birefnet"] >> text=在 Google Colab 啟動 BiRefNet');
+  await page.waitForSelector('[data-page="colab-birefnet"] >> text=直接在 Colab 開啟');
+  await page.waitForSelector('[data-page="colab-birefnet"] >> text=astronaut');
+  await page.waitForSelector('[data-page="colab-birefnet"] >> text=下載 Notebook');
+  await page.click('.colab-guide-back');
   await page.waitForSelector('text=本機圖片打包');
   await page.waitForSelector('.tabs >> text=影片 → APNG');
   const tabCount = await page.locator('.tabs .tab').count();
   if (tabCount !== 5) throw new Error(`應渲染 5 個獨立分頁，實際 ${tabCount}`);
-  results.push('✓ 頁面載入、五分頁渲染（影片 workflow 獨立）');
+  results.push('✓ Colab + BiRefNet 教學頁可直接開啟、返回五分頁工具');
 
   // --- 1) 本機圖片打包（關去背：不動 onnx 模型，驗證其餘整條管線） ---
   await page.click('.tabs >> text=本機圖片打包');

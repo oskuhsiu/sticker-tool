@@ -44,6 +44,11 @@ header p {
   color: var(--muted);
   font-size: 0.92rem;
 }
+.app-guide-link {
+  display: inline-block;
+  margin: -0.35rem 0 0.8rem;
+  font-size: 0.88rem;
+}
 footer p {
   color: var(--muted);
   font-size: 0.8rem;
@@ -110,6 +115,8 @@ a {
   min-width: 0;
 }
 input[type='text'],
+input[type='url'],
+input[type='password'],
 input:not([type]),
 input[type='number'],
 select,
@@ -546,6 +553,109 @@ textarea {
   outline: 3px solid var(--accent);
   outline-offset: 2px;
 }
+
+/* Independent Colab + BiRefNet guide (hash page, not a workflow tab). */
+.colab-guide {
+  max-width: 860px;
+}
+.colab-guide-back {
+  display: inline-block;
+  margin-bottom: 1rem;
+  font-size: 0.9rem;
+}
+.colab-guide-header {
+  margin-bottom: 1.2rem;
+}
+.colab-guide-header h1 {
+  margin: 0.2rem 0 0.5rem;
+  font-size: clamp(1.55rem, 4vw, 2.2rem);
+}
+.colab-guide-header p:not(.colab-guide-eyebrow) {
+  color: var(--muted);
+  line-height: 1.6;
+  margin: 0;
+}
+.colab-guide-eyebrow {
+  color: var(--accent-dark);
+  font-size: 0.85rem;
+  font-weight: 700;
+  margin: 0;
+}
+.colab-guide-card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--card);
+  padding: 1rem;
+  margin: 0.9rem 0;
+}
+.colab-guide-card h2 {
+  font-size: 1.1rem;
+  margin: 0 0 0.6rem;
+}
+.colab-guide-card p,
+.colab-guide-card li {
+  line-height: 1.58;
+}
+.colab-guide-card ol,
+.colab-guide-card ul {
+  padding-left: 1.35rem;
+}
+.colab-guide-warning {
+  border-color: var(--warn);
+}
+.colab-guide-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.7rem;
+  margin: 1rem 0;
+}
+.colab-guide-actions .btn {
+  text-decoration: none;
+}
+.colab-connection-form {
+  display: grid;
+  gap: 0.7rem;
+  max-width: 42rem;
+}
+.colab-connection-form label {
+  display: grid;
+  gap: 0.28rem;
+  font-size: 0.9rem;
+}
+.colab-connection-form label > span {
+  color: var(--muted);
+}
+.colab-connection-form input {
+  width: 100%;
+  min-width: 0;
+}
+.colab-connection-form .btn {
+  justify-self: start;
+}
+.colab-form-error,
+.colab-form-notice {
+  margin: 0.65rem 0 0;
+  font-size: 0.88rem;
+}
+.colab-form-error {
+  color: var(--err);
+}
+.colab-form-notice {
+  color: var(--ok);
+}
+.colab-connection-active {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+  margin-top: 0.8rem;
+  padding: 0.6rem;
+  border: 1px solid var(--ok);
+  border-radius: 8px;
+  font-size: 0.88rem;
+}
+
 .video-compare-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));

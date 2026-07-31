@@ -1,6 +1,9 @@
 node_modules/
+
+# Generated application and package output
 dist/
 out/
+output/
 *.log
 .DS_Store
 

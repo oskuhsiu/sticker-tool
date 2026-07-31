@@ -1,7 +1,8 @@
 # sticker-tool web
 
 sticker-tool 的**純靜態網頁版**——CLI 的功能搬進瀏覽器，可直接部署到 GitHub Pages。
-全程在瀏覽器內運算（Canvas + wasm），**圖片與影片不會上傳到任何伺服器**。
+預設在瀏覽器內運算（Canvas + wasm）。唯一的 opt-in 例外是「影片 → APNG」的 Colab BiRefNet：
+使用者明確啟用後，每次只會上傳一張已裁切 PNG 到使用者自己啟動的臨時 Colab session。
 
 ## 功能（對應 CLI 指令）
 
@@ -13,13 +14,23 @@ sticker-tool 的**純靜態網頁版**——CLI 的功能搬進瀏覽器，可�
 | 影片 → APNG | —（Web only） | 固定格線影片 → master APNG → 逐張調整 → LINE ZIP / Project ZIP |
 | 產圖 Prompt | `prompt` | 產生餵外部 AI 工具的組圖 prompt（靜態 + 動態影格） |
 
+另有獨立、可直接連結的 **Colab + BiRefNet 教學**：`#/colab-birefnet`。它提供可下載的 Notebook；
+使用者可選 lite/full/dynamic、auto/GPU/CPU、512/1024，先用內建 astronaut 圖量測結果、實際推論尺寸與每張秒數，
+再決定是否啟動臨時 API。dynamic 保留 crop 長寬比、以 512/1024 為最長邊上限，並將兩邊調整到 32 的倍數。
+
 ### 影片 → APNG
 
 - 支援目前瀏覽器能解碼的本機 MP4/MOV/WebM；來源影片與圖片一樣不會上傳。
 - 使用者先選可編輯起訖秒數、任意正整數來源格數、固定網格與 10–60 個 master 取樣點。來源格數
   可以少於 LINE 包規定的 8 張，方便先建立 master／Project；工具依時間軸逐點
-  seek，每個來源畫格同時裁給所有格子，再每 10 格 flush 成 lossless master APNG。
+  seek，每個來源畫格同時裁給所有格子，再每 10 格 flush 成 lossless master APNG。master 預設 20 格，
+  對齊 LINE Creators App 的 High smoothness；30/40/60 僅供需要更細時間編輯時選用。
 - 影片的單色色鍵預設關閉，避免黑底同時挖掉黑髮、眼睛或文字描邊；只在主體完全不含背景色時開啟。
+- Colab BiRefNet 預設關閉。啟用前會要求先跑 Notebook benchmark，並顯示
+  `master 時間點 × 裁切格數` 的請求數。原始影片、完整來源 frame、音訊與 Project ZIP 不會上傳。
+- 連線只接受 Notebook 輸出的 `https://*.trycloudflare.com/remove`，禁止 redirect；隨機 session key
+  與臨時 URL 只存在本次 React 記憶體，不會進 storage、URL、cookie、log、下載檔或 Project ZIP。
+- 免費 Colab 與 Quick Tunnel 都沒有 SLA。runtime 或最後一格停止後連線立即失效，下次必須重新 Run All 並貼回新連線。
 - master 建完即釋放影片 decoder。逐張開始/結束秒數、5–20 格、1/2/3/4 秒、loops 與減色
   都從 master APNG 解碼重編，不再回讀影片。
 - 「原切版本」固定不覆寫；「目前版本」保存已套用的調整，並顯示 timestamps、delays、
@@ -52,6 +63,10 @@ CLI 的 `init` 不需要（網頁表單即設定檔）；AI 產圖不內建（ch
 - `src/webpipe/*` 為 CLI `src/pipeline/*` 的瀏覽器重寫：sharp → Canvas/TypedArray、
   `@imgly/background-removal-node` → `@imgly/background-removal`（onnxruntime-web）、
   APNG 仍用 upng-js（同一顆編碼器）、zip 用 fflate。
+- `src/webpipe/colabBirefnet.ts` 將單張 crop POST 到臨時 Colab endpoint，限制 URL／輸入／response bytes，
+  驗證同尺寸灰階 PNG mask，再把 mask 乘回本機 alpha。
+- `../examples/colab/sticker-tool-birefnet-colab.ipynb` 提供模型選項、astronaut benchmark、FastAPI
+  與有 SHA-256 驗證的固定版 Cloudflare Quick Tunnel client。
 - 去背模型（~88MB）build 時從 `@imgly/background-removal-data` 複製進 `dist/imgly/` 自託管，
   首次使用下載、之後走瀏覽器快取；不依賴第三方 CDN。
   **組圖切格／動態 APNG 的 sheet 流程不用模型**——一律色鍵（綠幕／單色，可點圖選色）；
@@ -65,6 +80,7 @@ CLI 的 `init` 不需要（網頁表單即設定檔）；AI 產圖不內建（ch
 npm install
 npm run dev        # 開發伺服器
 npm run build      # typecheck + build → dist/
+npm run test:colab # Notebook / URL guard / request / mask-alpha contract
 npm run test:video # Project ZIP encode/export/import/decode round-trip
 npm run preview    # 本機 serve dist/
 npm run smoke      # 端到端冒煙測試（需先 preview；用法見 scripts/smoke.mjs 開頭）

@@ -1,5 +1,7 @@
 # 瀏覽器端 BiRefNet AI 去背實驗計畫
 
+> 2026-07-31 更新：這份文件只保留「純瀏覽器 ONNX／WASM」的研究；它不是目前實作路徑。
+
 - 狀態：提案；尚未授權或開始實作
 - 日期：2026-07-30
 - 工作分支：experiment-birefnet-browser-background-removal

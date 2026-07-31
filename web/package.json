@@ -8,7 +8,8 @@
     "dev": "vite",
     "typecheck": "tsc --noEmit",
     "build": "tsc --noEmit && vite build",
-    "test:video": "../node_modules/.bin/tsx --tsconfig tsconfig.json scripts/video-project-roundtrip.mts",
+    "test:colab": "tsx --tsconfig tsconfig.json scripts/colab-birefnet-contract.mts",
+    "test:video": "tsx --tsconfig tsconfig.json scripts/video-project-roundtrip.mts",
     "preview": "vite preview",
     "smoke": "node scripts/smoke.mjs",
     "smoke:video": "node scripts/video-smoke.mjs"
@@ -26,6 +27,7 @@
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.1",
     "playwright": "^1.60.0",
+    "tsx": "^4.19.1",
     "typescript": "^5.6.2",
     "vite": "^5.4.8",
     "vite-plugin-static-copy": "^1.0.6"
