@@ -1,8 +1,8 @@
 # sticker-tool web
 
 sticker-tool 的**純靜態網頁版**——CLI 的功能搬進瀏覽器，可直接部署到 GitHub Pages。
-預設在瀏覽器內運算（Canvas + wasm）。唯一的 opt-in 例外是「影片 → APNG」的 Colab BiRefNet：
-使用者明確啟用後，每次只會上傳一張已裁切 PNG 到使用者自己啟動的臨時 Colab session。
+預設在瀏覽器內運算（Canvas + wasm）。Build、Sheet、Anim、Video 都可選：不去背、單色色鍵、
+IMG.LY 本機去背、本機 BiRefNet，或使用者自行啟動的 Colab BiRefNet。IMG.LY 沒有 Colab 模式。
 
 ## 功能（對應 CLI 指令）
 
@@ -26,6 +26,10 @@ sticker-tool 的**純靜態網頁版**——CLI 的功能搬進瀏覽器，可�
   seek，每個來源畫格同時裁給所有格子，再每 10 格 flush 成 lossless master APNG。master 預設 20 格，
   對齊 LINE Creators App 的 High smoothness；30/40/60 僅供需要更細時間編輯時選用。
 - 影片的單色色鍵預設關閉，避免黑底同時挖掉黑髮、眼睛或文字描邊；只在主體完全不含背景色時開啟。
+- 本機 BiRefNet 預設關閉。使用者確認並開始工作後，才下載固定 revision 的 fp16 ONNX（98,484,532 bytes，
+  約 94 MiB；44.4M 是參數量，不是檔案大小）。模型在 Web Worker 內逐 crop 順序執行，優先用 WebGPU，
+  不可用時改跑較慢的 WASM；模型由瀏覽器快取，素材不會上傳。所有裝置都會看到耗時警告，手機／平板
+  另會被告知可能耗電、OOM 或跑不完，但功能不會被封鎖。
 - Colab BiRefNet 預設關閉。啟用前會要求先跑 Notebook benchmark，並顯示
   `master 時間點 × 裁切格數` 的請求數。原始影片、完整來源 frame、音訊與 Project ZIP 不會上傳。
 - 連線只接受 Notebook 輸出的 `https://*.trycloudflare.com/remove`，禁止 redirect；隨機 session key
@@ -39,11 +43,21 @@ sticker-tool 的**純靜態網頁版**——CLI 的功能搬進瀏覽器，可�
   master chunks、原切/目前成品、metrics 與 manifest，可重新上傳直接回到已調整狀態。
   Project ZIP 預設不含來源影片，也不處理來源音軌。
 
-### 動態 APNG（單組圖模式）的選項
+### 共用去背選項
 
-- **自動去背**（預設開）：偵測背景型態做色鍵——透明→原樣、綠幕→綠色鍵、其他單色→
-  以邊框平均色做單色色鍵；也可展開「背景色」**直接點圖指定**背景色。關閉＝直接用原圖 alpha。
-  此流程**不使用 @imgly 模型**（不必下載 ~88MB，也避免卡在模型下載）。
+- **不去背**：保留來源 alpha；Build、整包 Anim 與 Video 的預設值。
+- **單色色鍵**：本機 Canvas 運算、不下載模型；Sheet／單組圖 Anim 預設使用此模式，並保留自動偵測或點圖選色流程。
+- **IMG.LY（本機）**：只在選取並開始工作後下載自託管 medium 模型與 WASM。resources 合計
+  88,188,479 bytes（約 84 MiB）；實測乾淨桌面 Chrome 處理 8 張不透明測試圖約 116 秒，但不是速度保證。
+  手機可能記憶體不足或跑不完。IMG.LY 不會上傳圖片，也不提供 Colab 版。
+- **BiRefNet（本機，實驗）**：下載約 94 MiB fp16 ONNX，在 Web Worker 逐張執行；44.4M 是參數量，
+  不是下載大小。優先 WebGPU、失敗時可改本機 WASM；手機可能跑很久、OOM 或無法完成。
+- **BiRefNet（Colab）**：逐張圖片或已裁切格子送往使用者自己的臨時 endpoint。必須先跑 benchmark；
+  免費 Colab／Quick Tunnel 沒有 SLA，URL 與 session key 僅存在目前頁面記憶體。
+- 所有模型錯誤都會直接顯示，不會假裝成功或靜默改跑色鍵。組圖模型模式會對重疊的名目格子推論，
+  合併完整 sheet alpha 後才做 component-aware 切格，避免跨格主體被 mask 邊界截斷。
+
+### 動態 APNG（單組圖模式）的其他選項
 - **網格防呆**（預設開）：由前景縫隙推斷內容實際欄/列數，與指定網格不符就擋下並提示
   （如「內容看起來是 4×4，與指定的 5×4 不符」）——切下去會整組錯位漂移。
   確定網格沒錯可取消勾選強制繼續。
@@ -65,12 +79,16 @@ CLI 的 `init` 不需要（網頁表單即設定檔）；AI 產圖不內建（ch
   APNG 仍用 upng-js（同一顆編碼器）、zip 用 fflate。
 - `src/webpipe/colabBirefnet.ts` 將單張 crop POST 到臨時 Colab endpoint，限制 URL／輸入／response bytes，
   驗證同尺寸灰階 PNG mask，再把 mask 乘回本機 alpha。
+- `src/webpipe/localBirefnet*.ts` 透過 worker lazy-load `@huggingface/transformers`，固定模型 revision，
+  逐 crop 本機推論、套回來源 alpha，並在取消或 master 結束時釋放 worker/session。
+- `src/webpipe/backgroundRemovalJob.ts` 將五種模式轉成每次工作的序列 remover；
+  `sheetBackgroundRemoval.ts` 合併重疊 crop 的 alpha，再交給既有 component-aware sheet extraction。
 - `../examples/colab/sticker-tool-birefnet-colab.ipynb` 提供模型選項、astronaut benchmark、FastAPI
   與有 SHA-256 驗證的固定版 Cloudflare Quick Tunnel client。
-- 去背模型（~88MB）build 時從 `@imgly/background-removal-data` 複製進 `dist/imgly/` 自託管，
-  首次使用下載、之後走瀏覽器快取；不依賴第三方 CDN。
-  **組圖切格／動態 APNG 的 sheet 流程不用模型**——一律色鍵（綠幕／單色，可點圖選色）；
-  模型只剩「本機圖片打包」與整包模式的逐格去背在用。
+- IMG.LY 模型 build 時從 `@imgly/background-removal-data` 複製進 `dist/imgly/` 自託管，
+  首次選用才下載、之後走瀏覽器快取；不依賴第三方 CDN。非 IMG.LY 模式不會載入它。
+- Transformers.js 的相符 ORT WASM／worker assets 會複製到 `dist/transformers/`；BiRefNet 權重則在
+  使用者明確啟動本機模式時從固定 Hugging Face revision 下載並進 browser cache。
 - `public/coi-serviceworker.js` 補 COOP/COEP header（GitHub Pages 不能自訂 header），
   讓 onnxruntime-web 可用多執行緒 wasm；不支援時自動退回單執行緒（較慢但可用）。
 
@@ -81,9 +99,12 @@ npm install
 npm run dev        # 開發伺服器
 npm run build      # typecheck + build → dist/
 npm run test:colab # Notebook / URL guard / request / mask-alpha contract
+npm run test:local-birefnet # pinned model metadata / alpha composition / progress contract
+npm run test:background-removal # common mode / sheet-mask merge / animation ordering contract
 npm run test:video # Project ZIP encode/export/import/decode round-trip
 npm run preview    # 本機 serve dist/
 npm run smoke      # 端到端冒煙測試（需先 preview；用法見 scripts/smoke.mjs 開頭）
+npm run smoke:local-birefnet -- http://127.0.0.1:4180/ # 需另開 Vite dev；首次下載約 94 MiB
 npm run smoke:video -- http://127.0.0.1:4179/ # 需 ffmpeg；影片 workflow E2E
 ```
 

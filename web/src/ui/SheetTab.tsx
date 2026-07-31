@@ -3,12 +3,18 @@
  * 組圖來源：外部 AI 工具（搭配「產圖 Prompt」分頁產的 prompt）或任何現成大圖。
  */
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { STATIC_SPEC, maxBounds } from '@core/spec.js';
 import { planGrid } from '@core/grid.js';
 import type { GridLayout } from '@core/types.js';
 import { validatePack } from '@core/validate.js';
 import { decodeBlob, yieldToUI, type Raster } from '../webpipe/raster.js';
+import {
+  createBackgroundRemovalJob,
+  type BackgroundRemovalJob,
+  type WebBackgroundRemovalMode,
+} from '../webpipe/backgroundRemovalJob.js';
+import { removeSheetBackgroundByCells } from '../webpipe/sheetBackgroundRemoval.js';
 import { cutSheet } from '../webpipe/sheetAnalysis.js';
 import { processStatic, type ProcessedSticker } from '../webpipe/processStatic.js';
 import { buildMainTab } from '../webpipe/mainTab.js';
@@ -18,7 +24,8 @@ import { Field, FilePick, LogPane, Row, kb, sortFiles, useLogger } from './commo
 import { PackResult, type PackResultData } from './packResult.jsx';
 import { DEFAULT_TEXT_STYLE, makeStroke, makeText, parseGridText, type SharedTextStyle } from './defaults.js';
 import { reportCut } from './cutReport.js';
-import { useModelProgress } from './modelProgress.js';
+import { BackgroundRemovalControl } from './BackgroundRemovalControl.jsx';
+import { useColabBirefnetConnection } from './colabBirefnetConnection.jsx';
 
 export function SheetTab() {
   const [sheets, setSheets] = useState<File[]>([]);
@@ -26,6 +33,7 @@ export function SheetTab() {
   const [name, setName] = useState('My Stickers');
   const [isCharacter, setIsCharacter] = useState(true);
   const [gridText, setGridText] = useState('auto');
+  const [removeBgMode, setRemoveBgMode] = useState<WebBackgroundRemovalMode>('color-key');
   const [strokeOn, setStrokeOn] = useState(false);
   const [strokeWidth, setStrokeWidth] = useState(8);
   const [strokeColor, setStrokeColor] = useState('#ffffff');
@@ -35,14 +43,20 @@ export function SheetTab() {
   const [textStyle, setTextStyle] = useState<SharedTextStyle>(DEFAULT_TEXT_STYLE);
   const [fontName, setFontName] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [modelStatus, setModelStatus] = useState<string | null>(null);
   const [result, setResult] = useState<PackResultData | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
   const logger = useLogger();
-  const modelStatus = useModelProgress();
+  const { connection: colabConnection, registerActiveRemoval } = useColabBirefnetConnection();
 
   async function run() {
     logger.clear();
     setResult(null);
     setBusy(true);
+    const abort = new AbortController();
+    abortRef.current = abort;
+    const unregister = removeBgMode === 'colab-birefnet' ? registerActiveRemoval(abort) : null;
+    let removalJob: BackgroundRemovalJob | null = null;
     try {
       if (sheets.length === 0) {
         logger.log('err', '請先選擇組圖（一張大圖含多格貼圖）');
@@ -69,6 +83,12 @@ export function SheetTab() {
         logger.log('err', `版面需要 ${layout.sheets} 張組圖，但選了 ${ordered.length} 張`);
         return;
       }
+      removalJob = await createBackgroundRemovalJob({
+        mode: removeBgMode,
+        signal: abort.signal,
+        colabConfig: colabConnection?.config,
+        onStatus: setModelStatus,
+      });
 
       // 2) 逐張組圖切格
       const cells: Raster[] = [];
@@ -77,7 +97,28 @@ export function SheetTab() {
         const thisCount = Math.min(layout.cellsPerSheet, remaining);
         logger.log('step', `切格 ${s + 1}/${layout.sheets}（${layout.cols}×${layout.rows}，${thisCount} 格）← ${ordered[s]!.name}`);
         const raster = await decodeBlob(ordered[s]!);
-        const cut = await cutSheet(raster, { cols: layout.cols, rows: layout.rows, count: thisCount });
+        const semantic = removeBgMode === 'imgly'
+          || removeBgMode === 'local-birefnet'
+          || removeBgMode === 'colab-birefnet';
+        const prepared = semantic
+          ? await removeSheetBackgroundByCells(raster, {
+              cols: layout.cols,
+              rows: layout.rows,
+              remove: removalJob.remove,
+              signal: abort.signal,
+              onProgress: (done, total) => setModelStatus(
+                `${removalJob!.label}：組圖 ${s + 1}/${layout.sheets}，crop ${done}/${total}`,
+              ),
+            })
+          : raster;
+        const cut = await cutSheet(prepared, {
+          cols: layout.cols,
+          rows: layout.rows,
+          count: thisCount,
+          key: semantic
+            ? { autoRemove: false, preRemovedLabel: removalJob.label }
+            : { autoRemove: removeBgMode === 'color-key' },
+        });
         reportCut(cut, logger);
         cells.push(...cut.cells);
         await yieldToUI();
@@ -120,8 +161,17 @@ export function SheetTab() {
       });
       setResult({ name, stickers: processed, main, tab, zip, validation });
     } catch (e) {
-      logger.log('err', e instanceof Error ? e.message : String(e));
+      if (e instanceof DOMException && e.name === 'AbortError') logger.log('warn', '處理已取消');
+      else logger.log('err', e instanceof Error ? e.message : String(e));
     } finally {
+      try {
+        await removalJob?.dispose();
+      } catch (e) {
+        logger.log('err', `釋放去背模型失敗：${e instanceof Error ? e.message : String(e)}`);
+      }
+      unregister?.();
+      if (abortRef.current === abort) abortRef.current = null;
+      setModelStatus(null);
       setBusy(false);
     }
   }
@@ -144,6 +194,13 @@ export function SheetTab() {
         切線吸附到真實透明縫 → 校正 → 打包。組圖可用「產圖 Prompt」分頁產的 prompt 餵給任何 AI 產圖工具取得。
       </p>
       <FilePick label="組圖（sprite sheet）" multiple files={sheets} onChange={setSheets} />
+      <BackgroundRemovalControl
+        value={removeBgMode}
+        onChange={setRemoveBgMode}
+        disabled={busy}
+        inferenceCount={count}
+        colorHelp={<span className="layout-hint">自動偵測綠幕或邊框背景色</span>}
+      />
       <Row>
         <Field label="張數">
           <select value={count} onChange={(e) => setCount(Number(e.target.value))}>
@@ -225,6 +282,7 @@ export function SheetTab() {
         <button className="btn primary" disabled={busy || sheets.length === 0} onClick={() => void run()}>
           {busy ? '處理中…' : '切格並打包'}
         </button>
+        {busy && <button className="btn" onClick={() => abortRef.current?.abort()}>取消</button>}
         {modelStatus && <span className="model-status">{modelStatus}</span>}
       </div>
       <LogPane lines={logger.lines} />

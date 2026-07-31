@@ -37,9 +37,9 @@ export interface MasterApngSet {
 }
 
 /**
- * Optional remote/background model hook.  It is deliberately applied after a
- * cell is cropped, so a video source and its unrelated cells never leave the
- * browser as one full frame.
+ * Optional local/remote background-model hook. It is deliberately applied
+ * after a cell is cropped, so every model sees one sticker crop at a time and
+ * a remote adapter never receives the full source frame.
  */
 export type CropBackgroundRemover = (input: Raster, signal?: AbortSignal) => Promise<Raster>;
 

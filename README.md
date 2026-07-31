@@ -5,7 +5,7 @@
 It provides two execution surfaces:
 
 - A Node.js CLI for deterministic image processing, APNG encoding, validation, and ZIP packaging.
-- A static React web app that processes locally by default and can explicitly send individual video crops to a temporary BiRefNet session started by the user in Google Colab.
+- A static React web app that processes locally by default. Its image workflows offer no removal, solid-color keying, browser-local IMG.LY, browser-local BiRefNet, or opt-in BiRefNet through a temporary Google Colab session started by the user.
 
 AI image generation is intentionally outside the application. Use any image generator, the prompt builder, or the project-local skills under `.claude/skills/`, then give the resulting images to the CLI or web app.
 
@@ -23,12 +23,13 @@ AI image generation is intentionally outside the application. Use any image gene
 - Browser-side previews, downloads, grid mismatch warnings, and manual animation alignment.
 - Prompt generation for static sticker sheets and animation frame sheets.
 - A standalone Colab + BiRefNet tutorial with a downloadable Notebook, an astronaut benchmark, and CPU/GPU/model choices.
+- Experimental local BiRefNet across the browser image, sheet, animation, and video workflows, with a lazy model download, WebGPU/WASM execution, and explicit mobile/runtime warnings.
 
 ## Requirements
 
 - Node.js 20 or newer.
 - A local font file (`.otf` or `.ttf`) when the CLI needs to render non-system text reliably.
-- Network access on the first semantic background-removal run so the model assets can be obtained.
+- Network access on the first semantic background-removal run so model assets can be obtained. Local BiRefNet downloads a pinned 98,484,532-byte fp16 ONNX file (about 94 MiB) on first use; 44.4M is its parameter count, not its download size.
 
 ## CLI quick start
 
@@ -87,6 +88,11 @@ Generate a prompt without calling an image model:
 ```bash
 npm run sticker -- prompt --config sticker.config.yaml
 ```
+
+The shared prompt builder tells image generators not to invent text. When lettering, speech bubbles,
+symbols, or punctuation are explicitly requested, it asks for bold, fully opaque foreground artwork
+that touches or overlaps the main subject. This makes generated assets friendlier to later foreground
+segmentation, but cannot guarantee that every background-removal model will retain every glyph.
 
 The CLI prompt command currently emits the static sheet prompt even for animated configurations. Use the web app's animation-frame prompt mode when an animated prompt is required; this mismatch is tracked in the implementation audit.
 
@@ -181,13 +187,17 @@ npm run preview
 
 The GitHub Pages workflow builds and deploys the site on pushes to either `main` or `master`. See [web/README.md](web/README.md) for browser-specific behavior and smoke-test instructions.
 
-The web app processes image and video pixels locally by default. Its general photo background-removal path uses a self-hosted browser model downloaded from the deployed site and cached by the browser. Sprite-sheet and single-sheet animation workflows use deterministic transparent/green/solid-color keying instead of that model.
+The web app processes image and video pixels locally by default. Build, Sheet, Anim, and Video each expose the same five background choices: preserve the source, solid-color keying, browser-local IMG.LY, browser-local BiRefNet, or BiRefNet through the user's temporary Colab endpoint. IMG.LY has no Colab branch. All model choices are opt-in and never silently fall back to color keying.
+
+IMG.LY downloads its self-hosted medium model and WASM runtime only when selected. The current model resources total 88,188,479 bytes (about 84 MiB). A clean desktop-Chrome verification completed eight opaque test images in about 116 seconds; this is evidence that the adapter works, not a runtime promise. The UI warns that first use can be slow and that phones may run out of memory or never finish.
+
+**Local BiRefNet (experimental)** lazy-loads the browser runtime after the user selects it and starts a job, then downloads the pinned `studioludens/birefnet-lite-512` fp16 model revision `4a3c40c36c94093cc1e724d9ea428b8fa4b57dc7`. The model runs in a Web Worker, prefers WebGPU, falls back to WASM, processes one raster at a time, and is disposed when the job ends. Model files use the browser cache; selected pixels are not uploaded. The UI reports the estimated inference count, warns every user that the job may take a long time, and specifically warns that a phone or tablet may exhaust memory or never finish. Mobile use is allowed but not claimed as supported.
 
 The independent `#/colab-birefnet` guide provides a downloadable [Colab Notebook](examples/colab/sticker-tool-birefnet-colab.ipynb). Users choose BiRefNet lite, full, or dynamic and `auto`/GPU/CPU. Lite/full use a selected 512 or 1024 square input; dynamic treats that choice as a maximum edge, does not upscale smaller crops, preserves aspect ratio, and rounds both dimensions down to multiples of 32. Before any user material is sent, the Notebook runs an included `skimage.data.astronaut()` benchmark and shows the source, mask, transparent result, actual inference size, model load time, and seconds per crop. If the result is acceptable, the last cell starts a temporary FastAPI endpoint through a Cloudflare Quick Tunnel.
 
 Current Colab images may preinstall Google ADK, Gradio, and FastHTML versions whose FastAPI, Starlette, and Hugging Face Hub requirements conflict with the pinned BiRefNet environment. The Notebook removes those three unused packages before installing its fixed dependencies. This affects only the disposable runtime and does not remove any package from the user's account or Drive.
 
-The optional Video → APNG Colab branch sends one already-cropped PNG at a time to that temporary endpoint, receives a bounded grayscale mask, and applies alpha locally. The original video, audio, complete source frame, downloads, and Project ZIP never leave the browser. The rotating `*.trycloudflare.com/remove` URL and random session key stay only in current React memory. Colab and Quick Tunnel runtimes are temporary and unguaranteed; restarting either requires a new connection.
+The optional Colab branch sends one input image or already-cropped sheet/video cell at a time to that temporary endpoint, receives a bounded grayscale mask, and applies alpha locally. For sheets, overlapping nominal-cell masks are merged before component-aware cutting so a subject crossing a grid line is not clipped. Original video, audio, complete video frames, downloads, and Project ZIP never leave the browser. The rotating `*.trycloudflare.com/remove` URL and random session key stay only in current React memory. Colab and Quick Tunnel runtimes are temporary and unguaranteed; restarting either requires a new connection.
 
 The **Video → APNG** tab accepts a browser-decodable local video such as MP4, MOV, or WebM. It samples
 an explicit editable time window, applies one stable grid to every sampled frame, and writes bounded
@@ -206,6 +216,8 @@ Colab BiRefNet is also off by default and requires an explicit confirmation. The
 can multiply it by the Notebook benchmark before starting a large job. Master sampling defaults to
 20 frames, matching LINE Creators App's High smoothness setting; higher master counts remain available
 for finer timeline editing while final LINE APNG output is always constrained to 5–20 frames.
+
+IMG.LY, local BiRefNet, and Colab BiRefNet are mutually exclusive. None silently falls back to solid-color keying: local BiRefNet may fall back only from WebGPU to local WASM, while a model or remote-session failure is reported and leaves the source/settings available for retry.
 
 ## LINE constraints targeted by the project
 
@@ -244,7 +256,8 @@ Read [ARCHITECTURE.md](ARCHITECTURE.md) for the component boundaries, data flows
 
 - Character identity is most reliable when all poses are generated in one sheet from one reference image. Eight cells give the best detail; 16 cells are supported with a quality warning. Prompt planning requires an explicit override for larger character sheets, while packaging a pre-existing sheet currently only warns.
 - Node semantic background removal uses `@imgly/background-removal-node` and may download model assets on first use.
-- Browser sprite-sheet cutting uses color keying. Prefer real transparency or a flat green background when the subject contains colors similar to an opaque background.
+- Browser-local IMG.LY and BiRefNet are explicit opt-in choices. Their model downloads are about 84 MiB and 94 MiB respectively, inference is sequential, and mobile completion is not guaranteed.
+- Browser sprite-sheet semantic removal runs overlapping cell crops and merges their alpha masks before component-aware cutting. Solid-color keying remains the faster deterministic choice for transparent or flat-background sheets.
 - Animated frame files are stabilized before fitting. Frame sheets skip the later subject-anchor stabilizer, but the current grid extraction also applies scene and lower-body alignment; this can suppress intentional motion such as jumping.
 - The CLI overwrites files produced by the current run but does not clean unrelated or stale files from an existing output directory. The ZIP contains only files from the current run.
 - The generated-image and packaging workflows are separated so a packaging adjustment does not require regenerating artwork.

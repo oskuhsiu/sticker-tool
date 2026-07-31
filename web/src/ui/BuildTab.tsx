@@ -3,36 +3,50 @@
  * 去背 → trim+置中+10px 邊 → [描邊] → ≤1MB → main/tab → zip。
  */
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { STATIC_SPEC, maxBounds } from '@core/spec.js';
+import { parseColor } from '@core/color.js';
 import { validateCount, validatePack } from '@core/validate.js';
 import { decodeBlob, yieldToUI } from '../webpipe/raster.js';
+import {
+  createBackgroundRemovalJob,
+  type BackgroundRemovalJob,
+  type WebBackgroundRemovalMode,
+} from '../webpipe/backgroundRemovalJob.js';
 import { processStatic, type ProcessedSticker } from '../webpipe/processStatic.js';
 import { buildMainTab } from '../webpipe/mainTab.js';
 import { buildPackZip } from '../webpipe/zip.js';
 import { Field, FilePick, LogPane, Row, kb, sortFiles, useLogger } from './common.jsx';
 import { PackResult, type PackResultData } from './packResult.jsx';
 import { makeStroke } from './defaults.js';
-import { useModelProgress } from './modelProgress.js';
+import { BackgroundRemovalControl } from './BackgroundRemovalControl.jsx';
+import { useColabBirefnetConnection } from './colabBirefnetConnection.jsx';
 
 export function BuildTab() {
   const [files, setFiles] = useState<File[]>([]);
   const [count, setCount] = useState(8);
   const [name, setName] = useState('My Stickers');
-  const [removeBg, setRemoveBg] = useState(true);
+  const [removeBgMode, setRemoveBgMode] = useState<WebBackgroundRemovalMode>('none');
+  const [backgroundColor, setBackgroundColor] = useState('#00ff00');
   const [strokeOn, setStrokeOn] = useState(false);
   const [strokeWidth, setStrokeWidth] = useState(8);
   const [strokeColor, setStrokeColor] = useState('#ffffff');
   const [cover, setCover] = useState(1);
   const [busy, setBusy] = useState(false);
+  const [modelStatus, setModelStatus] = useState<string | null>(null);
   const [result, setResult] = useState<PackResultData | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
   const logger = useLogger();
-  const modelStatus = useModelProgress();
+  const { connection: colabConnection, registerActiveRemoval } = useColabBirefnetConnection();
 
   async function run() {
     logger.clear();
     setResult(null);
     setBusy(true);
+    const abort = new AbortController();
+    abortRef.current = abort;
+    const unregister = removeBgMode === 'colab-birefnet' ? registerActiveRemoval(abort) : null;
+    let removalJob: BackgroundRemovalJob | null = null;
     try {
       const cv = validateCount('static', count);
       if (!cv.ok) {
@@ -48,14 +62,26 @@ export function BuildTab() {
 
       const bounds = maxBounds('static');
       const stroke = makeStroke(strokeOn, strokeWidth, strokeColor);
+      const parsedColor = parseColor(backgroundColor);
+      removalJob = await createBackgroundRemovalJob({
+        mode: removeBgMode,
+        signal: abort.signal,
+        pickColor: removeBgMode === 'color-key'
+          ? [parsedColor.r, parsedColor.g, parsedColor.b]
+          : null,
+        colabConfig: colabConnection?.config,
+        onStatus: setModelStatus,
+      });
 
-      logger.log('step', `處理 ${count} 張靜態貼圖…`);
+      logger.log('step', `處理 ${count} 張靜態貼圖（${removalJob.label}）…`);
       const processed: ProcessedSticker[] = [];
       for (let i = 0; i < picked.length; i++) {
-        const raster = await decodeBlob(picked[i]!);
+        const decoded = await decodeBlob(picked[i]!);
+        const raster = await removalJob.remove(decoded, abort.signal);
+        setModelStatus(`${removalJob.label}：${i + 1}/${picked.length} 張完成`);
         const r = await processStatic(raster, {
           bounds,
-          removeBackground: removeBg,
+          removeBackground: false,
           stroke,
           maxBytes: STATIC_SPEC.maxBytes,
         });
@@ -82,8 +108,17 @@ export function BuildTab() {
       });
       setResult({ name, stickers: processed, main, tab, zip, validation });
     } catch (e) {
-      logger.log('err', e instanceof Error ? e.message : String(e));
+      if (e instanceof DOMException && e.name === 'AbortError') logger.log('warn', '處理已取消');
+      else logger.log('err', e instanceof Error ? e.message : String(e));
     } finally {
+      try {
+        await removalJob?.dispose();
+      } catch (e) {
+        logger.log('err', `釋放去背模型失敗：${e instanceof Error ? e.message : String(e)}`);
+      }
+      unregister?.();
+      if (abortRef.current === abort) abortRef.current = null;
+      setModelStatus(null);
       setBusy(false);
     }
   }
@@ -92,7 +127,7 @@ export function BuildTab() {
     <section>
       <p className="tab-desc">
         把本機照片/圖片處理成符合 LINE 規格的靜態貼圖包：去背 → 裁切置中 → 縮放 → 描邊 → 壓到 ≤1MB →
-        main/tab → zip。全程在瀏覽器內運算，圖片不會上傳到任何伺服器。
+        main/tab → zip。預設只在瀏覽器處理；只有選擇 Colab BiRefNet 時，處理用圖片才會送到你自己的臨時 session。
       </p>
       <FilePick label={`輸入圖片（需 ≥ ${count} 張）`} multiple files={files} onChange={setFiles} />
       <Row>
@@ -118,10 +153,15 @@ export function BuildTab() {
           />
         </Field>
       </Row>
+      <BackgroundRemovalControl
+        value={removeBgMode}
+        onChange={setRemoveBgMode}
+        disabled={busy}
+        inferenceCount={count}
+        color={backgroundColor}
+        onColorChange={setBackgroundColor}
+      />
       <Row>
-        <Field label="去背">
-          <input type="checkbox" checked={removeBg} onChange={(e) => setRemoveBg(e.target.checked)} />
-        </Field>
         <Field label="白色描邊">
           <input type="checkbox" checked={strokeOn} onChange={(e) => setStrokeOn(e.target.checked)} />
         </Field>
@@ -146,6 +186,7 @@ export function BuildTab() {
         <button className="btn primary" disabled={busy || files.length === 0} onClick={() => void run()}>
           {busy ? '處理中…' : '開始打包'}
         </button>
+        {busy && <button className="btn" onClick={() => abortRef.current?.abort()}>取消</button>}
         {modelStatus && <span className="model-status">{modelStatus}</span>}
       </div>
       <LogPane lines={logger.lines} />

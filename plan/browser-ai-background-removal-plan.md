@@ -1,11 +1,20 @@
 # 瀏覽器端 BiRefNet AI 去背實驗計畫
 
-> 2026-07-31 更新：這份文件只保留「純瀏覽器 ONNX／WASM」的研究；它不是目前實作路徑。
+> 2026-07-31 更新：產品決策改為保留 Colab 並同時提供 opt-in 本機實驗模式。現行實作採
+> `@huggingface/transformers` + Web Worker，固定 `studioludens/birefnet-lite-512` revision，
+> WebGPU 失敗時改跑 WASM；模型從固定 Hugging Face revision lazy-download 並由瀏覽器快取。
+> 下文是較早的完整 gate 計畫，其中「必須先同源部署權重」與「完成手機矩陣前不可顯示」已被
+> product owner 的新決策取代；效能、畫質與手機風險仍維持實驗性、不保證完成的文案。
+>
+> 2026-07-31 後續產品決策：相同的五個明確選項（不去背、單色色鍵、IMG.LY 本機、
+> BiRefNet 本機、BiRefNet Colab）已擴到 Build、Sheet、Anim 與 Video。IMG.LY 不提供 Colab；
+> sheet 模型模式先合併重疊格子的 alpha，再進既有 component-aware cutting。下文的
+> 「只處理影片」是保留的首版歷史範圍，不再描述現行產品範圍。
 
-- 狀態：提案；尚未授權或開始實作
+- 狀態：已實作 opt-in 首版；完整 A/B、真機矩陣與同源權重部署仍未完成
 - 日期：2026-07-30
 - 工作分支：experiment-birefnet-browser-background-removal
-- 主要交付面：Web app 的「影片 → APNG」分頁
+- 首版主要交付面：Web app 的「影片 → APNG」分頁；後續已擴充所有影像工作流
 - 前置研究：[BiRefNet Lite 512 瀏覽器與手機可行性評估](../doc/birefnet-browser-mobile-feasibility.md)
 
 ## 1. 目標與明確範圍

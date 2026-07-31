@@ -64,6 +64,15 @@ for (let i = 0; i < 8; i++) {
   singles.push(savePng(c, `single_${String(i + 1).padStart(2, '0')}.png`));
 }
 
+// 1b) 8 張白底單圖（SMOKE_IMGLY=1：真模型去背與 alpha 驗證）
+const opaqueSingles = [];
+for (let i = 0; i < 8; i++) {
+  const c = makeCanvas(320, 320, [246, 242, 232, 255]);
+  fillCircle(c, 160 + i - 4, 205, 76, [225, 112 + i * 5, 65, 255]);
+  fillCircle(c, 160 + i - 4, 105, 58, [45, 52, 70, 255]);
+  opaqueSingles.push(savePng(c, `opaque_${String(i + 1).padStart(2, '0')}.png`));
+}
+
 // 2) 4×2 綠幕組圖（純綠底，主體置中留縫：走 chroma key 路徑，不需 onnx 模型）
 {
   const cellW = 400;
@@ -116,6 +125,10 @@ for (let i = 0; i < 8; i++) {
 const results = [];
 const browser = await chromium.launch({ channel: 'chrome', headless: true });
 const page = await browser.newPage();
+let imglyRequested = false;
+page.on('request', (request) => {
+  if (request.url().includes('/imgly/')) imglyRequested = true;
+});
 page.on('pageerror', (e) => console.log('  [pageerror]', e.message));
 
 /** 等指定分頁內出現文字（各分頁常駐 DOM，必須以 data-tab 限定，否則會等到隱藏分頁的舊結果） */
@@ -137,16 +150,50 @@ try {
   if (tabCount !== 5) throw new Error(`應渲染 5 個獨立分頁，實際 ${tabCount}`);
   results.push('✓ Colab + BiRefNet 教學頁可直接開啟、返回五分頁工具');
 
-  // --- 1) 本機圖片打包（關去背：不動 onnx 模型，驗證其餘整條管線） ---
+  // --- 1) 本機圖片打包（預設不去背：不動模型） ---
   await page.click('.tabs >> text=本機圖片打包');
   await page.setInputFiles('[data-tab="build"] input[type=file][accept="image/*"]', singles);
-  // 去背 checkbox 是第一個（預設勾選）→ 取消
-  await page.uncheck('[data-tab="build"] .form-row >> nth=1 >> input[type=checkbox] >> nth=0');
+  const buildRemoval = page.locator('[data-tab="build"]').getByLabel('去背方式');
+  if (await buildRemoval.inputValue() !== 'none') throw new Error('本機圖片打包應預設不去背');
   await page.click('text=開始打包');
   await expectText('build', '全部符合 LINE 規格');
   const nImgs = await page.locator('[data-tab="build"] .sticker-grid img').count();
   if (nImgs !== 10) throw new Error(`本機打包預覽應有 10 張（main+tab+8），實際 ${nImgs}`);
+  if (imglyRequested) throw new Error('不去背模式不應請求 IMG.LY 資源');
   results.push('✓ 本機圖片 → 靜態包：驗證全過、預覽 10 張');
+
+  // --- 1b) IMG.LY 真模型：白底 8 張 → 透明輸出 ---
+  if (process.env.SMOKE_IMGLY === '1') {
+    await page.setInputFiles('[data-tab="build"] input[type=file][accept="image/*"]', opaqueSingles);
+    await buildRemoval.selectOption('imgly');
+    await expectText('build', '首次需下載約 84 MiB', 10_000);
+    await page.click('text=開始打包');
+    await page.waitForSelector('[data-tab="build"] >> text=處理中…', { timeout: 10_000 });
+    await expectText('build', 'zip 打包完成', 300_000);
+    await expectText('build', '全部符合 LINE 規格', 300_000);
+    const alpha = await page.locator('[data-tab="build"] .sticker-grid img').nth(2).evaluate(async (image) => {
+      const blob = await (await fetch(image.src)).blob();
+      const bitmap = await createImageBitmap(blob);
+      const canvas = document.createElement('canvas');
+      canvas.width = bitmap.width;
+      canvas.height = bitmap.height;
+      const context = canvas.getContext('2d');
+      context.drawImage(bitmap, 0, 0);
+      bitmap.close();
+      const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+      let transparent = 0;
+      let retained = 0;
+      for (let offset = 3; offset < pixels.length; offset += 4) {
+        if (pixels[offset] === 0) transparent++;
+        else retained++;
+      }
+      return { transparent, retained };
+    });
+    if (!imglyRequested || alpha.transparent === 0 || alpha.retained === 0) {
+      throw new Error(`IMG.LY 未完成有效透明輸出：requested=${imglyRequested} alpha=${JSON.stringify(alpha)}`);
+    }
+    results.push(`✓ IMG.LY 白底 8 張 → 真模型去背成功（透明 ${alpha.transparent}、保留 ${alpha.retained} px）`);
+  }
 
   // --- 2) 組圖切格（綠幕 → chroma key，不需模型） ---
   await page.click('.tabs >> text=組圖切格');
@@ -156,14 +203,17 @@ try {
   await expectText('sheet', '綠幕');
   results.push('✓ 綠幕組圖 → 切格 → 靜態包：驗證全過（色鍵路徑）');
 
-  // --- 2b) 組圖切格（白底 → @imgly onnx 語意去背；首次載入 ~88MB 本地模型） ---
+  // --- 2b) 組圖語意去背：overlap crops → alpha mask 拼回 → component-aware 切格 ---
   if (process.env.SMOKE_IMGLY === '1') {
-    await page.click('[data-tab="sheet"] .filepick-remove'); // 移除上一輪的綠幕組圖
+    const sheetRemoval = page.locator('[data-tab="sheet"]').getByLabel('去背方式');
+    await page.click('[data-tab="sheet"] .filepick-remove');
     await page.setInputFiles('[data-tab="sheet"] input[type=file][accept="image/*"]', path.join(fixDir, 'sheet_white_4x2.png'));
+    await sheetRemoval.selectOption('imgly');
     await page.click('text=切格並打包');
-    await expectText('sheet', '語意去背', 240_000);
-    await expectText('sheet', '全部符合 LINE 規格', 240_000);
-    results.push('✓ 白底組圖 → onnx 語意去背 → 靜態包：模型載入與推論正常');
+    await page.waitForSelector('[data-tab="sheet"] >> text=處理中…', { timeout: 10_000 });
+    await expectText('sheet', '已由 IMG.LY 完成語意去背', 300_000);
+    await expectText('sheet', '全部符合 LINE 規格', 300_000);
+    results.push('✓ IMG.LY 組圖 crops → mask 拼回 → component-aware 切格：驗證全過');
   }
 
   // --- 3) 動態 APNG：單組圖模式 ---

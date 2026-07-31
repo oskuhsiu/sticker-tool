@@ -69,6 +69,12 @@ const results = [];
 const browser = await chromium.launch({ channel: 'chrome', headless: true });
 const page = await browser.newPage({ acceptDownloads: true });
 page.on('pageerror', (error) => results.push(`  [pageerror] ${error.message}`));
+let localModelRequested = false;
+let imglyModelRequested = false;
+page.on('request', (request) => {
+  if (/birefnet-lite-512.*model_fp16\.onnx/i.test(request.url())) localModelRequested = true;
+  if (request.url().includes('/imgly/')) imglyModelRequested = true;
+});
 
 try {
   await page.goto(BASE, { waitUntil: 'load' });
@@ -80,6 +86,22 @@ try {
   if (await masterFrames.inputValue() !== '20') throw new Error('master 取樣格數應預設為 LINE High smoothness 的 20 格');
   const removalMode = page.getByLabel('去背方式');
   if (await removalMode.inputValue() !== 'none') throw new Error('影片去背方式應預設為不去背');
+  await removalMode.selectOption('imgly');
+  await page.waitForSelector('[role="dialog"] >> text=在這台裝置執行 IMG.LY 去背？', { timeout: 10_000 });
+  await page.waitForSelector('[role="dialog"] >> text=沒有 Colab 模式');
+  await page.getByRole('button', { name: '我了解，使用 IMG.LY' }).click();
+  if (await removalMode.inputValue() !== 'imgly') throw new Error('明確確認後應啟用 IMG.LY');
+  if (imglyModelRequested) throw new Error('只選擇 IMG.LY、尚未開始工作時不應下載模型');
+  results.push('✓ IMG.LY 為純本機選項，顯示 84 MiB／長時間／手機風險且保持 lazy download');
+  await removalMode.selectOption('none');
+  await removalMode.selectOption('local-birefnet');
+  await page.waitForSelector('[role="dialog"] >> text=在這台裝置執行實驗性 BiRefNet？', { timeout: 10_000 });
+  await page.waitForSelector('[role="dialog"] >> text=44.4M 指模型參數數量，不是 44 MB 下載檔');
+  await page.getByRole('button', { name: '我了解，使用本機去背' }).click();
+  if (await removalMode.inputValue() !== 'local-birefnet') throw new Error('明確確認後應啟用本機 BiRefNet');
+  if (localModelRequested) throw new Error('只選擇本機 BiRefNet、尚未開始工作時不應下載模型');
+  results.push('✓ 本機 BiRefNet 可明確啟用，先顯示 94 MiB／長時間／手機風險且保持 lazy download');
+  await removalMode.selectOption('none');
   await removalMode.selectOption('colab-birefnet');
   await page.waitForSelector('[role="dialog"] >> text=啟用實驗性 Colab BiRefNet 去背？', { timeout: 10_000 });
   await page.getByRole('button', { name: '知道了' }).click();
