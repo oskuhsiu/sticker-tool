@@ -131,6 +131,19 @@ function backgroundBlock(transparent: boolean): string {
   ].join('\n');
 }
 
+function foregroundTextBlock(): string {
+  return [
+    'FOREGROUND TEXT AND SYMBOLS (background-removal safe): do not add text unless it is',
+    'explicitly requested by the reference, per-cell content, or motion description.',
+    'When text, lettering, speech bubbles, symbols, or punctuation are requested, render every',
+    'part as solid, fully opaque foreground artwork with bold shapes, thick outlines, and strong',
+    'contrast. Keep the complete text block touching or clearly overlapping the main subject, or',
+    'inside a solid opaque bubble/badge that touches the subject, so they form one foreground group.',
+    'No floating, detached, faint, semi-transparent, hairline, or background-colored lettering.',
+    'Never treat requested text or symbols as background decoration.',
+  ].join('\n');
+}
+
 function layoutBlock(layout: GridLayout): string {
   const { cols, rows, count } = layout;
   const cells = cols * rows;
@@ -176,6 +189,7 @@ export function buildSheetPrompt(opts: SheetPromptOptions): string {
     styleBlock(style),
     consistencyBlock(isCharacter, hasReference),
     backgroundBlock(transparent),
+    foregroundTextBlock(),
     layoutBlock(layout),
     `PER-CELL CONTENT (same character, different pose/expression):\n${perCell}`,
     'Make each sticker expressive, readable at small size, and friendly for chat use.',
@@ -197,6 +211,7 @@ export function buildFramesPrompt(opts: FramesPromptOptions): string {
     styleBlock(style),
     consistencyBlock(isCharacter, hasReference),
     backgroundBlock(transparent),
+    foregroundTextBlock(),
     layoutBlock(layout),
     [
       'FRAME RULES: frames are time-ordered (cell 1 = first frame … last cell = last frame).',
