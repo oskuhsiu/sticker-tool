@@ -19,6 +19,10 @@ export interface ProcessAnimatedOptions {
   /** 動態畫布上限，預設 320×270 */
   bounds?: Bounds;
   removeBackground: RemoveBgMode;
+  /** Browser-only injected remover (IMG.LY/BiRefNet/Colab); runs after frame subsampling and before stabilization. */
+  removeBackgroundRaster?: (input: Raster, signal?: AbortSignal) => Promise<Raster>;
+  signal?: AbortSignal;
+  onBackgroundProgress?: (completed: number, total: number) => void;
   stroke?: StrokeSpec;
   text?: TextSpec;
   animation: AnimationConfig;
@@ -32,6 +36,10 @@ export interface ProcessedAnimated {
   notes: string[];
   /** fit 後對齊的影格（供產動態 main.png 用） */
   fittedFrames: Raster[];
+  /** 最終 APNG 相對於輸入 fitted sequence 實際採用的索引。 */
+  usedFrameIndices: number[];
+  /** 最終 APNG 每格的整數毫秒延遲。 */
+  frameDelaysMs: number[];
 }
 
 const DEFAULT_BOUNDS: Bounds = { width: ANIMATED_SPEC.maxWidth, height: ANIMATED_SPEC.maxHeight };
@@ -57,12 +65,17 @@ export async function processAnimated(
   const W = frames[0]!.width;
   const H = frames[0]!.height;
   const prepped: Raster[] = [];
-  for (const f of frames) {
+  for (let index = 0; index < frames.length; index++) {
+    const f = frames[index]!;
+    if (opts.signal?.aborted) throw new DOMException('動畫處理已取消', 'AbortError');
     let r = f.width === W && f.height === H ? f : resizeRaster(f, W, H);
-    if (opts.removeBackground !== false) {
+    if (opts.removeBackgroundRaster) {
+      r = await opts.removeBackgroundRaster(r, opts.signal);
+    } else if (opts.removeBackground !== false) {
       r = (await applyBackgroundRemoval(r, opts.removeBackground)).raster;
     }
     prepped.push(r);
+    opts.onBackgroundProgress?.(index + 1, frames.length);
     await yieldToUI();
   }
 
@@ -121,5 +134,12 @@ export async function processAnimated(
     frames: apngInfo.frames,
     loops: apngInfo.loops,
   };
-  return { png: fit.png, info, notes, fittedFrames: fitted };
+  return {
+    png: fit.png,
+    info,
+    notes,
+    fittedFrames: fit.usedFrameIndices.map((index) => fitted[index]!),
+    usedFrameIndices: fit.usedFrameIndices,
+    frameDelaysMs: fit.delaysMs,
+  };
 }

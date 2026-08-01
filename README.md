@@ -1,138 +1,266 @@
 # sticker-tool
 
-把原圖（本機照片或 AI 生成）自動處理成符合 **LINE Creators Market** 規格、可直接上架的貼圖包。
-去背 → 裁切置中 → 縮放 → 描邊 / 疊字 → 打包（含 main/tab/序號圖 + zip），靜態與動態（APNG）皆支援。
+`sticker-tool` turns local images or externally generated sprite sheets into deterministic packages that target the [LINE Creators Market](https://creator.line.me/en/guideline/sticker) format.
 
-> CLI 為初期形態；純邏輯核心（`src/core/`）平台無關，未來可搬到 mobile（React Native）重用「產 prompt」那層。
+It provides two execution surfaces:
 
-## 功能
+- A Node.js CLI for deterministic image processing, APNG encoding, validation, and ZIP packaging.
+- A static React web app that processes locally by default. Its image workflows offer no removal, solid-color keying, browser-local IMG.LY, browser-local BiRefNet, or opt-in BiRefNet through a temporary Google Colab session started by the user.
 
-- **產圖與打包解耦**
-  - **AI 產圖交給 [char-gen](.claude/skills/char-gen) skill**（codex 內建 `image_gen`；角色包單張組圖、單次產完保證同一人）。本 CLI 不自帶 codex 產圖，只吃現成圖。
-  - 整條「產圖 → 打包」由 [line-sticker-pack](.claude/skills/line-sticker-pack) skill 指揮；CLI 是底層的確定性打包器。
-  - `local`：本機圖片，用免費本地模型（@imgly）去背，直接走 `build`。
-- **組圖 → 切格**：一張大圖含多格貼圖，由目標張數自動決定 rows×cols；等分切格（`equal`）或切後補去背（`equal+rembg`）。
-- **規格自動修復**：等比縮放置中、偶數長寬、10px 邊距、單張壓到 ≤1MB（靜態減色 / 動態降色階）。
-- **白色描邊**（可開關）、**疊字**（SVG，字型 base64 內嵌，中文不會變豆腐）。
-- **動態貼圖 APNG**：連續影格 → APNG，循環 1–4 次（非無限），auto-fit 到 ≤1MB（多數情況保全影格）。
-- **完整上架包**：`main.png`（動態包為 APNG）、`tab.png`、`01.png…` 序號圖、`.zip`，並逐項驗證 LINE 規格。
+AI image generation is intentionally outside the application. Use any image generator, the prompt builder, or the project-local skills under `.claude/skills/`, then give the resulting images to the CLI or web app.
 
-## 網頁版（GitHub Pages）
+## Features
 
-CLI 功能（除 AI 產圖外）已有**純靜態網頁版**：[`web/`](web/)。瀏覽器內完成去背（onnx wasm）、
-切格、fit、描邊、疊字、APNG、打包驗證，圖片不離開裝置；`prompt` 功能變成「產圖 Prompt」分頁，
-接任何外部 AI 產圖工具補上產圖環節。push `master` 後由 GitHub Actions 自動部署
-（Settings → Pages → Source 選 GitHub Actions），詳見 [web/README.md](web/README.md)。
+- Static sticker packs from individual PNG, JPEG, or WebP files.
+- Static packs from one or more sprite sheets.
+- Animated APNG stickers from frame files or a frame sheet.
+- Animated APNG packs cropped from a fixed-grid video sheet in the browser.
+- Transparent, green-screen, and opaque-background handling.
+- Content-aware sheet cutting that finds gutters and preserves components crossing nominal grid lines.
+- Canvas fitting, even dimensions, transparent margins, optional outlines, and text overlays.
+- Static PNG quantization and animated color/frame reduction to fit the 1 MB limit.
+- `main.png`, `tab.png`, numbered sticker files, ZIP packaging, and shared metadata-based LINE checks.
+- Browser-side previews, downloads, grid mismatch warnings, and manual animation alignment.
+- Prompt generation for static sticker sheets and animation frame sheets.
+- A standalone Colab + BiRefNet tutorial with a downloadable Notebook, an astronaut benchmark, and CPU/GPU/model choices.
+- Experimental local BiRefNet across the browser image, sheet, animation, and video workflows, with a lazy model download, WebGPU/WASM execution, and explicit mobile/runtime warnings.
 
-## 安裝
+## Requirements
 
-需 Node.js ≥ 20。AI 產圖由 char-gen skill 透過已登入的 [codex CLI](https://github.com/openai/codex) 完成（吃 codex 自身登入，**不需** OpenAI API key）；只做本機圖片打包則不需 codex。
+- Node.js 20 or newer.
+- A local font file (`.otf` or `.ttf`) when the CLI needs to render non-system text reliably.
+- Network access on the first semantic background-removal run so model assets can be obtained. Local BiRefNet downloads a pinned 98,484,532-byte fp16 ONNX file (about 94 MiB) on first use; 44.4M is its parameter count, not its download size.
 
-```bash
-npm install
-```
+## CLI quick start
 
-CLI 透過 `npm run sticker -- <args>`（開發）或 build 後的 `sticker-tool` 執行。下文以 `sticker-tool` 代稱。
-
-## 使用
-
-### 本機圖片 → 靜態貼圖
+Install dependencies:
 
 ```bash
-sticker-tool build <輸入圖目錄> --count 8 --out out --name "My Pack"
-# 選項：--no-remove-bg（不去背）、--stroke --stroke-width 8、--max-size 370x320、--cover 1
+npm ci
+npm run sticker -- --help
 ```
 
-### AI 產圖 → 靜態貼圖（兩步：先產圖、再打包）
+Create a static pack from a directory of images:
 
 ```bash
-sticker-tool init                              # 產生 sticker.config.yaml 範例
-# 1) 用 char-gen skill 產一張透明組圖（如 out/_sheets/sheet_01.png）
-# 2) 切格 + 打包現成組圖（--sheet 一張版面給一個，相對 CWD）：
-sticker-tool gen --config sticker.config.yaml --sheet out/_sheets/sheet_01.png --out out
+npm run sticker -- build ./input \
+  --count 8 \
+  --out ./out \
+  --name "My Pack" \
+  --stroke
 ```
 
-> 整段流程（產圖 → 寫 config → 打包 → 驗證）可交給 `line-sticker-pack` skill 一手指揮。
+Input files are selected in natural filename order. The command writes `main.png`, `tab.png`, `01.png` onward, and `My_Pack.zip` to the output directory.
 
-### 動態貼圖（APNG）
+Create a configuration file and package an existing sprite sheet:
 
 ```bash
-# 影格一律來自本機路徑（每個 sticker 在設定檔給 frames: [...]）。
-# AI 影格先用 char-gen skill 產出 frame_01.png…，再把路徑寫進 config：
-sticker-tool anim --config anim.config.yaml --out out
-
-# 單組圖模式：一張 frames-sheet（4x4=16 格）→ 一段 APNG
-sticker-tool anim --sheet sheet.png --grid 4x4 --duration 2 --loops 1 --out out
-# 網格與內容不符（如內容 4×4 卻給 5x4）會由前景縫隙推斷並警告——切下去會整組錯位漂移
+npm run sticker -- init --out sticker.config.yaml
+npm run sticker -- gen \
+  --config sticker.config.yaml \
+  --sheet ./sheet.png \
+  --out ./out
 ```
 
-### 只產 prompt（mobile / 半自動）
+Create one APNG from a frame sheet:
 
 ```bash
-sticker-tool prompt --config sticker.config.yaml   # 輸出產圖 prompt，自行貼到外部工具
+npm run sticker -- anim \
+  --sheet ./frames.png \
+  --grid 4x4 \
+  --frames 16 \
+  --duration 2 \
+  --loops 1 \
+  --out ./out \
+  --name wave
 ```
 
-## 設定檔
+Create a complete animated pack from `stickers[].frames` in a configuration file:
 
-`sticker-tool init` 會產生帶註解的範例。重點欄位：
+```bash
+npm run sticker -- anim --config anim.config.yaml --out ./out
+```
+
+Each `stickers[].frames` entry must contain 5–20 individual frame image paths. It does not accept a frame-sheet PNG or an already encoded APNG as one entry.
+
+Generate a prompt without calling an image model:
+
+```bash
+npm run sticker -- prompt --config sticker.config.yaml
+```
+
+The shared prompt builder tells image generators not to invent text. When lettering, speech bubbles,
+symbols, or punctuation are explicitly requested, it asks for bold, fully opaque foreground artwork
+that touches or overlaps the main subject. This makes generated assets friendlier to later foreground
+segmentation, but cannot guarantee that every background-removal model will retain every glyph.
+
+The CLI prompt command currently emits the static sheet prompt even for animated configurations. Use the web app's animation-frame prompt mode when an animated prompt is required; this mismatch is tracked in the implementation audit.
+
+Build the distributable CLI:
+
+```bash
+npm run typecheck
+npm run build
+```
+
+The build produces `dist/index.js` and exposes it through the `sticker-tool` package binary.
+
+## Configuration
+
+The CLI accepts YAML or JSON. Run `init` for the annotated example, or start from [examples/sticker.config.yaml](examples/sticker.config.yaml).
 
 ```yaml
-package: { name: "My Stickers", count: 8 }   # 靜態 8/16/24/32/40；動態 8/16/24
-source: ai                                   # ai | local
+package:
+  name: "My Stickers"
+  count: 8
+  # animated: true
+
+source: ai # ai | local
+
 ai:
-  style: "flat cartoon, bold black outline, pastel palette"
-  transparent: true        # 請 codex 直接輸出透明背景
-  isCharacter: true        # 角色包→單次單張組圖（保證同一人）
-  grid: auto               # auto | "4x2"
-  crop: equal              # equal | equal+rembg
-  forceOversizeSet: false  # 角色包 >16 張須開啟才允許（接受降質）
+  style: "flat cartoon, bold outline, pastel palette"
+  transparent: true
+  isCharacter: true
+  grid: auto # auto | "4x2"
+  crop: equal # accepted by schema; current gen path uses component-aware cutSheet instead
+  forceOversizeSet: false
+
 processing:
-  removeBackground: auto   # 省略時 local→true、ai→false；auto=偵測殘留才補刀
-  stroke: { enabled: true, width: 8, color: "#ffffff" }
-animation:                 # 動態包
-  loops: 1                 # 1–4（不可無限）
-  durationSec: 2           # loops × 單輪 ≤ 4s
-  autoFit: true            # 超標自動減色至 ≤1MB
-  maxColors: 0             # 減色上限：0=自動（超標才減）；256/128/64=一開始就減（檔案小）
-stickers:                  # local 或逐張覆寫（疊字 / 動態影格）
-  - frames: [a.png, b.png, c.png]
-    fps: 10
-    text: { content: "嗨", x: 50, y: 88, size: 40, color: "#000", font: "/path/Noto.otf" }
+  removeBackground: auto # true | false | auto
+  stroke:
+    enabled: true
+    width: 8
+    color: "#ffffff"
+
+cover: 1
+
+animation:
+  loops: 1
+  durationSec: 2 # current pipeline treats this as per-loop; use only 1, 2, 3, or 4
+  autoFit: true # accepted by schema; current animation pipeline always auto-fits
+  priority: balanced
+  minColors: 16
+  maxColors: 0
+  minFrames: 5
+  ladder: auto
+
+stickers:
+  - frames: [wave_01.png, wave_02.png, wave_03.png, wave_04.png, wave_05.png]
+    text:
+      content: "Hi"
+      x: 50
+      y: 88
+      size: 40
+      color: "#000000"
+      font: ./fonts/NotoSansTC-Bold.otf
 ```
 
-## LINE 規格（已寫死為常數驗證）
+Paths declared inside the configuration file, such as frame and font paths, resolve relative to that file. CLI arguments such as `--sheet` and `--out` resolve relative to the current working directory. Command-line `--count` and `--name` values override the configuration.
 
-| | 靜態 | 動態（APNG） |
-|---|---|---|
-| 單張尺寸 | ≤ 370×320 | ≤ 320×270 且一邊 ≥ 270 |
-| 長寬 | 偶數、透明 RGBA | 偶數、透明 RGBA |
-| 單檔 | ≤ 1MB | ≤ 1MB、影格 5–20、循環 1–4 |
-| 張數 | 8/16/24/32/40 | 8/16/24 |
-| main / tab | 240×240 / 96×74 | main 須 APNG、tab 靜態 |
+The current schema accepts some fields that are not consumed consistently by every workflow, including `ai.crop`, `animation.autoFit`, and several per-sticker generation fields. See [plan/implementation-audit.md](plan/implementation-audit.md) before relying on advanced configuration.
 
-整包壓成 `.zip`（≤60MB）；靜態與動態**不可混在同一包**。
+## Web app
 
-## 架構
+The web application is under [`web/`](web/). It has five tabs. Four correspond to CLI workflows; the
+video workflow is browser-only:
 
-```
-.claude/skills/
-  char-gen/          # 產圖：用 codex image_gen 產角色一致的組圖/影格（agent 驅動）
-  line-sticker-pack/ # 指揮：串起 char-gen 產圖 → sticker-tool 打包 → 驗證
-src/
-  core/        # 純邏輯、平台無關（mobile 可重用）：spec / types / validate / naming / grid / prompt / color
-  config/      # zod schema + 載入正規化
-  pipeline/    # Node 影像處理：cropGrid / removeBackground / fitCanvas / stroke / text / pngFit / apng / processStatic / processAnimated
-  package/     # buildMainTab / buildZip
-  cli/         # build / gen / anim / prompt / init（皆為確定性打包；不含 codex）
+- Local images → static pack.
+- Sprite sheet → static pack.
+- Frame sheet or frame groups → APNG or animated pack.
+- Fixed-grid video → editable master APNG chunks → adjusted animated pack.
+- Static or animated image prompt generation.
+
+Run it locally:
+
+```bash
+cd web
+npm ci
+npm run dev
 ```
 
-`core/prompt.ts` 是 mobile 唯一要重用的鄰接層（mobile 不直接生圖，只產 prompt）；`pipeline/` 為 Node-only 重活。AI 產圖已外移到 char-gen skill，CLI 本身不呼叫 codex。
+Build the static site:
 
-## 注意與限制
-
-- **角色一致性**：跨 codex 呼叫守不住臉（會變「同一套衣服不同人」），故角色包一律**單次呼叫、單張組圖**，由 char-gen skill 以「餵回同一張參照圖 + 看圖驗證」保證。8 張品質最佳、16 張會警告降質、≥24 張預設擋下（需 `forceOversizeSet`）。多張大圖僅用於非角色（物件/風景）。
-- **產圖／打包分工**：產圖（難、靠判斷、會漂移）交 char-gen skill；CLI 只做切格 / 去背 / fit / 疊字 / 壓縮 / 打包的確定性流程。解耦的好處是打包失敗多半調個參數重跑即可，不必重畫、不浪費 codex 額度。
-- **去背**：`@imgly` 首次執行需從 CDN 下載 onnx 模型（非真離線）；無法直接搬到 mobile，屬平台專屬重寫項。
-- **中文字型**：疊字一律 base64 內嵌字型檔；給家族名會走 `fc-match` 解析，找不到字型會**報錯**而非靜默 fallback 成豆腐。建議直接給 `.otf/.ttf` 路徑。
-- **動態 APNG**：用純 JS 的 `upng-js`（可攜），編碼後改寫 acTL `num_plays` 以符合 LINE 的 1–4 循環。
+```bash
+npm run build
+npm run preview
 ```
+
+The GitHub Pages workflow builds and deploys the site on pushes to either `main` or `master`. See [web/README.md](web/README.md) for browser-specific behavior and smoke-test instructions.
+
+The web app processes image and video pixels locally by default. Build, Sheet, Anim, and Video each expose the same five background choices: preserve the source, solid-color keying, browser-local IMG.LY, browser-local BiRefNet, or BiRefNet through the user's temporary Colab endpoint. IMG.LY has no Colab branch. All model choices are opt-in and never silently fall back to color keying.
+
+IMG.LY downloads its self-hosted medium model and WASM runtime only when selected. The current model resources total 88,188,479 bytes (about 84 MiB). A clean desktop-Chrome verification completed eight opaque test images in about 116 seconds; this is evidence that the adapter works, not a runtime promise. The UI warns that first use can be slow and that phones may run out of memory or never finish.
+
+**Local BiRefNet (experimental)** lazy-loads the browser runtime after the user selects it and starts a job, then downloads the pinned `studioludens/birefnet-lite-512` fp16 model revision `4a3c40c36c94093cc1e724d9ea428b8fa4b57dc7`. The model runs in a Web Worker, prefers WebGPU, falls back to WASM, processes one raster at a time, and is disposed when the job ends. Model files use the browser cache; selected pixels are not uploaded. The UI reports the estimated inference count, warns every user that the job may take a long time, and specifically warns that a phone or tablet may exhaust memory or never finish. Mobile use is allowed but not claimed as supported.
+
+The independent `#/colab-birefnet` guide provides a downloadable [Colab Notebook](examples/colab/sticker-tool-birefnet-colab.ipynb). Users choose BiRefNet lite, full, or dynamic and `auto`/GPU/CPU. Lite/full use a selected 512 or 1024 square input; dynamic treats that choice as a maximum edge, does not upscale smaller crops, preserves aspect ratio, and rounds both dimensions down to multiples of 32. Before any user material is sent, the Notebook runs an included `skimage.data.astronaut()` benchmark and shows the source, mask, transparent result, actual inference size, model load time, and seconds per crop. If the result is acceptable, the last cell starts a temporary FastAPI endpoint through a Cloudflare Quick Tunnel.
+
+Current Colab images may preinstall Google ADK, Gradio, and FastHTML versions whose FastAPI, Starlette, and Hugging Face Hub requirements conflict with the pinned BiRefNet environment. The Notebook removes those three unused packages before installing its fixed dependencies. This affects only the disposable runtime and does not remove any package from the user's account or Drive.
+
+The optional Colab branch sends one input image or already-cropped sheet/video cell at a time to that temporary endpoint, receives a bounded grayscale mask, and applies alpha locally. For sheets, overlapping nominal-cell masks are merged before component-aware cutting so a subject crossing a grid line is not clipped. Original video, audio, complete video frames, downloads, and Project ZIP never leave the browser. The rotating `*.trycloudflare.com/remove` URL and random session key stay only in current React memory. Colab and Quick Tunnel runtimes are temporary and unguaranteed; restarting either requires a new connection.
+
+The **Video → APNG** tab accepts a browser-decodable local video such as MP4, MOV, or WebM. It samples
+an explicit editable time window, applies one stable grid to every sampled frame, and writes bounded
+internal master APNG chunks. Per-sticker start/end time, output frame count, playback duration, loop
+count, and color reduction can then be changed without reopening the video. A LINE ZIP contains only
+`main.png`, `tab.png`, and numbered APNG files. A separate editable Project ZIP contains the master
+chunks, immutable baseline renders, current adjusted renders, metrics, and a versioned manifest; it
+does not contain the source video or audio.
+
+The video source grid may contain any positive number of cells, including fewer than the 8 stickers
+required for a LINE animated pack. Such sources can still produce editable APNGs and a Project ZIP;
+the LINE ZIP validation gate continues to require 8, 16, or 24 stickers. Solid-color keying is off by
+default because a black background may share pixels with hair, eyes, clothing, or text outlines.
+Colab BiRefNet is also off by default and requires an explicit confirmation. The UI reports
+`sample timestamps × grid cells` as the approximate number of sequential remote inferences so users
+can multiply it by the Notebook benchmark before starting a large job. Master sampling defaults to
+20 frames, matching LINE Creators App's High smoothness setting; higher master counts remain available
+for finer timeline editing while final LINE APNG output is always constrained to 5–20 frames.
+
+IMG.LY, local BiRefNet, and Colab BiRefNet are mutually exclusive. None silently falls back to solid-color keying: local BiRefNet may fall back only from WebGPU to local WASM, while a model or remote-session failure is reported and leaves the source/settings available for retry.
+
+## LINE constraints targeted by the project
+
+| Constraint | Static | Animated |
+|---|---:|---:|
+| Sticker canvas | Up to 370×320 | Up to 320×270, with one side at least 270 px |
+| Dimensions | Even, transparent RGBA | Even, transparent RGBA |
+| File size | At most 1 MB | At most 1 MB |
+| Pack counts | 8, 16, 24, 32, or 40 | 8, 16, or 24 |
+| Animation | — | APNG, 5–20 frames, 1–4 loops |
+| Main image | 240×240 PNG | 240×240 APNG |
+| Tab image | 96×74 PNG | 96×74 PNG |
+
+The final ZIP is limited to 60 MB. Static and animated stickers cannot be mixed in one pack.
+
+The current validator checks much of this metadata, but validation success is not proof that a package is uploadable. It does not yet fully verify decoded visual transparency/content, exact animation timing, distinct animation frames, or all main/tab constraints. The source-grounded list of known functional and compliance gaps is [plan/implementation-audit.md](plan/implementation-audit.md).
+
+## Project layout
+
+```text
+src/core/       Shared platform-neutral rules, grid/cell analysis, prompts, and validation
+src/config/     YAML/JSON schema validation and normalization
+src/pipeline/   Node image processing and APNG implementation
+src/package/    Main/tab generation and ZIP assembly
+src/cli/        Command-line entry point and commands
+web/src/ui/     React workflow tabs and result views
+web/src/webpipe Browser image-processing adapters
+web/src/ui/VideoTab.tsx Browser-only video-to-APNG project workflow
+examples/colab/ Downloadable Colab Notebook and its reproducible generator
+.claude/skills/ Project-local generation and packaging workflows
+```
+
+Read [ARCHITECTURE.md](ARCHITECTURE.md) for the component boundaries, data flows, and design decisions.
+
+## Operational notes
+
+- Character identity is most reliable when all poses are generated in one sheet from one reference image. Eight cells give the best detail; 16 cells are supported with a quality warning. Prompt planning requires an explicit override for larger character sheets, while packaging a pre-existing sheet currently only warns.
+- Node semantic background removal uses `@imgly/background-removal-node` and may download model assets on first use.
+- Browser-local IMG.LY and BiRefNet are explicit opt-in choices. Their model downloads are about 84 MiB and 94 MiB respectively, inference is sequential, and mobile completion is not guaranteed.
+- Browser sprite-sheet semantic removal runs overlapping cell crops and merges their alpha masks before component-aware cutting. Solid-color keying remains the faster deterministic choice for transparent or flat-background sheets.
+- Animated frame files are stabilized before fitting. Frame sheets skip the later subject-anchor stabilizer, but the current grid extraction also applies scene and lower-body alignment; this can suppress intentional motion such as jumping.
+- The CLI overwrites files produced by the current run but does not clean unrelated or stale files from an existing output directory. The ZIP contains only files from the current run.
+- The generated-image and packaging workflows are separated so a packaging adjustment does not require regenerating artwork.
+- Video codec support follows the current browser media stack. The video workflow uses time-uniform
+  seek samples rather than claiming to enumerate every compressed source frame, and it ignores source
+  audio because the Creators Market animated-sticker upload set has no audio file entry.

@@ -1,6 +1,9 @@
 node_modules/
+
+# Generated application and package output
 dist/
 out/
+output/
 *.log
 .DS_Store
 
@@ -24,3 +27,10 @@ web/_mobile/
 
 # Claude Code 執行期暫存
 .claude/scheduled_tasks.lock
+
+# Agent session handoff
+handoff.md
+
+# Local agent context
+AGENTS.md
+ARCHITECTURE.md

@@ -6,9 +6,15 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ANIMATED_SPEC, maxBounds } from '@core/spec.js';
-import type { RemoveBgMode } from '@core/types.js';
+import { parseColor } from '@core/color.js';
 import { validateAnimatedImage, validateCount, validatePack } from '@core/validate.js';
 import { decodeBlob, yieldToUI, type Raster } from '../webpipe/raster.js';
+import {
+  createBackgroundRemovalJob,
+  type BackgroundRemovalJob,
+  type WebBackgroundRemovalMode,
+} from '../webpipe/backgroundRemovalJob.js';
+import { removeSheetBackgroundByCells } from '../webpipe/sheetBackgroundRemoval.js';
 import { cutSheet } from '../webpipe/sheetAnalysis.js';
 import { setApngNumPlays } from '../webpipe/apng.js';
 import { processAnimated, type ProcessedAnimated } from '../webpipe/processAnimated.js';
@@ -19,7 +25,8 @@ import { PackResult, type PackResultData } from './packResult.jsx';
 import { DEFAULT_TEXT_STYLE, makeAnimation, makeStroke, makeText, parseGridText, type SharedTextStyle } from './defaults.js';
 import { ManualLayout } from './ManualLayout.jsx';
 import { reportCut } from './cutReport.js';
-import { useModelProgress } from './modelProgress.js';
+import { BackgroundRemovalControl } from './BackgroundRemovalControl.jsx';
+import { useColabBirefnetConnection } from './colabBirefnetConnection.jsx';
 import type { ValidationResult } from '@core/types.js';
 
 type Mode = 'sheet' | 'pack';
@@ -52,18 +59,20 @@ function SheetMode() {
   const [duration, setDuration] = useState(2);
   const [loops, setLoops] = useState(1);
   const [name, setName] = useState('anim');
-  const [autoRemoveBg, setAutoRemoveBg] = useState(true);
+  const [removeBgMode, setRemoveBgMode] = useState<WebBackgroundRemovalMode>('color-key');
   const [pickColor, setPickColor] = useState<[number, number, number] | null>(null);
   const [gridGuard, setGridGuard] = useState(true);
   const [loopPreview, setLoopPreview] = useState(true);
   const [maxColors, setMaxColors] = useState(0);
   const [replayKey, setReplayKey] = useState(0);
   const [busy, setBusy] = useState(false);
+  const [modelStatus, setModelStatus] = useState<string | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
   // 切好的影格（手動排版用）；id 區分每次切格，讓編輯器重設偏移
   const [editor, setEditor] = useState<{ frames: Raster[]; id: number } | null>(null);
   const [result, setResult] = useState<{ png: Uint8Array; caption: string; validation: ValidationResult } | null>(null);
   const logger = useLogger();
-  const modelStatus = useModelProgress();
+  const { connection: colabConnection, registerActiveRemoval } = useColabBirefnetConnection();
 
   // 編好的 APNG 循環次數是 LINE 規格的 1–4；預覽循環＝把副本的 acTL num_plays 改 0（無限）
   const previewPng = useMemo(
@@ -96,6 +105,10 @@ function SheetMode() {
     setResult(null);
     setEditor(null);
     setBusy(true);
+    const abort = new AbortController();
+    abortRef.current = abort;
+    const unregister = removeBgMode === 'colab-birefnet' ? registerActiveRemoval(abort) : null;
+    let removalJob: BackgroundRemovalJob | null = null;
     try {
       const file = sheet[0];
       if (!file) {
@@ -108,17 +121,41 @@ function SheetMode() {
         return;
       }
       const count = framesN.trim() ? Number(framesN) : grid.cols * grid.rows;
+      removalJob = await createBackgroundRemovalJob({
+        mode: removeBgMode,
+        signal: abort.signal,
+        pickColor: removeBgMode === 'color-key' ? pickColor : null,
+        colabConfig: colabConnection?.config,
+        onStatus: setModelStatus,
+      });
 
       logger.log('step', `切格 ${grid.cols}×${grid.rows}（取前 ${count} 格）← ${file.name}`);
       const raster = await decodeBlob(file);
+      const semantic = removeBgMode === 'imgly'
+        || removeBgMode === 'local-birefnet'
+        || removeBgMode === 'colab-birefnet';
+      const prepared = semantic
+        ? await removeSheetBackgroundByCells(raster, {
+            cols: grid.cols,
+            rows: grid.rows,
+            remove: removalJob.remove,
+            signal: abort.signal,
+            onProgress: (done, total) => setModelStatus(`${removalJob!.label}：crop ${done}/${total}`),
+          })
+        : raster;
       // align 'grid'：元件式抽格＋按原圖等分格座標對齊——場景固定不閃，
       // 不再做頭錨點穩定化（錨點平移會把場景物件推出畫布）
-      const cut = await cutSheet(raster, {
+      const cut = await cutSheet(prepared, {
         cols: grid.cols,
         rows: grid.rows,
         count,
         align: 'grid',
-        key: { autoRemove: autoRemoveBg, pickColor },
+        key: semantic
+          ? { autoRemove: false, preRemovedLabel: removalJob.label }
+          : {
+              autoRemove: removeBgMode === 'color-key',
+              pickColor: removeBgMode === 'color-key' ? pickColor : null,
+            },
       });
       reportCut(cut, logger);
 
@@ -139,8 +176,17 @@ function SheetMode() {
       setEditor({ frames: cut.cells, id: Date.now() });
       await buildFrom(cut.cells, '動畫 APNG');
     } catch (e) {
-      logger.log('err', e instanceof Error ? e.message : String(e));
+      if (e instanceof DOMException && e.name === 'AbortError') logger.log('warn', '處理已取消');
+      else logger.log('err', e instanceof Error ? e.message : String(e));
     } finally {
+      try {
+        await removalJob?.dispose();
+      } catch (e) {
+        logger.log('err', `釋放去背模型失敗：${e instanceof Error ? e.message : String(e)}`);
+      }
+      unregister?.();
+      if (abortRef.current === abort) abortRef.current = null;
+      setModelStatus(null);
       setBusy(false);
     }
   }
@@ -157,6 +203,11 @@ function SheetMode() {
     }
   }
 
+  const estimateGrid = parseGridText(gridText);
+  const sheetInferenceEstimate = estimateGrid
+    ? estimateGrid.cols * estimateGrid.rows
+    : null;
+
   return (
     <>
       <p className="tab-desc">
@@ -171,6 +222,13 @@ function SheetMode() {
           setSheet(files);
           setPickColor(null); // 換圖後點選色失效
         }}
+      />
+      <BackgroundRemovalControl
+        value={removeBgMode}
+        onChange={setRemoveBgMode}
+        disabled={busy}
+        inferenceCount={sheetInferenceEstimate}
+        colorHelp={<span className="layout-hint">可自動偵測，或在下方直接點選背景色</span>}
       />
       <Row>
         <Field label="網格（如 4x4）">
@@ -190,9 +248,6 @@ function SheetMode() {
         </Field>
       </Row>
       <Row>
-        <Field label="自動去背（綠幕/單色色鍵）">
-          <input type="checkbox" checked={autoRemoveBg} onChange={(e) => setAutoRemoveBg(e.target.checked)} />
-        </Field>
         <Field label="網格防呆（網格與內容不符時擋下）">
           <input type="checkbox" checked={gridGuard} onChange={(e) => setGridGuard(e.target.checked)} />
         </Field>
@@ -208,11 +263,12 @@ function SheetMode() {
           </select>
         </Field>
       </Row>
-      {autoRemoveBg && <ColorPickFromImage file={sheet[0] ?? null} value={pickColor} onChange={setPickColor} />}
+      {removeBgMode === 'color-key' && <ColorPickFromImage file={sheet[0] ?? null} value={pickColor} onChange={setPickColor} />}
       <div className="run-row">
         <button className="btn primary" disabled={busy || sheet.length === 0} onClick={() => void run()}>
           {busy ? '處理中…' : '切格並產生動畫'}
         </button>
+        {busy && <button className="btn" onClick={() => abortRef.current?.abort()}>取消</button>}
         {modelStatus && <span className="model-status">{modelStatus}</span>}
       </div>
       <LogPane lines={logger.lines} />
@@ -320,7 +376,8 @@ function PackMode() {
   const [loops, setLoops] = useState(1);
   const [stabilize, setStabilize] = useState(true);
   const [maxColorsPack, setMaxColorsPack] = useState(0);
-  const [removeBgMode, setRemoveBgMode] = useState<'false' | 'auto' | 'true'>('false');
+  const [removeBgMode, setRemoveBgMode] = useState<WebBackgroundRemovalMode>('none');
+  const [backgroundColor, setBackgroundColor] = useState('#00ff00');
   const [strokeOn, setStrokeOn] = useState(false);
   const [strokeWidth, setStrokeWidth] = useState(8);
   const [strokeColor, setStrokeColor] = useState('#ffffff');
@@ -328,9 +385,11 @@ function PackMode() {
   const [textStyle, setTextStyle] = useState<SharedTextStyle>(DEFAULT_TEXT_STYLE);
   const [cover, setCover] = useState(1);
   const [busy, setBusy] = useState(false);
+  const [modelStatus, setModelStatus] = useState<string | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
   const [result, setResult] = useState<PackResultData | null>(null);
   const logger = useLogger();
-  const modelStatus = useModelProgress();
+  const { connection: colabConnection, registerActiveRemoval } = useColabBirefnetConnection();
 
   function changeCount(n: number) {
     setCount(n);
@@ -345,17 +404,30 @@ function PackMode() {
     logger.clear();
     setResult(null);
     setBusy(true);
+    const abort = new AbortController();
+    abortRef.current = abort;
+    const unregister = removeBgMode === 'colab-birefnet' ? registerActiveRemoval(abort) : null;
+    let removalJob: BackgroundRemovalJob | null = null;
     try {
       const cv = validateCount('animated', count);
       if (!cv.ok) {
         for (const i of cv.issues) logger.log('err', i.message);
         return;
       }
-      const removeBackground: RemoveBgMode = removeBgMode === 'auto' ? 'auto' : removeBgMode === 'true';
       const animation = makeAnimation({ loops, durationSec: duration, stabilize, maxColors: maxColorsPack });
       const stroke = makeStroke(strokeOn, strokeWidth, strokeColor);
       const texts = textsRaw.split('\n');
       const bounds = maxBounds('animated');
+      const parsedColor = parseColor(backgroundColor);
+      removalJob = await createBackgroundRemovalJob({
+        mode: removeBgMode,
+        signal: abort.signal,
+        pickColor: removeBgMode === 'color-key'
+          ? [parsedColor.r, parsedColor.g, parsedColor.b]
+          : null,
+        colabConfig: colabConnection?.config,
+        onStatus: setModelStatus,
+      });
 
       const processedList: ProcessedAnimated[] = [];
       for (let i = 0; i < count; i++) {
@@ -369,7 +441,12 @@ function PackMode() {
         for (const f of sortFiles(files)) frames.push(await decodeBlob(f));
         const proc = await processAnimated(frames, {
           bounds,
-          removeBackground,
+          removeBackground: false,
+          removeBackgroundRaster: removeBgMode === 'none' ? undefined : removalJob.remove,
+          signal: abort.signal,
+          onBackgroundProgress: (done, total) => setModelStatus(
+            `${removalJob!.label}：第 ${i + 1}/${count} 張，影格 ${done}/${total}`,
+          ),
           stroke,
           text: makeText(texts[i] ?? '', textStyle),
           animation,
@@ -408,11 +485,24 @@ function PackMode() {
         animated: true,
       });
     } catch (e) {
-      logger.log('err', e instanceof Error ? e.message : String(e));
+      if (e instanceof DOMException && e.name === 'AbortError') logger.log('warn', '處理已取消');
+      else logger.log('err', e instanceof Error ? e.message : String(e));
     } finally {
+      try {
+        await removalJob?.dispose();
+      } catch (e) {
+        logger.log('err', `釋放去背模型失敗：${e instanceof Error ? e.message : String(e)}`);
+      }
+      unregister?.();
+      if (abortRef.current === abort) abortRef.current = null;
+      setModelStatus(null);
       setBusy(false);
     }
   }
+
+  const inferenceEstimate = frameSets
+    .slice(0, count)
+    .reduce((sum, files) => sum + Math.min(files.length, ANIMATED_SPEC.maxFrames), 0);
 
   return (
     <>
@@ -443,14 +533,15 @@ function PackMode() {
           <input type="number" min={1} max={count} value={cover} onChange={(e) => setCover(Number(e.target.value))} />
         </Field>
       </Row>
+      <BackgroundRemovalControl
+        value={removeBgMode}
+        onChange={setRemoveBgMode}
+        disabled={busy}
+        inferenceCount={inferenceEstimate}
+        color={backgroundColor}
+        onColorChange={setBackgroundColor}
+      />
       <Row>
-        <Field label="去背">
-          <select value={removeBgMode} onChange={(e) => setRemoveBgMode(e.target.value as typeof removeBgMode)}>
-            <option value="false">不去背（影格已透明）</option>
-            <option value="auto">自動偵測殘留才去背</option>
-            <option value="true">每格強制去背（慢）</option>
-          </select>
-        </Field>
         <Field label="主體穩定化">
           <input type="checkbox" checked={stabilize} onChange={(e) => setStabilize(e.target.checked)} />
         </Field>
@@ -517,6 +608,7 @@ function PackMode() {
         <button className="btn primary" disabled={busy} onClick={() => void run()}>
           {busy ? '處理中…' : '打包動態貼圖'}
         </button>
+        {busy && <button className="btn" onClick={() => abortRef.current?.abort()}>取消</button>}
         {modelStatus && <span className="model-status">{modelStatus}</span>}
       </div>
       <LogPane lines={logger.lines} />

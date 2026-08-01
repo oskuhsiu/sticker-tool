@@ -8,10 +8,17 @@
     "dev": "vite",
     "typecheck": "tsc --noEmit",
     "build": "tsc --noEmit && vite build",
+    "test:colab": "tsx --tsconfig tsconfig.json scripts/colab-birefnet-contract.mts",
+    "test:background-removal": "tsx --tsconfig tsconfig.json scripts/background-removal-contract.mts",
+    "test:local-birefnet": "tsx --tsconfig tsconfig.json scripts/local-birefnet-contract.mts",
+    "test:video": "tsx --tsconfig tsconfig.json scripts/video-project-roundtrip.mts",
     "preview": "vite preview",
-    "smoke": "node scripts/smoke.mjs"
+    "smoke": "node scripts/smoke.mjs",
+    "smoke:local-birefnet": "node scripts/local-birefnet-browser-smoke.mjs",
+    "smoke:video": "node scripts/video-smoke.mjs"
   },
   "dependencies": {
+    "@huggingface/transformers": "3.8.1",
     "@imgly/background-removal": "1.4.5",
     "fflate": "^0.8.2",
     "react": "^18.3.1",
@@ -24,6 +31,7 @@
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.1",
     "playwright": "^1.60.0",
+    "tsx": "^4.19.1",
     "typescript": "^5.6.2",
     "vite": "^5.4.8",
     "vite-plugin-static-copy": "^1.0.6"

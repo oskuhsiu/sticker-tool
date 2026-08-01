@@ -44,6 +44,11 @@ header p {
   color: var(--muted);
   font-size: 0.92rem;
 }
+.app-guide-link {
+  display: inline-block;
+  margin: -0.35rem 0 0.8rem;
+  font-size: 0.88rem;
+}
 footer p {
   color: var(--muted);
   font-size: 0.8rem;
@@ -110,6 +115,8 @@ a {
   min-width: 0;
 }
 input[type='text'],
+input[type='url'],
+input[type='password'],
 input:not([type]),
 input[type='number'],
 select,
@@ -416,4 +423,281 @@ textarea {
   height: 1.4rem;
   border: 1px solid var(--line);
   border-radius: 4px;
+}
+
+/* 影片 → APNG（獨立 workflow） */
+.video-source-actions {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  margin: 0.8rem 0;
+}
+.video-source-card,
+.video-project-summary {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--card);
+  padding: 0.8rem 1rem;
+  margin: 0.8rem 0;
+}
+.video-source-card h3,
+.video-project-summary h3 {
+  margin: 0 0 0.4rem;
+}
+.video-grid-preview {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  margin: 0.7rem 0;
+  line-height: 0;
+}
+.video-grid-preview img {
+  display: block;
+  max-width: 100%;
+  max-height: 520px;
+  border-radius: 8px;
+}
+.video-grid-preview svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.video-grid-preview rect {
+  fill: transparent;
+  stroke: #06c755;
+  stroke-width: 3;
+  vector-effect: non-scaling-stroke;
+}
+.video-grid-preview text {
+  fill: #fff;
+  stroke: #111;
+  stroke-width: 3px;
+  paint-order: stroke;
+  font-size: 18px;
+  font-weight: 700;
+}
+.video-settings-list {
+  display: grid;
+  gap: 0.6rem;
+}
+.video-settings-card {
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 0.65rem 0.8rem;
+  background: var(--card);
+}
+.video-settings-card.dirty {
+  border-color: var(--warn);
+}
+.video-settings-head {
+  display: flex;
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+.video-settings-head strong {
+  color: var(--fg);
+}
+.video-inline-error {
+  color: var(--err);
+  font-size: 0.84rem;
+  margin: 0.35rem 0;
+}
+.ai-warning-option {
+  gap: 0.35rem;
+}
+.ai-warning-option-status {
+  color: var(--warn);
+  font-size: 0.82rem;
+}
+.ai-local-notice {
+  border: 1px solid var(--warn);
+  border-radius: 8px;
+  padding: 0.65rem 0.8rem;
+  margin: 0.45rem 0;
+  color: var(--fg);
+  font-size: 0.86rem;
+  line-height: 1.5;
+}
+.ai-warning-backdrop {
+  position: fixed;
+  z-index: 20;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgb(0 0 0 / 55%);
+}
+.ai-warning-dialog {
+  width: min(100%, 34rem);
+  max-height: calc(100dvh - 2rem);
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 1rem;
+  background: var(--card);
+  box-shadow: 0 18px 48px rgb(0 0 0 / 35%);
+}
+.ai-warning-dialog h3 {
+  margin: 0 0 0.7rem;
+}
+.ai-warning-dialog p {
+  margin: 0.7rem 0;
+  line-height: 1.55;
+}
+.ai-warning-mobile {
+  border: 1px solid var(--warn);
+  border-radius: 8px;
+  padding: 0.65rem;
+}
+.ai-warning-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.6rem;
+  margin-top: 1rem;
+}
+.ai-warning-dialog :focus-visible,
+.ai-warning-option :focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Independent Colab + BiRefNet guide (hash page, not a workflow tab). */
+.colab-guide {
+  max-width: 860px;
+}
+.colab-guide-back {
+  display: inline-block;
+  margin-bottom: 1rem;
+  font-size: 0.9rem;
+}
+.colab-guide-header {
+  margin-bottom: 1.2rem;
+}
+.colab-guide-header h1 {
+  margin: 0.2rem 0 0.5rem;
+  font-size: clamp(1.55rem, 4vw, 2.2rem);
+}
+.colab-guide-header p:not(.colab-guide-eyebrow) {
+  color: var(--muted);
+  line-height: 1.6;
+  margin: 0;
+}
+.colab-guide-eyebrow {
+  color: var(--accent-dark);
+  font-size: 0.85rem;
+  font-weight: 700;
+  margin: 0;
+}
+.colab-guide-card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--card);
+  padding: 1rem;
+  margin: 0.9rem 0;
+}
+.colab-guide-card h2 {
+  font-size: 1.1rem;
+  margin: 0 0 0.6rem;
+}
+.colab-guide-card p,
+.colab-guide-card li {
+  line-height: 1.58;
+}
+.colab-guide-card ol,
+.colab-guide-card ul {
+  padding-left: 1.35rem;
+}
+.colab-guide-warning {
+  border-color: var(--warn);
+}
+.colab-guide-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.7rem;
+  margin: 1rem 0;
+}
+.colab-guide-actions .btn {
+  text-decoration: none;
+}
+.colab-connection-form {
+  display: grid;
+  gap: 0.7rem;
+  max-width: 42rem;
+}
+.colab-connection-form label {
+  display: grid;
+  gap: 0.28rem;
+  font-size: 0.9rem;
+}
+.colab-connection-form label > span {
+  color: var(--muted);
+}
+.colab-connection-form input {
+  width: 100%;
+  min-width: 0;
+}
+.colab-connection-form .btn {
+  justify-self: start;
+}
+.colab-form-error,
+.colab-form-notice {
+  margin: 0.65rem 0 0;
+  font-size: 0.88rem;
+}
+.colab-form-error {
+  color: var(--err);
+}
+.colab-form-notice {
+  color: var(--ok);
+}
+.colab-connection-active {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+  margin-top: 0.8rem;
+  padding: 0.6rem;
+  border: 1px solid var(--ok);
+  border-radius: 8px;
+  font-size: 0.88rem;
+}
+
+.video-compare-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 0.7rem;
+}
+.video-compare-card {
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 0.65rem;
+  background: var(--card);
+}
+.video-compare-card h4 {
+  margin: 0 0 0.4rem;
+}
+.video-compare-pair {
+  display: flex;
+  gap: 0.45rem;
+}
+.video-compare-pair .png-preview {
+  min-width: 0;
+  flex: 1;
+}
+.video-compare-pair .png-preview img {
+  width: 100%;
+  height: 110px;
+}
+.video-compare-card details {
+  margin: 0.5rem 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+.video-metrics {
+  margin-top: 0.35rem;
+  overflow-wrap: anywhere;
+  line-height: 1.45;
 }

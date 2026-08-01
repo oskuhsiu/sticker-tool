@@ -8,6 +8,7 @@
 
 import UPNG from 'upng-js';
 import type { AnimPriority, LadderRung } from '@core/types.js';
+import { distributeFrameDelays } from '@core/videoCrop.js';
 import type { Raster } from './raster.js';
 
 /** 驗證影格等尺寸並轉成 RGBA8 ArrayBuffer 陣列 */
@@ -51,11 +52,23 @@ export function setApngNumPlays(png: Uint8Array, loops: number): Uint8Array {
 /** 編成 APNG（單格則為靜態 PNG）。colors=0/undefined 為無損。 */
 export function encodeApng(
   frames: Raster[],
-  opts: { loops: number; delayMs: number; colors?: number },
+  opts: {
+    loops: number;
+    delayMs?: number;
+    delaysMs?: number[];
+    colors?: number;
+    /** Internal editable APNGs use true to keep repeated frames reliably decodable by upng-js. */
+    forbidPalette?: boolean;
+  },
 ): Uint8Array {
   const { bufs, width, height } = framesToRgba(frames);
-  const dels = bufs.map(() => Math.max(1, Math.round(opts.delayMs)));
-  const ab = UPNG.encode(bufs, width, height, opts.colors ?? 0, dels);
+  const dels =
+    opts.delaysMs ??
+    distributeFrameDelays(Math.max(frames.length, Math.round((opts.delayMs ?? 100) * frames.length)), frames.length);
+  if (dels.length !== frames.length || dels.some((d) => !Number.isInteger(d) || d < 1)) {
+    throw new Error(`APNG delays must contain ${frames.length} positive integer millisecond values`);
+  }
+  const ab = UPNG.encode(bufs, width, height, opts.colors ?? 0, dels, opts.forbidPalette ?? false);
   let png: Uint8Array = new Uint8Array(ab);
   if (frames.length > 1) png = setApngNumPlays(png, opts.loops);
   return png;
@@ -68,31 +81,63 @@ export function readApngInfo(png: Uint8Array): {
   loops: number;
   width: number;
   height: number;
+  delaysMs: number[];
+  durationMs: number;
 } {
   const img = UPNG.decode(png);
   const actl = img.tabs.acTL;
+  const delaysMs = actl ? img.frames.map((frame) => frame.delay) : [];
   return {
     isApng: !!actl,
     frames: actl?.num_frames ?? 1,
     loops: actl?.num_plays ?? 0,
     width: img.width,
     height: img.height,
+    delaysMs,
+    durationMs: delaysMs.reduce((sum, delay) => sum + delay, 0),
   };
+}
+
+/** Decode every composited APNG frame for project editing. */
+export function decodeApngFrames(png: Uint8Array): {
+  frames: Raster[];
+  delaysMs: number[];
+  loops: number;
+} {
+  const input = png.buffer.slice(png.byteOffset, png.byteOffset + png.byteLength) as ArrayBuffer;
+  const img = UPNG.decode(input);
+  const rgba = UPNG.toRGBA8(img);
+  const delaysMs = img.tabs.acTL ? img.frames.map((frame) => frame.delay) : [0];
+  return {
+    frames: rgba.map((buffer) => ({
+      data: new Uint8ClampedArray(buffer),
+      width: img.width,
+      height: img.height,
+    })),
+    delaysMs,
+    loops: img.tabs.acTL?.num_plays ?? 0,
+  };
+}
+
+/** Source indices selected by the same deterministic algorithm as subsampleFrames. */
+export function subsampleIndices(length: number, target: number): number[] {
+  if (length < 1) return [];
+  if (target >= length) return Array.from({ length }, (_, index) => index);
+  if (target <= 1) return [0];
+  const out: number[] = [];
+  let last = -1;
+  for (let i = 0; i < target; i++) {
+    let idx = Math.round((i * (length - 1)) / (target - 1));
+    if (idx <= last) idx = last + 1;
+    last = idx;
+    out.push(idx);
+  }
+  return out;
 }
 
 /** 等距抽樣 target 格，保序、含頭尾、索引嚴格遞增 */
 export function subsampleFrames<T>(frames: T[], target: number): T[] {
-  if (target >= frames.length) return frames.slice();
-  if (target <= 1) return [frames[0]!];
-  const out: T[] = [];
-  let last = -1;
-  for (let i = 0; i < target; i++) {
-    let idx = Math.round((i * (frames.length - 1)) / (target - 1));
-    if (idx <= last) idx = last + 1;
-    last = idx;
-    out.push(frames[idx]!);
-  }
-  return out;
+  return subsampleIndices(frames.length, target).map((index) => frames[index]!);
 }
 
 const COLOR_STEPS = [0, 256, 192, 128, 96, 64, 48, 32, 24, 16];
@@ -164,6 +209,8 @@ export interface AutoFitResult {
   frames: number;
   bytes: number;
   overBudget: boolean;
+  usedFrameIndices: number[];
+  delaysMs: number[];
 }
 
 /** 組裝 + auto-fit 到 ≤ maxBytes；回報最終色數×影格×bytes */
@@ -175,15 +222,23 @@ export function encodeApngAutoFit(frames: Raster[], opts: AutoFitOptions): AutoF
 
   let best: AutoFitResult | null = null;
   for (const step of steps) {
-    const used = subsampleFrames(frames, step.frames);
-    const delay = (opts.delayMs * frames.length) / used.length; // 維持總時長
-    const png = encodeApng(used, { loops: opts.loops, delayMs: delay, colors: step.colors });
+    const usedFrameIndices = subsampleIndices(frames.length, step.frames);
+    const used = usedFrameIndices.map((index) => frames[index]!);
+    const delaysMs = distributeFrameDelays(Math.round(opts.delayMs * frames.length), used.length);
+    const png = encodeApng(used, {
+      loops: opts.loops,
+      delaysMs,
+      colors: step.colors,
+      forbidPalette: step.colors === 0,
+    });
     const r: AutoFitResult = {
       png,
       colors: step.colors,
       frames: used.length,
       bytes: png.length,
       overBudget: png.length > opts.maxBytes,
+      usedFrameIndices,
+      delaysMs,
     };
     if (!best || r.bytes < best.bytes) best = r;
     if (png.length <= opts.maxBytes) return r;

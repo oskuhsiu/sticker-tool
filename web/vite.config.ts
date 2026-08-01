@@ -18,6 +18,10 @@ export default defineConfig({
           src: path.join(here, 'node_modules/@imgly/background-removal-data/dist/*'),
           dest: 'imgly',
         },
+        {
+          src: path.join(here, 'node_modules/@huggingface/transformers/dist/ort-wasm-simd-threaded.jsep.{mjs,wasm}'),
+          dest: 'transformers',
+        },
       ],
     }),
   ],

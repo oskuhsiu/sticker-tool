@@ -34,6 +34,8 @@ export interface SheetAnalysis {
 export interface KeyOptions {
   /** 自動去背（預設 true）；false＝直接用原圖 alpha（圖須已是透明底） */
   autoRemove?: boolean;
+  /** 上游已完成語意去背時，用這個標籤取代「須已透明」警告。 */
+  preRemovedLabel?: string;
   /** 使用者點選的背景色：指定時一律用此色做單色色鍵（蓋過自動偵測） */
   pickColor?: [number, number, number] | null;
 }
@@ -201,7 +203,9 @@ export async function analyzeSheet(
     );
   }
 
-  if (key.autoRemove === false) {
+  if (key.preRemovedLabel) {
+    warnings.push(`已由 ${key.preRemovedLabel} 完成語意去背，再以完整 alpha mask 分析縫隙與跨格元件。`);
+  } else if (key.autoRemove === false) {
     warnings.push('已關閉自動去背：直接使用原圖 alpha（圖須已是透明底，否則切格會失敗）。');
   } else if (key.pickColor) {
     const [r, g, b] = key.pickColor;
