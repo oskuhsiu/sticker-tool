@@ -142,6 +142,64 @@ export function subsampleFrames<T>(frames: T[], target: number): T[] {
 
 const COLOR_STEPS = [0, 256, 192, 128, 96, 64, 48, 32, 24, 16];
 
+export function exactFrameColorSteps(minColors: number, maxColors = 0): number[] {
+  const steps = COLOR_STEPS.filter((colors) =>
+    colors === 0
+      ? maxColors === 0
+      : colors >= Math.max(16, minColors) && (maxColors === 0 || colors <= maxColors),
+  );
+  if (steps.length === 0) steps.push(Math.max(16, minColors));
+  return steps;
+}
+
+export interface ExactFrameEncodeResult {
+  png: Uint8Array;
+  colors: number;
+  frames: number;
+  bytes: number;
+  overBudget: boolean;
+  delaysMs: number[];
+  accepted: boolean;
+}
+
+/** Search colors only. The requested frame sequence and exact delays never change. */
+export function encodeApngExactFrames(
+  frames: Raster[],
+  opts: {
+    loops: number;
+    delaysMs: number[];
+    maxBytes: number;
+    minColors: number;
+    maxColors?: number;
+    /** Optional final-byte contract. Rejected color candidates remain available as diagnostics only. */
+    acceptCandidate?: (png: Uint8Array) => boolean;
+  },
+): ExactFrameEncodeResult {
+  let best: ExactFrameEncodeResult | null = null;
+  let bestAccepted: ExactFrameEncodeResult | null = null;
+  for (const colors of exactFrameColorSteps(opts.minColors, opts.maxColors ?? 0)) {
+    const png = encodeApng(frames, {
+      loops: opts.loops,
+      delaysMs: opts.delaysMs,
+      colors,
+      forbidPalette: colors === 0,
+    });
+    const candidate: ExactFrameEncodeResult = {
+      png,
+      colors,
+      frames: frames.length,
+      bytes: png.length,
+      overBudget: png.length > opts.maxBytes,
+      delaysMs: [...opts.delaysMs],
+      accepted: opts.acceptCandidate?.(png) ?? true,
+    };
+    if (!best || candidate.bytes < best.bytes) best = candidate;
+    if (candidate.accepted && (!bestAccepted || candidate.bytes < bestAccepted.bytes)) bestAccepted = candidate;
+    if (candidate.accepted && !candidate.overBudget) return candidate;
+  }
+  return bestAccepted ?? best!;
+}
+
 /** 由 frameCount 產生遞減的影格數序列（到 minFrames 為止） */
 function frameSeq(frameCount: number, minFrames: number): number[] {
   const seq = [frameCount];

@@ -1,14 +1,14 @@
 /**
- * Focused E2E for the independent Video → APNG workflow.
- *
+ * Focused browser E2E for Video → APNG V2.
  * Requires ffmpeg and a separately running Vite preview server.
  * Usage: node scripts/video-smoke.mjs http://127.0.0.1:4179/
  */
 
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { strFromU8, unzipSync } from 'fflate';
 import UPNG from 'upng-js';
 import { chromium } from 'playwright';
 
@@ -55,111 +55,122 @@ for (let index = 0; index < 12; index++) {
 }
 const videoPath = path.join(fixDir, 'grid-4x2.mp4');
 execFileSync('/usr/local/bin/ffmpeg', [
-  '-y',
-  '-loglevel', 'error',
-  '-framerate', '10',
-  '-i', path.join(fixDir, 'frame_%02d.png'),
-  '-c:v', 'libx264',
-  '-pix_fmt', 'yuv420p',
-  '-movflags', '+faststart',
-  videoPath,
+  '-y', '-loglevel', 'error', '-framerate', '10', '-i', path.join(fixDir, 'frame_%02d.png'),
+  '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', videoPath,
 ]);
 
 const results = [];
 const browser = await chromium.launch({ channel: 'chrome', headless: true });
 const page = await browser.newPage({ acceptDownloads: true });
+page.on('dialog', (dialog) => dialog.accept());
 page.on('pageerror', (error) => results.push(`  [pageerror] ${error.message}`));
-let localModelRequested = false;
-let imglyModelRequested = false;
+let modelRequested = false;
 page.on('request', (request) => {
-  if (/birefnet-lite-512.*model_fp16\.onnx/i.test(request.url())) localModelRequested = true;
-  if (request.url().includes('/imgly/')) imglyModelRequested = true;
+  if (request.url().includes('/imgly/') || /birefnet.*\.onnx/i.test(request.url())) modelRequested = true;
 });
+
+async function uploadVideo() {
+  await page.setInputFiles('[data-tab="video"] input[type=file][accept^="video"]', videoPath);
+  await page.waitForSelector('[data-tab="video"] >> text=12 個 presentation frames', { timeout: 120_000 });
+}
+
+async function configureSource(count, cols, rows) {
+  await page.getByLabel('來源貼圖格數').fill(String(count));
+  await page.getByLabel('欄').fill(String(cols));
+  await page.getByLabel('列').fill(String(rows));
+  await page.getByLabel('專案預設去背').selectOption('color-key');
+  await page.waitForSelector(`[data-tab="video"] >> text=實際來源 frames：${12}`);
+}
+
+async function buildRawMaster(expectedCount) {
+  await page.getByRole('button', { name: '擷取範圍內所有 frames 並建立 raw master' }).click();
+  await page.waitForSelector('[data-tab="video"] >> text=逐張 exact-target 編輯', { timeout: 180_000 });
+  const items = await page.locator('[data-tab="video"] .video-sticker-list-item').count();
+  if (items !== expectedCount) throw new Error(`貼圖列表應有 ${expectedCount} 張，實際 ${items}`);
+  await page.waitForSelector('[data-tab="video"] >> text=12 source samples');
+}
+
+async function renderAll() {
+  const button = page.getByRole('button', { name: '依序產生所有 dirty previews' });
+  await button.click();
+  await page.waitForSelector('[data-tab="video"] >> text=所有 dirty previews 已通過', { timeout: 240_000 });
+}
 
 try {
   await page.goto(BASE, { waitUntil: 'load' });
   await page.waitForTimeout(800);
   await page.click('.tabs >> text=影片 → APNG');
-  await page.setInputFiles('[data-tab="video"] input[type=file][accept^="video"]', videoPath);
-  await page.waitForSelector('[data-tab="video"] >> text=建立可編輯 master APNG', { timeout: 30_000 });
-  const masterFrames = page.getByLabel('master 取樣格數');
-  if (await masterFrames.inputValue() !== '20') throw new Error('master 取樣格數應預設為 LINE High smoothness 的 20 格');
-  const removalMode = page.getByLabel('去背方式');
-  if (await removalMode.inputValue() !== 'none') throw new Error('影片去背方式應預設為不去背');
-  await removalMode.selectOption('imgly');
-  await page.waitForSelector('[role="dialog"] >> text=在這台裝置執行 IMG.LY 去背？', { timeout: 10_000 });
-  await page.waitForSelector('[role="dialog"] >> text=沒有 Colab 模式');
-  await page.getByRole('button', { name: '我了解，使用 IMG.LY' }).click();
-  if (await removalMode.inputValue() !== 'imgly') throw new Error('明確確認後應啟用 IMG.LY');
-  if (imglyModelRequested) throw new Error('只選擇 IMG.LY、尚未開始工作時不應下載模型');
-  results.push('✓ IMG.LY 為純本機選項，顯示 84 MiB／長時間／手機風險且保持 lazy download');
-  await removalMode.selectOption('none');
-  await removalMode.selectOption('local-birefnet');
-  await page.waitForSelector('[role="dialog"] >> text=在這台裝置執行實驗性 BiRefNet？', { timeout: 10_000 });
-  await page.waitForSelector('[role="dialog"] >> text=44.4M 指模型參數數量，不是 44 MB 下載檔');
-  await page.getByRole('button', { name: '我了解，使用本機去背' }).click();
-  if (await removalMode.inputValue() !== 'local-birefnet') throw new Error('明確確認後應啟用本機 BiRefNet');
-  if (localModelRequested) throw new Error('只選擇本機 BiRefNet、尚未開始工作時不應下載模型');
-  results.push('✓ 本機 BiRefNet 可明確啟用，先顯示 94 MiB／長時間／手機風險且保持 lazy download');
-  await removalMode.selectOption('none');
-  await removalMode.selectOption('colab-birefnet');
-  await page.waitForSelector('[role="dialog"] >> text=啟用實驗性 Colab BiRefNet 去背？', { timeout: 10_000 });
-  await page.getByRole('button', { name: '知道了' }).click();
-  if (await removalMode.inputValue() !== 'none') throw new Error('尚未設定 Colab session 時不應啟用遠端去背');
-  results.push('✓ Colab BiRefNet 預設關閉，選取時先要求 benchmark 與明確確認');
-  await page.getByLabel('來源貼圖格數').fill('6');
-  await page.getByLabel('欄').fill('3');
-  await page.getByLabel('列').fill('2');
-  await masterFrames.selectOption('10');
-  await page.click('[data-tab="video"] >> text=切影片並建立 master / 原切版本');
-  await page.waitForSelector('[data-tab="video"] >> text=APNG 調整模式', { timeout: 180_000 });
-  let previews = await page.locator('[data-tab="video"] .video-compare-grid img').count();
-  if (previews !== 12) throw new Error(`6 格來源的原切/current 預覽應有 12 張，實際 ${previews}`);
-  results.push('✓ 來源格數可低於 LINE 下限：3×2 → 6 組 master/baseline/current');
 
-  await page.click('[data-tab="video"] >> text=建立 LINE 上架包');
-  await page.waitForSelector('[data-tab="video"] >> text=animated 貼圖張數須為 8/16/24，收到 6', { timeout: 120_000 });
-  const invalidLineButton = page.getByRole('button', { name: /下載 LINE ZIP/ });
-  if (await invalidLineButton.isEnabled()) throw new Error('6 張來源不應啟用 LINE ZIP 下載');
-  results.push('✓ 6 張 Project 可編輯，但 LINE ZIP validation gate 仍拒絕');
+  await uploadVideo();
+  const metadataText = await page.locator('[data-tab="video"] .video-source-card .tab-desc').first().textContent();
+  if (!metadataText?.includes('12 個 presentation frames')) throw new Error('probe 未顯示實際 12 格');
+  if (await page.locator('label', { hasText: 'master 取樣格數' }).count()) throw new Error('V2 不應再顯示 master 取樣格數');
+  await configureSource(6, 3, 2);
+  await buildRawMaster(6);
+  if (modelRequested) throw new Error('raw ingest 與 color-key 不應下載語意去背模型');
+  results.push('✓ 12 個 presentation frames 全數進入 6 張 raw master，沒有固定 20 格取樣器');
 
-  await page.setInputFiles('[data-tab="video"] input[type=file][accept^="video"]', videoPath);
-  await page.waitForSelector('[data-tab="video"] >> text=建立可編輯 master APNG', { timeout: 30_000 });
-  await page.getByLabel('來源貼圖格數').fill('8');
-  await page.getByLabel('欄').fill('4');
-  await page.getByLabel('列').fill('2');
-  await page.getByLabel('master 取樣格數').selectOption('10');
-  await page.getByLabel('去背方式').selectOption('color-key');
-  await page.click('[data-tab="video"] >> text=切影片並建立 master / 原切版本');
-  await page.waitForSelector('[data-tab="video"] >> text=APNG 調整模式', { timeout: 180_000 });
-  previews = await page.locator('[data-tab="video"] .video-compare-grid img').count();
-  if (previews !== 16) throw new Error(`原切/current 預覽應有 16 張，實際 ${previews}`);
-  results.push('✓ MP4 逐時間點解碼 → 4×2 裁切 → 8 組 master/baseline/current');
+  await page.getByRole('button', { name: '建立 LINE ZIP / 最終驗證' }).click();
+  await page.waitForSelector('[data-tab="video"] >> text=缺少必要 sticker bytes');
+  if (await page.locator('[role="dialog"] >> text=這不是符合 LINE Sticker 規則的 ZIP').count()) {
+    throw new Error('缺少必要 bytes 的結構性失敗不應提供 override dialog');
+  }
+  await renderAll();
+  await page.getByRole('button', { name: '建立 LINE ZIP / 最終驗證' }).click();
+  await page.waitForSelector('[role="dialog"] >> text=這不是符合 LINE Sticker 規則的 ZIP', { timeout: 120_000 });
+  await page.waitForSelector('[role="dialog"] >> text=animated 貼圖張數須為 8/16/24，收到 6');
+  await page.waitForSelector('[role="dialog"] >> text=我了解，下載標示為不合規的 ZIP');
+  await page.getByRole('button', { name: '返回修正' }).click();
+  results.push('✓ 缺 bytes 時硬阻擋；6 張有完整 bytes 時只提供明確標示的不合規 override');
 
-  const firstCard = page.locator('[data-tab="video"] .video-settings-card').first();
-  await firstCard.locator('input[type=number]').nth(2).fill('5');
-  await firstCard.getByRole('button', { name: '套用這張' }).click();
-  await page.waitForSelector('[data-tab="video"] >> text=第 1 張已從 master APNG 重編', { timeout: 60_000 });
-  results.push('✓ 單張從 master APNG 改為 5 格，不重新讀影片');
+  await uploadVideo();
+  await configureSource(8, 4, 2);
+  await buildRawMaster(8);
+  await renderAll();
 
-  const projectDownload = page.waitForEvent('download');
-  await page.click('[data-tab="video"] >> text=下載可再調整 Project ZIP');
-  const download = await projectDownload;
-  const projectPath = await download.path();
-  if (!projectPath) throw new Error('Project ZIP download path unavailable');
+  await page.getByLabel('目標格數').fill('5');
+  await page.getByRole('button', { name: '產生這張預覽' }).click();
+  await page.waitForSelector('[data-tab="video"] >> text=第 1 張 exact-target 成品已通過 final-byte gate', { timeout: 120_000 });
+  await page.waitForSelector('[data-tab="video"] >> text=final 5/5 格');
+  await page.waitForSelector('[data-tab="video"] canvas[aria-label="第 1 張成品預覽"]');
+  await page.getByRole('button', { name: '暫停' }).click();
+  await page.getByRole('button', { name: '重新開始' }).click();
+  const players = await page.locator('[data-tab="video"] .apng-timeline-player').count();
+  if (players !== 1) throw new Error(`一次只應有一個 active controlled player，實際 ${players}`);
+  results.push('✓ 單張 hard target=5 從 raw master 重編，controlled player 使用 final decoded timing');
+
+  const projectDownloadPromise = page.waitForEvent('download');
+  await page.getByRole('button', { name: '下載 Project ZIP V2' }).click();
+  const projectDownload = await projectDownloadPromise;
+  const projectPath = await projectDownload.path();
+  if (!projectPath) throw new Error('Project V2 download path unavailable');
+  const entries = unzipSync(new Uint8Array(readFileSync(projectPath)));
+  const manifest = JSON.parse(strFromU8(entries['sticker-project.json']));
+  if (manifest.version !== 2 || manifest.frameCoverage !== 'all-presentation-frames' || manifest.backgroundStage !== 'raw') {
+    throw new Error('Project manifest 不是 all-frame/raw V2');
+  }
+  if (manifest.master.sourceFrameCount !== 12) throw new Error(`Project 應保存 12 source refs，實際 ${manifest.master.sourceFrameCount}`);
+  for (const sticker of manifest.master.stickers) {
+    const samples = sticker.chunks.reduce((sum, chunk) => sum + chunk.sampleRefs.length, 0);
+    if (samples !== 12) throw new Error(`${sticker.id} 只保存 ${samples}/12 sample refs`);
+  }
+  if (Object.keys(entries).some((entry) => entry.startsWith('source/') || entry.startsWith('audio/'))) {
+    throw new Error('Project V2 不得內嵌 source video/audio');
+  }
+  results.push('✓ Project V2 manifest/ZIP 保存每張完整 12 sample refs、raw checksums，且不含來源影片或音軌');
 
   await page.setInputFiles('[data-tab="video"] input[type=file][accept^=".zip"]', projectPath);
-  await page.waitForSelector('[data-tab="video"] >> text=未啟動影片 decoder', { timeout: 30_000 });
-  const restoredFirst = page.locator('[data-tab="video"] .video-settings-card').first();
-  const restoredFrames = await restoredFirst.locator('input[type=number]').nth(2).inputValue();
-  if (restoredFrames !== '5') throw new Error(`重新匯入後第 1 張應為 5 格設定，實際 ${restoredFrames}`);
-  results.push('✓ Project ZIP 重新匯入後恢復已調整 current 與設定');
+  await page.waitForSelector('[data-tab="video"] >> text=已恢復 Project V2 的 12 個 sample refs', { timeout: 120_000 });
+  if (await page.getByLabel('目標格數').inputValue() !== '5') throw new Error('V2 re-import 未恢復第 1 張 target=5');
+  await page.waitForSelector('[data-tab="video"] >> text=final 5/5 格');
+  results.push('✓ Project V2 可在沒有原影片與 decoder 的情況下恢復 draft/current/editor');
 
-  await page.click('[data-tab="video"] >> text=建立 LINE 上架包');
-  await page.waitForSelector('[data-tab="video"] >> text=全部符合 LINE 規格', { timeout: 120_000 });
-  const lineButton = page.getByRole('button', { name: /下載 LINE ZIP/ });
-  if (!(await lineButton.isEnabled())) throw new Error('LINE ZIP 驗證通過後下載按鈕仍被停用');
-  results.push('✓ current renders → main/tab/LINE ZIP，validation gate 通過');
+  await page.getByRole('button', { name: '建立 LINE ZIP / 最終驗證' }).click();
+  await page.waitForSelector('[data-tab="video"] >> text=全部符合 LINE 規格', { timeout: 180_000 });
+  const lineDownload = page.getByRole('button', { name: /下載 LINE ZIP/ });
+  if (!(await lineDownload.isEnabled())) throw new Error('合規 final bytes 未開放一般 LINE ZIP');
+  if (modelRequested) throw new Error('整個 color-key V2 smoke 不應下載語意模型');
+  results.push('✓ 8 張 current + cover actual timeline → main/tab/LINE ZIP，final-byte validation 通過');
 } catch (error) {
   results.push(`✗ 失敗：${error.message}`);
   try {

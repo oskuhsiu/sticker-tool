@@ -1,23 +1,19 @@
-import { planAnimatedCanvas, type VideoGridPlan } from '@core/videoCrop.js';
-import { decodeApngFrames, encodeApng } from './apng.js';
-import {
-  cropRaster,
-  resizeRaster,
-  yieldToUI,
-  type Raster,
-} from './raster.js';
-import { detectBackground, keyBackground } from './sheetAnalysis.js';
-import type { BrowserVideoSource } from './videoSource.js';
+import type { RawVisualFrameRef, SourceFrameRef, VideoFrameCoverage } from '@core/videoProject.js';
+import { decodeApngFrames } from './apng.js';
+import type { Raster } from './raster.js';
+import type { VideoMasterStore } from './videoMasterStore.js';
 
 export interface MasterApngChunk {
   id: string;
   stickerId: string;
   index: number;
-  timestampsMs: number[];
-  delaysMs: number[];
+  sampleRefs: SourceFrameRef[];
+  visualRefs: RawVisualFrameRef[];
   width: number;
   height: number;
-  png: Uint8Array;
+  storeKey: string;
+  bytes: number;
+  sha256: string;
 }
 
 export interface MasterApngSticker {
@@ -29,144 +25,75 @@ export interface MasterApngSticker {
 }
 
 export interface MasterApngSet {
-  timestampsMs: number[];
+  rangeStartUs: number;
+  rangeEndUs: number;
   sourceFrameCount: number;
-  masterFrameCount: number;
+  visualFrameCount: number;
   chunkFrames: number;
+  frameCoverage: VideoFrameCoverage;
+  backgroundStage: 'raw' | 'baked-legacy';
   stickers: MasterApngSticker[];
+  store: VideoMasterStore;
 }
 
-/**
- * Optional local/remote background-model hook. It is deliberately applied
- * after a cell is cropped, so every model sees one sticker crop at a time and
- * a remote adapter never receives the full source frame.
- */
-export type CropBackgroundRemover = (input: Raster, signal?: AbortSignal) => Promise<Raster>;
-
-function sourceDelays(timestampsMs: number[]): number[] {
-  if (timestampsMs.length === 1) return [100];
-  return timestampsMs.map((timestamp, index) => {
-    if (index < timestampsMs.length - 1) return Math.max(1, timestampsMs[index + 1]! - timestamp);
-    return Math.max(1, timestamp - timestampsMs[index - 1]!);
-  });
-}
-
-export async function buildMasterApngSet(args: {
-  source: BrowserVideoSource;
-  grid: VideoGridPlan;
-  timestampsMs: number[];
-  autoRemoveBackground: boolean;
-  pickColor?: [number, number, number] | null;
-  removeCropBackground?: CropBackgroundRemover;
-  chunkFrames?: number;
-  signal?: AbortSignal;
-  onProgress?: (completed: number, total: number) => void;
-  onRemovalProgress?: (completed: number, total: number) => void;
-}): Promise<MasterApngSet> {
-  const chunkFrames = Math.max(2, Math.min(20, Math.round(args.chunkFrames ?? 10)));
-  if (args.timestampsMs.length < 5) throw new Error('master APNG 至少需要 5 個來源時間點');
-  const delays = sourceDelays(args.timestampsMs);
-  const stickers: MasterApngSticker[] = args.grid.rects.map((rect) => {
-    const canvas = planAnimatedCanvas(rect.width, rect.height);
-    return {
-      id: rect.id,
-      index: rect.index,
-      width: canvas.width,
-      height: canvas.height,
-      chunks: [],
-    };
-  });
-  const pending = stickers.map(() => [] as Raster[]);
-  let background: ReturnType<typeof detectBackground> | null = null;
-  let chunkStart = 0;
-  let removedCrops = 0;
-  const totalCrops = args.timestampsMs.length * stickers.length;
-
-  const flush = () => {
-    if (pending[0]?.length === 0) return;
-    const chunkEnd = chunkStart + pending[0]!.length;
-    for (let stickerIndex = 0; stickerIndex < stickers.length; stickerIndex++) {
-      const sticker = stickers[stickerIndex]!;
-      const frames = pending[stickerIndex]!;
-      const chunkIndex = sticker.chunks.length;
-      const timestampsMs = args.timestampsMs.slice(chunkStart, chunkEnd);
-      const delaysMs = delays.slice(chunkStart, chunkEnd);
-      const png = encodeApng(frames, { loops: 1, delaysMs, colors: 0, forbidPalette: true });
-      sticker.chunks.push({
-        id: `${sticker.id}-chunk-${String(chunkIndex + 1).padStart(3, '0')}`,
-        stickerId: sticker.id,
-        index: chunkIndex,
-        timestampsMs,
-        delaysMs,
-        width: sticker.width,
-        height: sticker.height,
-        png,
-      });
-      pending[stickerIndex] = [];
-    }
-    chunkStart = chunkEnd;
-  };
-
-  for (let frameIndex = 0; frameIndex < args.timestampsMs.length; frameIndex++) {
-    if (args.signal?.aborted) throw new DOMException('影片處理已取消', 'AbortError');
-    const sourceFrame = await args.source.frameAt(args.timestampsMs[frameIndex]!, args.signal);
-    let keyed = sourceFrame;
-    if (!args.removeCropBackground) {
-      if (!background) background = detectBackground(sourceFrame);
-      keyed = keyBackground(sourceFrame, background, {
-        autoRemove: args.autoRemoveBackground,
-        pickColor: args.pickColor,
-      });
-    }
-    for (let stickerIndex = 0; stickerIndex < stickers.length; stickerIndex++) {
-      const rect = args.grid.rects[stickerIndex]!;
-      const sticker = stickers[stickerIndex]!;
-      let cropped = cropRaster(keyed, rect.left, rect.top, rect.width, rect.height);
-      if (args.removeCropBackground) {
-        cropped = await args.removeCropBackground(cropped, args.signal);
-        removedCrops++;
-        args.onRemovalProgress?.(removedCrops, totalCrops);
-      }
-      pending[stickerIndex]!.push(resizeRaster(cropped, sticker.width, sticker.height));
-    }
-    args.onProgress?.(frameIndex + 1, args.timestampsMs.length);
-    if (pending[0]!.length >= chunkFrames) flush();
-    await yieldToUI();
-  }
-  flush();
-
-  return {
-    timestampsMs: [...args.timestampsMs],
-    sourceFrameCount: args.timestampsMs.length,
-    masterFrameCount: args.timestampsMs.length,
-    chunkFrames,
-    stickers,
-  };
+export interface DecodedMasterFrame {
+  frame: Raster;
+  sampleRef: SourceFrameRef;
+  rawFrameHash: string;
 }
 
 export async function decodeMasterSticker(
   sticker: MasterApngSticker,
-  startMs: number,
-  endMs: number,
-): Promise<{ frames: Raster[]; timestampsMs: number[] }> {
-  const frames: Raster[] = [];
-  const timestampsMs: number[] = [];
+  store: VideoMasterStore,
+  startUs: number,
+  endUs: number,
+): Promise<DecodedMasterFrame[]> {
+  const frames: DecodedMasterFrame[] = [];
   for (const chunk of sticker.chunks) {
-    if (!chunk.timestampsMs.some((timestamp) => timestamp >= startMs && timestamp < endMs)) continue;
-    const decoded = decodeApngFrames(chunk.png);
-    if (decoded.frames.length !== chunk.timestampsMs.length) {
+    const relevant = chunk.sampleRefs.filter((sample) => {
+      const sampleEndUs = sample.timestampUs + sample.durationUs;
+      return sample.timestampUs < endUs && sampleEndUs > startUs;
+    });
+    if (relevant.length === 0) continue;
+    const decoded = decodeApngFrames(await store.get(chunk.storeKey));
+    if (decoded.frames.length !== chunk.visualRefs.length) {
       throw new Error(
-        `${chunk.id} 解碼格數 ${decoded.frames.length} 與 manifest ${chunk.timestampsMs.length} 不一致`,
+        `${chunk.id} 解碼 visual 格數 ${decoded.frames.length} 與 manifest ${chunk.visualRefs.length} 不一致`,
       );
     }
-    for (let i = 0; i < decoded.frames.length; i++) {
-      const timestamp = chunk.timestampsMs[i]!;
-      if (timestamp >= startMs && timestamp < endMs) {
-        frames.push(decoded.frames[i]!);
-        timestampsMs.push(timestamp);
-      }
+    const visualById = new Map(chunk.visualRefs.map((visual) => [visual.visualFrameId, visual]));
+    for (const sampleRef of relevant) {
+      const visual = visualById.get(sampleRef.visualFrameId);
+      if (!visual) throw new Error(`${chunk.id} 缺少 visual ${sampleRef.visualFrameId}`);
+      const frame = decoded.frames[visual.frameInChunk];
+      if (!frame) throw new Error(`${chunk.id} visual frameInChunk ${visual.frameInChunk} 超出範圍`);
+      const clippedStartUs = Math.max(startUs, sampleRef.timestampUs);
+      const clippedEndUs = Math.min(endUs, sampleRef.timestampUs + sampleRef.durationUs);
+      frames.push({
+        frame,
+        rawFrameHash: visual.rgbaHash,
+        sampleRef: {
+          ...sampleRef,
+          timestampUs: clippedStartUs,
+          durationUs: clippedEndUs - clippedStartUs,
+        },
+      });
     }
-    await yieldToUI();
   }
-  return { frames, timestampsMs };
+  frames.sort((a, b) => a.sampleRef.timestampUs - b.sampleRef.timestampUs);
+  return frames;
+}
+
+export async function decodeMasterPoster(
+  sticker: MasterApngSticker,
+  store: VideoMasterStore,
+): Promise<Raster> {
+  const chunk = sticker.chunks[0];
+  if (!chunk) throw new Error(`${sticker.id} 沒有 raw master chunk`);
+  const decoded = decodeApngFrames(await store.get(chunk.storeKey));
+  const firstSample = chunk.sampleRefs[0];
+  if (!firstSample) throw new Error(`${chunk.id} 沒有 sample ref`);
+  const visual = chunk.visualRefs.find((candidate) => candidate.visualFrameId === firstSample.visualFrameId);
+  if (!visual || !decoded.frames[visual.frameInChunk]) throw new Error(`${chunk.id} 沒有 poster visual`);
+  return decoded.frames[visual.frameInChunk]!;
 }

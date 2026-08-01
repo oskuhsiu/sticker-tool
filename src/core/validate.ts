@@ -26,6 +26,8 @@ export interface ImageInfo {
   isApng?: boolean;
   /** 動態：影格數 */
   frames?: number;
+  /** 動態：使用者要求的 hard target 格數。 */
+  requestedFrames?: number;
   /** 動態：循環次數（acTL num_plays；0 = 無限） */
   loops?: number;
   /** 動態：解碼後單輪總長（ms）。提供時必須精確為 1/2/3/4 秒。 */
@@ -36,6 +38,8 @@ export interface ImageInfo {
   transparentPixels?: number;
   /** 解碼後所有畫格的非透明前景像素總數。 */
   foregroundPixels?: number;
+  /** 最終解碼 RGBA 序列中與前一格相同的格數。 */
+  adjacentDuplicateFrames?: number;
 }
 
 function err(code: string, message: string, target?: string): ValidationIssue {
@@ -150,6 +154,28 @@ export function validateAnimatedImage(info: ImageInfo, target?: string): Validat
       );
     }
   }
+  if (
+    info.requestedFrames !== undefined &&
+    info.frames !== undefined &&
+    info.frames !== info.requestedFrames
+  ) {
+    issues.push(
+      err(
+        'anim.targetFrames',
+        `最終影格數 ${info.frames} 與設定目標 ${info.requestedFrames} 不一致`,
+        target,
+      ),
+    );
+  }
+  if (info.adjacentDuplicateFrames !== undefined && info.adjacentDuplicateFrames > 0) {
+    issues.push(
+      err(
+        'anim.adjacentDuplicate',
+        `最終序列仍有 ${info.adjacentDuplicateFrames} 個相鄰重複畫格`,
+        target,
+      ),
+    );
+  }
   if (info.loops !== undefined) {
     if (info.loops < ANIMATED_SPEC.minLoops || info.loops > ANIMATED_SPEC.maxLoops) {
       issues.push(
@@ -198,6 +224,33 @@ export function validateMain(info: ImageInfo, kind: StickerKind): ValidationResu
   if (kind === 'animated' && info.isApng === false) {
     issues.push(err('main.apng', '動態包的 main.png 必須是 APNG（首格當靜態縮圖）'));
   }
+  if (!info.hasAlpha) issues.push(err('main.alpha', 'main.png 必須含透明 alpha'));
+  if (info.transparentPixels !== undefined && info.transparentPixels < 1) {
+    issues.push(err('main.transparentPixels', 'main.png 沒有任何透明像素'));
+  }
+  if (info.foregroundPixels !== undefined && info.foregroundPixels < 1) {
+    issues.push(err('main.empty', 'main.png 沒有可見前景'));
+  }
+  if (info.bytes > ANIMATED_SPEC.maxBytes) {
+    issues.push(err('main.bytes', `main.png ${(info.bytes / 1024).toFixed(0)}KB 超過 1MB`));
+  }
+  if (kind === 'animated') {
+    if (info.frames !== undefined && (info.frames < ANIMATED_SPEC.minFrames || info.frames > ANIMATED_SPEC.maxFrames)) {
+      issues.push(err('main.frames', `main.png 影格數須為 5–20，收到 ${info.frames}`));
+    }
+    if (info.requestedFrames !== undefined && info.frames !== info.requestedFrames) {
+      issues.push(err('main.targetFrames', `main.png 影格數 ${info.frames} 與封面 ${info.requestedFrames} 不一致`));
+    }
+    if (info.loops !== undefined && (info.loops < 1 || info.loops > 4)) {
+      issues.push(err('main.loops', `main.png loops 須為 1–4，收到 ${info.loops}`));
+    }
+    if (info.durationMs !== undefined && ![1000, 2000, 3000, 4000].includes(info.durationMs)) {
+      issues.push(err('main.duration', `main.png 單輪時間不合法：${info.durationMs}ms`));
+    }
+    if (info.adjacentDuplicateFrames !== undefined && info.adjacentDuplicateFrames > 0) {
+      issues.push(err('main.adjacentDuplicate', `main.png 仍有 ${info.adjacentDuplicateFrames} 個相鄰重複格`));
+    }
+  }
   return result(issues);
 }
 
@@ -208,6 +261,16 @@ export function validateTab(info: ImageInfo): ValidationResult {
     issues.push(
       err('tab.size', `tab.png 須為 ${TAB.width}×${TAB.height}，收到 ${info.width}×${info.height}`),
     );
+  }
+  if (!info.hasAlpha) issues.push(err('tab.alpha', 'tab.png 必須含透明 alpha'));
+  if (info.transparentPixels !== undefined && info.transparentPixels < 1) {
+    issues.push(err('tab.transparentPixels', 'tab.png 沒有任何透明像素'));
+  }
+  if (info.foregroundPixels !== undefined && info.foregroundPixels < 1) {
+    issues.push(err('tab.empty', 'tab.png 沒有可見前景'));
+  }
+  if (info.bytes > STATIC_SPEC.maxBytes) {
+    issues.push(err('tab.bytes', `tab.png ${(info.bytes / 1024).toFixed(0)}KB 超過 1MB`));
   }
   return result(issues);
 }

@@ -9,6 +9,10 @@ output/
 
 # 測試檔與實驗/eval 產物（非必要，不進版控）
 test/
+!test/
+test/*
+!test/frameSequence.test.ts
+!test/videoTimeline.test.ts
 spike/
 fixtures/
 eval/
@@ -34,3 +38,4 @@ handoff.md
 # Local agent context
 AGENTS.md
 ARCHITECTURE.md
+!ARCHITECTURE.md

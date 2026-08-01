@@ -440,6 +440,20 @@ textarea {
   padding: 0.8rem 1rem;
   margin: 0.8rem 0;
 }
+
+.video-common-settings {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.video-common-settings label {
+  display: grid;
+  gap: 4px;
+  font-size: 0.82rem;
+}
 .video-source-card h3,
 .video-project-summary h3 {
   margin: 0 0 0.4rem;
@@ -700,4 +714,141 @@ textarea {
   margin-top: 0.35rem;
   overflow-wrap: anywhere;
   line-height: 1.45;
+}
+
+.video-cut-range-step {
+  margin: 0.8rem 0;
+  padding: 0.8rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.video-cut-range-step h4 {
+  margin: 0 0 0.6rem;
+}
+.video-preflight {
+  margin: 0.55rem 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+.video-range-previews {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.6rem;
+}
+.video-range-previews .video-grid-preview {
+  margin: 0;
+}
+.video-range-previews figcaption {
+  line-height: 1.4;
+  padding-top: 0.3rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+.video-ingest-progress {
+  display: grid;
+  gap: 0.45rem;
+  margin: 0.8rem 0;
+  padding: 0.8rem;
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  background: var(--card);
+}
+.video-ingest-progress progress,
+.apng-timeline-player progress {
+  width: 100%;
+}
+.video-editor-layout {
+  display: grid;
+  grid-template-columns: minmax(190px, 260px) minmax(0, 1fr);
+  gap: 0.8rem;
+  align-items: start;
+}
+.video-sticker-list {
+  display: grid;
+  gap: 0.45rem;
+  max-height: 70vh;
+  overflow-y: auto;
+}
+.video-sticker-list-item {
+  display: grid;
+  grid-template-columns: 64px 1fr;
+  align-items: center;
+  gap: 0.25rem 0.55rem;
+  padding: 0.45rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--fg);
+  text-align: left;
+  cursor: pointer;
+}
+.video-sticker-list-item.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent);
+}
+.video-sticker-list-item.dirty {
+  border-left: 4px solid var(--warn);
+}
+.video-sticker-list-item .png-preview {
+  grid-row: 1 / span 3;
+  margin: 0;
+}
+.video-sticker-list-item .png-preview img {
+  width: 60px;
+  height: 60px;
+}
+.video-sticker-list-item .png-preview figcaption {
+  display: none;
+}
+.video-sticker-editor {
+  min-width: 0;
+  padding: 0.8rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--card);
+}
+.video-sticker-editor h3 {
+  margin-top: 0;
+}
+.video-current-render {
+  display: grid;
+  gap: 0.55rem;
+  margin-top: 0.8rem;
+}
+.video-first-frame-note {
+  color: var(--warn);
+  font-size: 0.86rem;
+}
+.apng-timeline-player {
+  display: grid;
+  gap: 0.4rem;
+}
+.apng-timeline-player canvas {
+  display: block;
+  max-width: 100%;
+  max-height: 360px;
+  margin: 0 auto;
+  border-radius: 8px;
+  background-image:
+    linear-gradient(45deg, #ddd 25%, transparent 25%),
+    linear-gradient(-45deg, #ddd 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #ddd 75%),
+    linear-gradient(-45deg, transparent 75%, #ddd 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+}
+.apng-player-status {
+  color: var(--muted);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 760px) {
+  .video-editor-layout {
+    grid-template-columns: 1fr;
+  }
+  .video-sticker-list {
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    max-height: none;
+  }
 }

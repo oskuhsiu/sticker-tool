@@ -56,6 +56,26 @@
 
 第二輪合計列出 **22 個已確認問題（P1 8、P2 10、P3 4）與 1 個待產品決策風險**。
 
+### 2026-08-01 Video → APNG V2 實作補充
+
+Web 的影片 adapter 已改成獨立的 V2 路徑，這不代表下列 CLI／既有 Anim 問題已全域關閉：
+
+- Mediabunny + WebCodecs 以 decoded presentation samples 建立整數微秒索引；V2 ingest 不再使用
+  `<video>` seek 或固定 10/20/30/40/60 格取樣。
+- raw master 在去背前保存完整 sample refs；相同像素只去重 visual payload，不刪 timestamp/duration。
+- 每張 current 以 hard target 格數重編，只降色、不 silent 減格；相鄰相同成品格合併 delay 後補選，
+  並從最終 APNG bytes 重開檢查格數、delay、loops、alpha、內容與 bytes。
+- 動態 cover main 沿用封面 current 的 actual frames/delays/loops；tab 取 actual first frame。
+- 一般 LINE ZIP 只在 current 完整、無 dirty 且 final-byte validation 通過時提供；有完整 bytes 但不合規時，
+  只能明確確認下載 `NOT-LINE-COMPLIANT`；缺必要 bytes 仍硬阻擋。
+- Project ZIP V2 保存 raw/timing/selection/checksum/version，採 bounded streaming import；V1 只映射成
+  `sampled-legacy`/`baked-legacy`，不補造缺失 frame 或 raw RGB。
+
+針對證據包括 `test/videoTimeline.test.ts`、`test/frameSequence.test.ts`、
+`web/scripts/video-project-roundtrip.mts`、`web/scripts/video-all-frames-spike.mts` 與
+`web/scripts/video-smoke.mjs`。P1-02、P1-03、P1-05、P1-06、P2-07 等 checkbox 仍涵蓋其他 adapter；
+除非各自的 CLI／Web Anim 驗收也完成，不因 Video V2 局部修正而關閉。
+
 ## 功能逐項覆蓋表
 
 「主要結果」只列最直接的 issue；同一底層問題可能影響多列。

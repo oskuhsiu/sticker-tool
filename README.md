@@ -167,7 +167,7 @@ video workflow is browser-only:
 - Local images → static pack.
 - Sprite sheet → static pack.
 - Frame sheet or frame groups → APNG or animated pack.
-- Fixed-grid video → editable master APNG chunks → adjusted animated pack.
+- Fixed-grid video → all-presentation-frame raw master → exact-target animated pack.
 - Static or animated image prompt generation.
 
 Run it locally:
@@ -199,23 +199,38 @@ Current Colab images may preinstall Google ADK, Gradio, and FastHTML versions wh
 
 The optional Colab branch sends one input image or already-cropped sheet/video cell at a time to that temporary endpoint, receives a bounded grayscale mask, and applies alpha locally. For sheets, overlapping nominal-cell masks are merged before component-aware cutting so a subject crossing a grid line is not clipped. Original video, audio, complete video frames, downloads, and Project ZIP never leave the browser. The rotating `*.trycloudflare.com/remove` URL and random session key stay only in current React memory. Colab and Quick Tunnel runtimes are temporary and unguaranteed; restarting either requires a new connection.
 
-The **Video → APNG** tab accepts a browser-decodable local video such as MP4, MOV, or WebM. It samples
-an explicit editable time window, applies one stable grid to every sampled frame, and writes bounded
-internal master APNG chunks. Per-sticker start/end time, output frame count, playback duration, loop
-count, and color reduction can then be changed without reopening the video. A LINE ZIP contains only
-`main.png`, `tab.png`, and numbered APNG files. A separate editable Project ZIP contains the master
-chunks, immutable baseline renders, current adjusted renders, metrics, and a versioned manifest; it
-does not contain the source video or audio.
+The **Video → APNG** tab accepts a local video that Mediabunny and the current browser can demux and
+decode. Uploading probes container, codec, display geometry, rotation, pixel aspect ratio, and every
+decoded presentation sample. After the user chooses an editable range and a fixed grid, the browser
+decodes every presentation frame in that range, applies the same crop plan to it, and streams unmodified
+RGBA crops into bounded, lossless raw-master chunks. Identical visual payloads may be shared, but every
+source timestamp and duration remains in the index. The source video and audio are never embedded.
+
+Each sticker has its own editable range, hard 5–20 frame target, legal 1/2/3/4-second per-loop duration,
+finite loop count, and background-removal mode. Background removal is lazy: it runs only for selected
+render candidates and is cached in a bounded session LRU. Exact-target encoding may reduce colors but
+does not silently remove frames to satisfy the 1 MB limit. Adjacent equal final visuals are coalesced,
+their duration moves to the previous visual, and deterministic replacement candidates are tried. The
+result is reopened and validated from its actual APNG bytes.
+
+Only the active editor autoplays, using a controlled canvas player driven by decoded final frames and
+delays. A normal LINE ZIP is offered only when all current bytes match their drafts and final-byte
+validation passes. If all required bytes exist but a LINE rule fails, the UI lists the errors and can
+produce an explicitly confirmed `NOT-LINE-COMPLIANT` ZIP. Missing required bytes remain a hard stop.
+
+Project ZIP V2 stores the raw-master sample/visual index, checksummed chunks, drafts, current renders,
+selection evidence, and implementation versions. Import uses bounded streaming decompression, strict
+entry/path/schema checks, and SHA-256 verification. V1 projects remain importable as
+`sampled-legacy`/`baked-legacy`; missing frames or pre-removal RGB are never invented.
 
 The video source grid may contain any positive number of cells, including fewer than the 8 stickers
 required for a LINE animated pack. Such sources can still produce editable APNGs and a Project ZIP;
 the LINE ZIP validation gate continues to require 8, 16, or 24 stickers. Solid-color keying is off by
 default because a black background may share pixels with hair, eyes, clothing, or text outlines.
-Colab BiRefNet is also off by default and requires an explicit confirmation. The UI reports
-`sample timestamps × grid cells` as the approximate number of sequential remote inferences so users
-can multiply it by the Notebook benchmark before starting a large job. Master sampling defaults to
-20 frames, matching LINE Creators App's High smoothness setting; higher master counts remain available
-for finer timeline editing while final LINE APNG output is always constrained to 5–20 frames.
+Colab BiRefNet is also off by default and requires an explicit connection. The source step reports the
+actual presentation-frame count, crop-frame count, and an upper-bound RGBA estimate before ingest.
+The beta hard limit is 512 MiB; users must shorten the editable range or reduce the grid when the estimate
+exceeds it. There is no master sampling-count control in V2.
 
 IMG.LY, local BiRefNet, and Colab BiRefNet are mutually exclusive. None silently falls back to solid-color keying: local BiRefNet may fall back only from WebGPU to local WASM, while a model or remote-session failure is reported and leaves the source/settings available for retry.
 
