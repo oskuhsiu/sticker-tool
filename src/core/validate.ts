@@ -5,10 +5,12 @@
 
 import {
   ANIMATED_SPEC,
+  BIG_STICKER_SPEC,
   MAIN,
   STATIC_SPEC,
   TAB,
   ZIP_MAX_BYTES,
+  allowedCounts,
   isAllowedCount,
   type StickerKind,
 } from './spec.js';
@@ -64,8 +66,7 @@ const isEven = (n: number) => n % 2 === 0;
 /** 驗張數是否符合該貼圖類型白名單 */
 export function validateCount(kind: StickerKind, count: number): ValidationResult {
   if (!isAllowedCount(kind, count)) {
-    const allowed =
-      kind === 'animated' ? ANIMATED_SPEC.counts.join('/') : STATIC_SPEC.counts.join('/');
+    const allowed = allowedCounts(kind).join('/');
     return result([
       err('count', `${kind} 貼圖張數須為 ${allowed}，收到 ${count}`),
     ]);
@@ -96,6 +97,47 @@ export function validateStaticImage(info: ImageInfo, target?: string): Validatio
       err(
         'static.bytes',
         `檔案 ${(info.bytes / 1024).toFixed(0)}KB 超過單張上限 ${STATIC_SPEC.maxBytes / 1024}KB`,
+        target,
+      ),
+    );
+  }
+  return result(issues);
+}
+
+/** 驗單張 LINE Big Sticker 靜態貼圖 */
+export function validateBigStickerImage(info: ImageInfo, target?: string): ValidationResult {
+  const issues: ValidationIssue[] = [];
+  if (
+    info.width < BIG_STICKER_SPEC.minWidth ||
+    info.height < BIG_STICKER_SPEC.minHeight ||
+    info.width > BIG_STICKER_SPEC.maxWidth ||
+    info.height > BIG_STICKER_SPEC.maxHeight
+  ) {
+    issues.push(
+      err(
+        'big.size',
+        `尺寸 ${info.width}×${info.height} 須介於 ${BIG_STICKER_SPEC.minWidth}×${BIG_STICKER_SPEC.minHeight} 與 ${BIG_STICKER_SPEC.maxWidth}×${BIG_STICKER_SPEC.maxHeight} 之間`,
+        target,
+      ),
+    );
+  }
+  if (!isEven(info.width) || !isEven(info.height)) {
+    issues.push(err('big.even', `長寬須為偶數，收到 ${info.width}×${info.height}`, target));
+  }
+  if (!info.hasAlpha) {
+    issues.push(err('big.alpha', '大貼圖須為透明 RGBA PNG（缺 alpha 通道）', target));
+  }
+  if (info.transparentPixels !== undefined && info.transparentPixels < 1) {
+    issues.push(err('big.transparentPixels', '大貼圖沒有任何透明像素，背景可能尚未去除', target));
+  }
+  if (info.foregroundPixels !== undefined && info.foregroundPixels < 1) {
+    issues.push(err('big.empty', '大貼圖沒有可見前景', target));
+  }
+  if (info.bytes > BIG_STICKER_SPEC.maxBytes) {
+    issues.push(
+      err(
+        'big.bytes',
+        `檔案 ${(info.bytes / 1024).toFixed(0)}KB 超過單張上限 ${BIG_STICKER_SPEC.maxBytes / 1024}KB`,
         target,
       ),
     );
@@ -291,7 +333,12 @@ export function validatePack(args: {
     results.push(result([err('pack.count', `實際貼圖張數 ${stickers.length} 與宣告 ${count} 不符`)]));
   }
 
-  const validateOne = kind === 'animated' ? validateAnimatedImage : validateStaticImage;
+  const validateOne =
+    kind === 'animated'
+      ? validateAnimatedImage
+      : kind === 'big'
+        ? validateBigStickerImage
+        : validateStaticImage;
   stickers.forEach((s, i) => {
     results.push(validateOne(s, `${String(i + 1).padStart(2, '0')}.png`));
   });

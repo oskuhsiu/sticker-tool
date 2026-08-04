@@ -8,13 +8,28 @@ with Canvas, WebAssembly, and Web Workers, and the built site can be hosted on G
 | Tab | CLI equivalent | Purpose |
 |---|---|---|
 | Local images | `build` | Individual images to a fitted static LINE pack |
-| Sprite sheet | `gen` | Background handling, gutter-aware extraction, and static packaging |
+| Sprite sheet | `gen` for regular static packs | Pre-process cut guide, gutter-aware extraction, and regular static or Big Sticker packaging |
 | Animated APNG | `anim` | One frame sheet to APNG, or frame groups to an animated pack |
 | Video → APNG | Web only | Fixed-grid video to an editable all-frame raw master and animated pack |
 | Prompt | `prompt` | Static-sheet or animation-frame prompts for external image tools |
 
 The separate `#/colab-birefnet` route explains how to launch the optional BiRefNet notebook, benchmark
 it with the built-in astronaut image, and connect a temporary Cloudflare Quick Tunnel endpoint.
+
+## Sprite sheet and Big Stickers
+
+Selecting a sprite sheet displays a nominal equal-grid overlay before background removal or cutting.
+The overlay uses row-major `01`… numbering and shares the rendered image bounds, so it remains aligned
+while the image scales. It is a planning guide: the actual component-aware cutter may move the reference
+lines to nearby transparent gutters and preserves components that cross a nominal line.
+
+The Sprite sheet tab can produce either a regular static pack or a
+[LINE Big Sticker](https://creator.line.me/en/guideline/bigsticker/) pack. Big Sticker images use even
+RGBA PNG dimensions from 80×524 through 396×660, at most 1 MB each, and no proactively added display
+margin; LINE adds the appropriate margin. Content is scaled proportionally and transparent-padded to
+the minimum canvas instead of being stretched. Counts remain 8, 16, 24, 32, or 40, and the final ZIP
+remains limited to 60 MB. Main and tab images remain 240×240 and 96×74. This Big Sticker mode is Web-only;
+the CLI `gen` command continues to produce regular static stickers.
 
 ## Video → APNG V2
 

@@ -1,6 +1,6 @@
 # sticker-tool
 
-`sticker-tool` turns local images or externally generated sprite sheets into deterministic packages that target the [LINE Creators Market](https://creator.line.me/en/guideline/sticker) format.
+`sticker-tool` turns local images or externally generated sprite sheets into deterministic packages that target the [LINE Creators Market](https://creator.line.me/en/guideline/sticker) formats, including [Big Stickers](https://creator.line.me/en/guideline/bigsticker/) in the browser sprite-sheet workflow.
 
 It provides two execution surfaces:
 
@@ -12,7 +12,7 @@ AI image generation is intentionally outside the application. Use any image gene
 ## Features
 
 - Static sticker packs from individual PNG, JPEG, or WebP files.
-- Static packs from one or more sprite sheets.
+- Static packs from one or more sprite sheets; the browser can emit regular static or Big Sticker packs.
 - Animated APNG stickers from frame files or a frame sheet.
 - Animated APNG packs cropped from a fixed-grid video sheet in the browser.
 - Transparent, green-screen, and opaque-background handling.
@@ -20,7 +20,7 @@ AI image generation is intentionally outside the application. Use any image gene
 - Canvas fitting, even dimensions, transparent margins, optional outlines, and text overlays.
 - Static PNG quantization and animated color/frame reduction to fit the 1 MB limit.
 - `main.png`, `tab.png`, numbered sticker files, ZIP packaging, and shared metadata-based LINE checks.
-- Browser-side previews, downloads, grid mismatch warnings, and manual animation alignment.
+- Browser-side previews, pre-process sprite-sheet cut guides, downloads, grid mismatch warnings, and manual animation alignment.
 - Prompt generation for static sticker sheets and animation frame sheets.
 - A standalone Colab + BiRefNet tutorial with a downloadable Notebook, an astronaut benchmark, and CPU/GPU/model choices.
 - Experimental local BiRefNet across the browser image, sheet, animation, and video workflows, with a lazy model download, WebGPU/WASM execution, and explicit mobile/runtime warnings.
@@ -165,7 +165,7 @@ The web application is under [`web/`](web/). It has five tabs. Four correspond t
 video workflow is browser-only:
 
 - Local images → static pack.
-- Sprite sheet → static pack.
+- Sprite sheet → regular static or Big Sticker pack, with a cut guide before processing.
 - Frame sheet or frame groups → APNG or animated pack.
 - Fixed-grid video → all-presentation-frame raw master → exact-target animated pack.
 - Static or animated image prompt generation.
@@ -186,6 +186,13 @@ npm run preview
 ```
 
 The GitHub Pages workflow builds and deploys the site on pushes to either `main` or `master`. See [web/README.md](web/README.md) for browser-specific behavior and smoke-test instructions.
+
+The browser **Sprite sheet** tab can target either a regular static pack or a Big Sticker pack. Its
+pre-process overlay shows the nominal equal grid and row-major sticker numbers; the actual extraction
+may move those references to nearby transparent gutters. Big Sticker output is padded, without
+stretching, to at least 80×524 and capped at 396×660 pixels. It uses even RGBA PNG dimensions, no
+extra recommended margin, the same 8/16/24/32/40 pack counts, a 1 MB per-image limit, and the common
+60 MB ZIP limit. LINE adds display margins for Big Stickers. This mode is not currently exposed by the CLI.
 
 The web app processes image and video pixels locally by default. Build, Sheet, Anim, and Video each expose the same five background choices: preserve the source, solid-color keying, browser-local IMG.LY, browser-local BiRefNet, or BiRefNet through the user's temporary Colab endpoint. IMG.LY has no Colab branch. All model choices are opt-in and never silently fall back to color keying.
 
@@ -236,17 +243,17 @@ IMG.LY, local BiRefNet, and Colab BiRefNet are mutually exclusive. None silently
 
 ## LINE constraints targeted by the project
 
-| Constraint | Static | Animated |
-|---|---:|---:|
-| Sticker canvas | Up to 370×320 | Up to 320×270, with one side at least 270 px |
-| Dimensions | Even, transparent RGBA | Even, transparent RGBA |
-| File size | At most 1 MB | At most 1 MB |
-| Pack counts | 8, 16, 24, 32, or 40 | 8, 16, or 24 |
-| Animation | — | APNG, 5–20 frames, 1–4 loops |
-| Main image | 240×240 PNG | 240×240 APNG |
-| Tab image | 96×74 PNG | 96×74 PNG |
+| Constraint | Static | Big Sticker | Animated |
+|---|---:|---:|---:|
+| Sticker canvas | Up to 370×320 | 80×524 to 396×660 | Up to 320×270, with one side at least 270 px |
+| Dimensions | Even, transparent RGBA | Even, transparent RGBA | Even, transparent RGBA |
+| File size | At most 1 MB | At most 1 MB | At most 1 MB |
+| Pack counts | 8, 16, 24, 32, or 40 | 8, 16, 24, 32, or 40 | 8, 16, or 24 |
+| Animation | — | — | APNG, 5–20 frames, 1–4 loops |
+| Main image | 240×240 PNG | 240×240 PNG | 240×240 APNG |
+| Tab image | 96×74 PNG | 96×74 PNG | 96×74 PNG |
 
-The final ZIP is limited to 60 MB. Static and animated stickers cannot be mixed in one pack.
+The final ZIP is limited to 60 MB. Regular static, Big Sticker, and animated sticker files cannot be mixed in one pack.
 
 The current validator checks much of this metadata, but validation success is not proof that a package is uploadable. It does not yet fully verify decoded visual transparency/content, exact animation timing, distinct animation frames, or all main/tab constraints. The source-grounded list of known functional and compliance gaps is [plan/implementation-audit.md](plan/implementation-audit.md).
 

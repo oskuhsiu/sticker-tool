@@ -13,6 +13,7 @@ test/
 test/*
 !test/frameSequence.test.ts
 !test/videoTimeline.test.ts
+!test/bigSticker.test.ts
 spike/
 fixtures/
 eval/

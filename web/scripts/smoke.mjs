@@ -136,6 +136,38 @@ async function expectText(tab, selectorText, timeout = 60_000) {
   await page.waitForSelector(`[data-tab="${tab}"] >> text=${selectorText}`, { timeout });
 }
 
+/** 量測預覽 PNG 的可見 alpha bbox；用於確認不同輸出規格沒有非等比拉伸內容。 */
+async function visibleAlphaBounds(locator) {
+  return locator.evaluate(async (image) => {
+    if (!(image instanceof HTMLImageElement)) throw new Error('alpha bbox 目標不是圖片');
+    const blob = await (await fetch(image.src)).blob();
+    const bitmap = await createImageBitmap(blob);
+    const canvas = document.createElement('canvas');
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('無法建立 alpha bbox canvas');
+    context.drawImage(bitmap, 0, 0);
+    bitmap.close();
+    const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+    let left = canvas.width;
+    let top = canvas.height;
+    let right = -1;
+    let bottom = -1;
+    for (let y = 0; y < canvas.height; y++) {
+      for (let x = 0; x < canvas.width; x++) {
+        if (pixels[(y * canvas.width + x) * 4 + 3] <= 128) continue;
+        if (x < left) left = x;
+        if (x > right) right = x;
+        if (y < top) top = y;
+        if (y > bottom) bottom = y;
+      }
+    }
+    if (right < left || bottom < top) throw new Error('預覽 PNG 沒有可見 alpha bbox');
+    return { width: right - left + 1, height: bottom - top + 1 };
+  });
+}
+
 try {
   await page.goto(`${BASE.replace(/#.*/, '')}#/colab-birefnet`, { waitUntil: 'load' });
   await page.waitForTimeout(800); // 容 COI service worker 註冊/可能的一次重載
@@ -198,13 +230,92 @@ try {
   // --- 2) 組圖切格（綠幕 → chroma key，不需模型） ---
   await page.click('.tabs >> text=組圖切格');
   await page.setInputFiles('[data-tab="sheet"] input[type=file][accept="image/*"]', path.join(fixDir, 'sheet_green_4x2.png'));
+  const sheetTab = page.locator('[data-tab="sheet"]');
+  const sheetPreview = sheetTab.locator('[data-testid="sheet-cut-preview"]');
+  await sheetPreview.waitFor();
+  await page.waitForFunction(() => {
+    const image = document.querySelector('[data-tab="sheet"] [data-sheet-preview-image]');
+    return image instanceof HTMLImageElement && image.complete && image.naturalWidth > 0;
+  });
+  const activeRects = sheetPreview.locator('[data-sheet-cut-cell][data-active="true"]');
+  const activeLabels = sheetPreview.locator('[data-sheet-cut-label]');
+  if (await activeRects.count() !== 8 || await activeLabels.count() !== 8) {
+    throw new Error(`4×2 切割示意應有 8 個 active rect/label，實際 ${await activeRects.count()}/${await activeLabels.count()}`);
+  }
+  const previewBounds = await sheetPreview.locator('[data-sheet-preview-media]').evaluate((media) => {
+    const image = media.querySelector('[data-sheet-preview-image]');
+    const svg = media.querySelector('[data-sheet-preview-overlay]');
+    if (!(image instanceof Element) || !(svg instanceof Element)) throw new Error('切割示意缺少 img/svg');
+    const a = image.getBoundingClientRect();
+    const b = svg.getBoundingClientRect();
+    return {
+      left: Math.abs(a.left - b.left),
+      top: Math.abs(a.top - b.top),
+      width: Math.abs(a.width - b.width),
+      height: Math.abs(a.height - b.height),
+    };
+  });
+  if (Math.max(previewBounds.left, previewBounds.top, previewBounds.width, previewBounds.height) >= 1) {
+    throw new Error(`切割示意 img/svg bounds 未對齊：${JSON.stringify(previewBounds)}`);
+  }
+  const labelMetrics = await sheetPreview.locator('[data-sheet-cut-label]').evaluateAll((labels) => labels.map((label) => {
+    const rect = label.parentElement?.querySelector('rect');
+    if (!rect) return { visible: false, contained: false };
+    const labelBox = label.getBoundingClientRect();
+    const cellBox = rect.getBoundingClientRect();
+    return {
+      visible: labelBox.width > 0 && labelBox.height > 0,
+      contained: labelBox.left >= cellBox.left - 1 && labelBox.right <= cellBox.right + 1
+        && labelBox.top >= cellBox.top - 1 && labelBox.bottom <= cellBox.bottom + 1,
+    };
+  }));
+  if (labelMetrics.some(({ visible, contained }) => !visible || !contained)) {
+    throw new Error(`切割示意編號不可見或溢出格子：${JSON.stringify(labelMetrics)}`);
+  }
+  results.push('✓ 4×2 組圖上傳後立即顯示 8 格 nominal 切割示意，img/svg bounds 對齊');
   await page.click('text=切格並打包');
   await expectText('sheet', '全部符合 LINE 規格');
   await expectText('sheet', '綠幕');
+  const regularContentBounds = await visibleAlphaBounds(sheetTab.locator('.sticker-grid .png-preview img').nth(2));
   results.push('✓ 綠幕組圖 → 切格 → 靜態包：驗證全過（色鍵路徑）');
+
+  // --- 2a) 同一組圖切換 Big Sticker 規格，再驗證 8 張自然尺寸 ---
+  await sheetTab.getByTestId('sheet-spec-select').selectOption('big');
+  await expectText('sheet', '80×524–396×660', 10_000);
+  await page.click('text=切格並打包');
+  await expectText('sheet', '全部符合 LINE 規格');
+  const bigStickerImages = sheetTab.locator('.sticker-grid .png-preview img');
+  await page.waitForFunction(() => {
+    const images = document.querySelectorAll('[data-tab="sheet"] .sticker-grid .png-preview img');
+    const stickers = Array.from(images).slice(2);
+    return stickers.length === 8 && stickers.every((image) => {
+      if (!(image instanceof HTMLImageElement) || !image.complete) return false;
+      const { naturalWidth: width, naturalHeight: height } = image;
+      return width >= 80 && width <= 396 && height >= 524 && height <= 660 && width % 2 === 0 && height % 2 === 0;
+    });
+  });
+  const bigSizes = await bigStickerImages.evaluateAll((images) => images.slice(2).map((image) => ({
+    width: image.naturalWidth,
+    height: image.naturalHeight,
+  })));
+  if (bigSizes.length !== 8 || bigSizes.some(({ width, height }) =>
+    width < 80 || width > 396 || height < 524 || height > 660 || width % 2 !== 0 || height % 2 !== 0
+  )) {
+    throw new Error(`Big Sticker 8 張自然尺寸不符：${JSON.stringify(bigSizes)}`);
+  }
+  const bigContentBounds = await visibleAlphaBounds(bigStickerImages.nth(2));
+  const regularAspect = regularContentBounds.width / regularContentBounds.height;
+  const bigAspect = bigContentBounds.width / bigContentBounds.height;
+  if (Math.abs(bigAspect / regularAspect - 1) > 0.03) {
+    throw new Error(
+      `Big Sticker 內容疑似被非等比拉伸：regular=${JSON.stringify(regularContentBounds)} big=${JSON.stringify(bigContentBounds)}`,
+    );
+  }
+  results.push(`✓ Big Sticker 組圖 → 驗證全過、8 張自然尺寸合規且內容維持等比（${bigSizes.map(({ width, height }) => `${width}×${height}`).join(', ')}）`);
 
   // --- 2b) 組圖語意去背：overlap crops → alpha mask 拼回 → component-aware 切格 ---
   if (process.env.SMOKE_IMGLY === '1') {
+    await sheetTab.getByTestId('sheet-spec-select').selectOption('static');
     const sheetRemoval = page.locator('[data-tab="sheet"]').getByLabel('去背方式');
     await page.click('[data-tab="sheet"] .filepick-remove');
     await page.setInputFiles('[data-tab="sheet"] input[type=file][accept="image/*"]', path.join(fixDir, 'sheet_white_4x2.png'));

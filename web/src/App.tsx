@@ -68,8 +68,10 @@ export function App() {
           </main>
           <footer>
             <p>
-              規格：靜態 ≤370×320、動態 ≤320×270（一邊 ≥270）、單檔 ≤1MB、偶數長寬、透明 PNG/APNG、循環 1–4。
-              詳見 <a href="https://creator.line.me/zh-hant/guideline/sticker" target="_blank" rel="noreferrer">LINE Creators Market 規範</a>。
+              規格：一般靜態 ≤370×320、大貼圖 80×524–396×660、動態 ≤320×270（一邊 ≥270）；
+              單檔 ≤1MB、偶數長寬、透明 PNG/APNG、動態循環 1–4。
+              詳見 <a href="https://creator.line.me/zh-hant/guideline/sticker" target="_blank" rel="noreferrer">一般貼圖規範</a>
+              {' '}與 <a href="https://creator.line.me/zh-hant/guideline/bigsticker/" target="_blank" rel="noreferrer">大貼圖規範</a>。
             </p>
           </footer>
         </div>

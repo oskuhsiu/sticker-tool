@@ -1,6 +1,6 @@
 /**
  * 靜態貼圖單張流程串接（瀏覽器版）：
- *   去背 → fitCanvas（trim+置中+10px 邊，偶數）→ [描邊] → [疊字] → 壓到 ≤1MB。
+ *   去背 → fitCanvas（trim+置中+規格 margin/min canvas，偶數）→ [描邊] → [疊字] → 壓到 ≤1MB。
  */
 
 import { STATIC_SPEC } from '@core/spec.js';
@@ -19,6 +19,8 @@ export interface ProcessStaticOptions {
   removeBackground: RemoveBgMode;
   /** 基礎透明邊（px），預設 LINE 建議的 10px */
   marginPx?: number;
+  /** trim 後輸出的最小透明畫布尺寸（選填，內容維持等比） */
+  minCanvas?: Bounds;
   stroke?: StrokeSpec;
   text?: TextSpec;
   maxBytes?: number;
@@ -46,9 +48,14 @@ export async function processStatic(
   const { raster: bgRemoved, removed } = await applyBackgroundRemoval(input, opts.removeBackground);
   if (removed) notes.push('已套用去背');
 
-  // 2) fitCanvas：預留 margin 給描邊（描邊往 margin 內擴張，留 10px 淨邊）
+  // 2) fitCanvas：規格基礎 margin 加上描邊保護空間；一般靜態預設 10px，Big 明確傳 0。
   const fitMargin = baseMargin + strokeWidth;
-  let current = fitCanvas(bgRemoved, { bounds: opts.bounds, mode: 'trim', marginPx: fitMargin });
+  let current = fitCanvas(bgRemoved, {
+    bounds: opts.bounds,
+    mode: 'trim',
+    marginPx: fitMargin,
+    minCanvas: opts.minCanvas,
+  });
 
   // 3) 描邊
   if (strokeEnabled) {
@@ -67,5 +74,18 @@ export async function processStatic(
   if (fit.colors !== null) notes.push(`減色至 ${fit.colors} 色以符合 ${(maxBytes / 1024).toFixed(0)}KB`);
   if (fit.overBudget) notes.push(`⚠ 仍超過 ${(maxBytes / 1024).toFixed(0)}KB（${(fit.bytes / 1024).toFixed(0)}KB）`);
 
-  return { png: fit.png, raster: current, info: pngImageInfo(fit.png), notes };
+  let transparentPixels = 0;
+  let foregroundPixels = 0;
+  for (let index = 3; index < current.data.length; index += 4) {
+    const alpha = current.data[index]!;
+    if (alpha < 255) transparentPixels++;
+    if (alpha > 10) foregroundPixels++;
+  }
+
+  return {
+    png: fit.png,
+    raster: current,
+    info: { ...pngImageInfo(fit.png), transparentPixels, foregroundPixels },
+    notes,
+  };
 }

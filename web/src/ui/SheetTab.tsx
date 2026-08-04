@@ -3,8 +3,8 @@
  * 組圖來源：外部 AI 工具（搭配「產圖 Prompt」分頁產的 prompt）或任何現成大圖。
  */
 
-import { useRef, useState } from 'react';
-import { STATIC_SPEC, maxBounds } from '@core/spec.js';
+import { useMemo, useRef, useState } from 'react';
+import { BIG_STICKER_SPEC, STATIC_SPEC, allowedCounts, maxBounds } from '@core/spec.js';
 import { planGrid } from '@core/grid.js';
 import type { GridLayout } from '@core/types.js';
 import { validatePack } from '@core/validate.js';
@@ -26,9 +26,11 @@ import { DEFAULT_TEXT_STYLE, makeStroke, makeText, parseGridText, type SharedTex
 import { reportCut } from './cutReport.js';
 import { BackgroundRemovalControl } from './BackgroundRemovalControl.jsx';
 import { useColabBirefnetConnection } from './colabBirefnetConnection.jsx';
+import { SheetCutPreview } from './SheetCutPreview.jsx';
 
 export function SheetTab() {
   const [sheets, setSheets] = useState<File[]>([]);
+  const [stickerKind, setStickerKind] = useState<'static' | 'big'>('static');
   const [count, setCount] = useState(8);
   const [name, setName] = useState('My Stickers');
   const [isCharacter, setIsCharacter] = useState(true);
@@ -126,7 +128,8 @@ export function SheetTab() {
       logger.log('ok', `共切出 ${cells.length} 格`);
 
       // 3) 逐格處理（cutSheet 已整張去背 → 不重複去背）
-      const bounds = maxBounds('static');
+      const spec = stickerKind === 'big' ? BIG_STICKER_SPEC : STATIC_SPEC;
+      const bounds = maxBounds(stickerKind);
       const stroke = makeStroke(strokeOn, strokeWidth, strokeColor);
       const texts = textsRaw.split('\n');
       const style: SharedTextStyle = { ...textStyle, font: fontName ?? '' };
@@ -135,9 +138,15 @@ export function SheetTab() {
         const r = await processStatic(cells[i]!, {
           bounds,
           removeBackground: false,
+          ...(stickerKind === 'big'
+            ? {
+                minCanvas: { width: BIG_STICKER_SPEC.minWidth, height: BIG_STICKER_SPEC.minHeight },
+                marginPx: 0,
+              }
+            : {}),
           stroke,
           text: makeText(texts[i] ?? '', style),
-          maxBytes: STATIC_SPEC.maxBytes,
+          maxBytes: spec.maxBytes,
         });
         const note = r.notes.length ? `（${r.notes.join('；')}）` : '';
         logger.log('info', `${String(i + 1).padStart(2, '0')}.png  ${r.info.width}×${r.info.height}  ${kb(r.info.bytes)} ${note}`);
@@ -152,7 +161,7 @@ export function SheetTab() {
       logger.log('ok', `zip 打包完成（${kb(zipBytes)}）`);
 
       const validation = validatePack({
-        kind: 'static',
+        kind: stickerKind,
         count,
         stickers: processed.map((p) => p.info),
         main: mainInfo,
@@ -176,16 +185,20 @@ export function SheetTab() {
     }
   }
 
-  const layoutHint = (() => {
+  const previewLayout = useMemo(() => {
     try {
       const d = planGrid(count, { isCharacter, forceOversizeSet: false });
       const g = parseGridText(gridText);
-      const l: GridLayout = g && d.layout.sheets === 1 && g.cols * g.rows >= count ? { ...d.layout, ...g } : d.layout;
-      return `版面：${l.cols}×${l.rows}${l.sheets > 1 ? ` × ${l.sheets} 張組圖` : ''}`;
+      return g && d.layout.sheets === 1 && g.cols * g.rows >= count
+        ? ({ ...d.layout, ...g } satisfies GridLayout)
+        : d.layout;
     } catch {
-      return '';
+      return null;
     }
-  })();
+  }, [count, gridText, isCharacter]);
+  const layoutHint = previewLayout
+    ? `版面：${previewLayout.cols}×${previewLayout.rows}${previewLayout.sheets > 1 ? ` × ${previewLayout.sheets} 張組圖` : ''}`
+    : '';
 
   return (
     <section>
@@ -194,6 +207,7 @@ export function SheetTab() {
         切線吸附到真實透明縫 → 校正 → 打包。組圖可用「產圖 Prompt」分頁產的 prompt 餵給任何 AI 產圖工具取得。
       </p>
       <FilePick label="組圖（sprite sheet）" multiple files={sheets} onChange={setSheets} />
+      <SheetCutPreview sheets={sheets} layout={previewLayout} />
       <BackgroundRemovalControl
         value={removeBgMode}
         onChange={setRemoveBgMode}
@@ -202,9 +216,23 @@ export function SheetTab() {
         colorHelp={<span className="layout-hint">自動偵測綠幕或邊框背景色</span>}
       />
       <Row>
+        <Field label="貼圖規格">
+          <select
+            data-testid="sheet-spec-select"
+            aria-label="貼圖規格"
+            value={stickerKind}
+            onChange={(e) => {
+              setStickerKind(e.target.value as 'static' | 'big');
+              setResult(null);
+            }}
+          >
+            <option value="static">一般靜態貼圖</option>
+            <option value="big">大貼圖</option>
+          </select>
+        </Field>
         <Field label="張數">
           <select value={count} onChange={(e) => setCount(Number(e.target.value))}>
-            {STATIC_SPEC.counts.map((c) => (
+            {allowedCounts(stickerKind).map((c) => (
               <option key={c} value={c}>
                 {c}
               </option>
@@ -219,6 +247,11 @@ export function SheetTab() {
         </Field>
         <span className="layout-hint">{layoutHint}</span>
       </Row>
+      {stickerKind === 'big' && (
+        <p className="layout-hint" data-testid="sheet-big-limits">
+          {`大貼圖限制：${BIG_STICKER_SPEC.minWidth}×${BIG_STICKER_SPEC.minHeight}–${BIG_STICKER_SPEC.maxWidth}×${BIG_STICKER_SPEC.maxHeight} px；寬高皆須為偶數；透明 PNG；單張 ≤${BIG_STICKER_SPEC.maxBytes / 1_000_000}MB；不需預留 margin。`}
+        </p>
+      )}
       <Row>
         <Field label="貼圖包名">
           <input value={name} onChange={(e) => setName(e.target.value)} />

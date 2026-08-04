@@ -1,10 +1,10 @@
 # Architecture
 
-Last verified against the source tree on 2026-07-31.
+Last verified against the source tree on 2026-08-04.
 
 ## Purpose and boundaries
 
-`sticker-tool` is a deterministic post-processing and packaging system for LINE sticker assets. It accepts local images, sprite sheets, or animation frames and produces static PNG or animated APNG packages plus metadata-based validation results.
+`sticker-tool` is a deterministic post-processing and packaging system for LINE sticker assets. It accepts local images, sprite sheets, or animation frames and produces regular static PNG, browser Big Sticker PNG, or animated APNG packages plus metadata-based validation results.
 
 The system deliberately does not call an AI image-generation API. Artwork can come from any external tool. The prompt builder and project-local skills help create suitable inputs, while the application owns repeatable image processing, packaging, and LINE-spec checks.
 
@@ -32,7 +32,7 @@ Both surfaces import `src/core/` directly. They intentionally have separate imag
 
 The shared core contains no Node filesystem or browser DOM dependencies.
 
-- `spec.ts` defines LINE size, count, byte, frame, loop, main, tab, and ZIP limits.
+- `spec.ts` defines LINE regular-static, Big Sticker, animated, count, byte, frame, loop, main, tab, and ZIP limits.
 - `types.ts` defines normalized configuration and pipeline contracts.
 - `validate.ts` validates image metadata and complete package metadata.
 - `grid.ts` plans sprite-sheet dimensions and enforces character-sheet quality thresholds.
@@ -89,11 +89,12 @@ The Node pipeline uses `sharp`, `@imgly/background-removal-node`, and `upng-js`.
 
 `web/src/App.tsx` exposes five React tabs: build, sheet, animation, video-to-APNG, and prompt. Every tab remains mounted while hidden so switching tabs preserves selected files and results. The video tab is a browser-only workflow and does not add a CLI command. `#/colab-birefnet` is an independent tutorial page; opening it hides but does not unmount the workflow tabs.
 
-`web/src/ui/` owns workflow state, logging, previews, downloads, validation display, and manual frame alignment. `ManualLayout.tsx` provides onion-skin alignment and applies user offsets before animation processing. `ColabBirefnetGuide.tsx` owns the tutorial and in-memory connection form; `colabBirefnetConnection.tsx` keeps the rotating endpoint and session key only for the current page lifetime and aborts active requests when the connection changes.
+`web/src/ui/` owns workflow state, logging, previews, downloads, validation display, and manual frame alignment. `SheetCutPreview.tsx` renders the Sheet tab's pre-process nominal grid without running background removal; the actual cutter may still snap its references to detected gutters. `ManualLayout.tsx` provides onion-skin alignment and applies user offsets before animation processing. `ColabBirefnetGuide.tsx` owns the tutorial and in-memory connection form; `colabBirefnetConnection.tsx` keeps the rotating endpoint and session key only for the current page lifetime and aborts active requests when the connection changes.
 
 `web/src/webpipe/` mirrors the Node pipeline using browser primitives:
 
 - RGBA raster objects and Canvas replace `sharp`.
+- `fitCanvas.ts` supports an optional minimum transparent canvas for Big Sticker output while preserving proportional content and the existing regular-static defaults.
 - `backgroundRemovalJob.ts` turns the five UI modes into one sequential, cancellable job contract. IMG.LY and local BiRefNet are dynamically loaded only for their respective modes; Colab is available only for BiRefNet.
 - `@imgly/background-removal` provides the self-hosted browser-local IMG.LY adapter. Its per-job progress callback avoids cross-talk between the always-mounted tabs.
 - `sheetBackgroundRemoval.ts` applies semantic removal to overlapping nominal-cell crops, merges their alpha masks over the original RGB sheet, and then hands the full sheet to component-aware extraction.
@@ -142,17 +143,24 @@ The browser performs the same logical sequence, but returns ZIP bytes for downlo
 ```text
 Count + character policy
   -> grid and sheet-count plan
+  -> browser nominal cut guide before processing
+  -> choose regular static or browser Big Sticker output contract
   -> background detection/removal
   -> foreground row/column projections
   -> gutter planning and grid mismatch inference
   -> connected-component assignment to cells
   -> per-cell centering
-  -> static image pipeline
+  -> static image pipeline with the selected max/min canvas and margin policy
   -> main/tab/ZIP
-  -> validation
+  -> kind-specific validation
 ```
 
-Nominal cut lines are references rather than destructive boundaries. Components are assigned to a cell by position and copied whole, which prevents a hand or prop crossing a grid line from being split or duplicated.
+The browser guide shows equal nominal cells and row-major numbering; it does not run a model or promise the final pixel cut. Nominal cut lines are references rather than destructive boundaries. During processing, projection-derived gutters may move those references, and components are assigned to a cell by position and copied whole. This prevents a hand or prop crossing a grid line from being split or duplicated.
+
+Regular static output keeps the existing 10-pixel transparent-margin policy and a 370×320 maximum.
+Browser Big Sticker output uses no proactive display margin, proportional scaling, transparent padding
+to at least 80×524, and a 396×660 maximum. Big Sticker constants and metadata validation live in shared
+core; the current CLI configuration adapter does not expose a Big Sticker workflow.
 
 The background-removal implementation differs by runtime:
 
