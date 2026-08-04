@@ -4,10 +4,12 @@
  */
 
 import { planGrid } from '../../core/grid.js';
+import { isEmojiKind } from '../../core/spec.js';
 import type { GridLayout } from '../../core/types.js';
 import { buildSheetPrompt } from '../../core/prompt.js';
+import { validateCount } from '../../core/validate.js';
 import { loadConfig } from '../../config/load.js';
-import { log } from '../util.js';
+import { log, reportValidation } from '../util.js';
 
 export interface PromptOptions {
   config: string;
@@ -16,7 +18,14 @@ export interface PromptOptions {
 
 export async function runPrompt(opts: PromptOptions): Promise<void> {
   const cfg = await loadConfig(opts.config);
-  if (opts.count) cfg.count = opts.count;
+  if (opts.count !== undefined) cfg.count = opts.count;
+
+  const countValidation = validateCount(cfg.kind, cfg.count);
+  if (!countValidation.ok) {
+    reportValidation('張數', countValidation);
+    process.exitCode = 1;
+    return;
+  }
 
   const decision = planGrid(cfg.count, {
     isCharacter: cfg.ai.isCharacter,
@@ -48,6 +57,7 @@ export async function runPrompt(opts: PromptOptions): Promise<void> {
       transparent: cfg.ai.transparent,
       cellVariations: cfg.ai.cellVariations,
       hasReference: !!cfg.ai.reference,
+      product: isEmojiKind(cfg.kind) ? 'emoji' : 'sticker',
     });
     if (layout.sheets > 1) console.log(`\n===== 大圖 ${s + 1}/${layout.sheets} =====`);
     console.log(prompt);

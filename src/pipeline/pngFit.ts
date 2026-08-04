@@ -17,14 +17,29 @@ export interface PngFitResult {
   overBudget: boolean;
 }
 
+export interface PngFitOptions {
+  /** Quantize colors but store the delivered candidate as truecolor RGBA. */
+  forbidPalette?: boolean;
+}
+
 /**
  * 把 PNG 壓到 ≤ maxBytes。先試無損；超標才沿色階減色，第一個達標即停。
  */
-export async function fitPngUnderBytes(input: Buffer, maxBytes: number): Promise<PngFitResult> {
+export async function fitPngUnderBytes(
+  input: Buffer,
+  maxBytes: number,
+  options: PngFitOptions = {},
+): Promise<PngFitResult> {
   // 先確保是壓好的無損 PNG
-  const lossless = await sharp(input)
+  let lossless = await sharp(input)
     .png({ compressionLevel: 9, effort: 10 })
     .toBuffer();
+  if (options.forbidPalette && lossless[25] !== 6) {
+    lossless = await sharp(lossless)
+      .ensureAlpha()
+      .png({ palette: false, compressionLevel: 9, effort: 10 })
+      .toBuffer();
+  }
   if (lossless.length <= maxBytes) {
     return { buffer: lossless, bytes: lossless.length, colors: null, overBudget: false };
   }
@@ -37,9 +52,15 @@ export async function fitPngUnderBytes(input: Buffer, maxBytes: number): Promise
   };
 
   for (const colors of COLOR_LADDER) {
-    const buf = await sharp(input)
+    const quantized = await sharp(input)
       .png({ palette: true, colors, compressionLevel: 9, effort: 10 })
       .toBuffer();
+    const buf = options.forbidPalette
+      ? await sharp(quantized)
+          .ensureAlpha()
+          .png({ palette: false, compressionLevel: 9, effort: 10 })
+          .toBuffer()
+      : quantized;
     if (buf.length < best.bytes) {
       best = { buffer: buf, bytes: buf.length, colors, overBudget: buf.length > maxBytes };
     }

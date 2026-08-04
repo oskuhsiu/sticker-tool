@@ -9,12 +9,15 @@
 import path from 'node:path';
 import { existsSync } from 'node:fs';
 import { planGrid } from '../../core/grid.js';
+import { emojiFileName, emojiPackManifest } from '../../core/naming.js';
+import { EMOJI_SPEC } from '../../core/spec.js';
 import type { GridLayout, PackConfig } from '../../core/types.js';
-import { validatePack } from '../../core/validate.js';
+import { validateCount, validateEmojiPack, validatePack } from '../../core/validate.js';
 import { cutSheet } from '../../pipeline/sheetAnalysis.js';
 import { reportCut } from '../cutReport.js';
-import { processStatic } from '../../pipeline/processStatic.js';
-import { buildMainTab } from '../../package/buildMainTab.js';
+import { inspectStaticPng, processStatic } from '../../pipeline/processStatic.js';
+import { buildMainTab, buildTab } from '../../package/buildMainTab.js';
+import { buildEmojiPack } from '../../package/buildEmojiZip.js';
 import { buildPack } from '../../package/buildZip.js';
 import { loadConfig, resolveRelative } from '../../config/load.js';
 import { log, reportValidation } from '../util.js';
@@ -42,15 +45,20 @@ function applyGridOverride(layout: GridLayout, cfg: PackConfig): GridLayout {
 
 export async function runGen(opts: GenOptions): Promise<void> {
   const cfg = await loadConfig(opts.config);
-  if (opts.count) cfg.count = opts.count;
+  if (opts.count !== undefined) cfg.count = opts.count;
   if (opts.name) cfg.name = opts.name;
   const outDir = opts.out ?? 'out';
 
-  if (cfg.kind === 'animated') {
+  if (cfg.kind === 'animated' || cfg.kind === 'animated-emoji') {
     log.err(`動態包請用 anim 指令；gen 僅處理靜態。`);
     process.exitCode = 1;
     return;
   }
+  if (!reportValidation('張數', validateCount(cfg.kind, cfg.count))) {
+    process.exitCode = 1;
+    return;
+  }
+  const isEmoji = cfg.kind === 'emoji';
 
   // --sheet 是 CLI 路徑參數 → 相對 CWD 解析（與 --out/--config 一致；非 config 內宣告路徑）
   const sheets = (opts.sheet ?? []).map((s) => path.resolve(s));
@@ -107,6 +115,9 @@ export async function runGen(opts: GenOptions): Promise<void> {
   const processed = [];
   for (let i = 0; i < cells.length; i++) {
     const item = cfg.stickers[i];
+    const filename = isEmoji
+      ? emojiFileName(i + 1)
+      : `${String(i + 1).padStart(2, '0')}.png`;
     const r = await processStatic(cells[i]!, {
       bounds,
       removeBackground: forceRembg ? true : false,
@@ -114,14 +125,61 @@ export async function runGen(opts: GenOptions): Promise<void> {
       text: item?.text
         ? { ...item.text, font: resolveRelative(opts.config, item.text.font) }
         : undefined,
+      maxBytes: isEmoji ? EMOJI_SPEC.maxBytes : undefined,
+      marginPx: isEmoji ? 0 : undefined,
+      canvasMode: isEmoji ? 'exact' : undefined,
+      trimInput: isEmoji ? true : undefined,
+      forbidPalette: isEmoji,
     });
+    if (isEmoji) r.info.filename = filename;
     const note = r.notes.length ? `（${r.notes.join('；')}）` : '';
-    log.info(`  ${String(i + 1).padStart(2, '0')}.png  ${r.info.width}×${r.info.height}  ${(r.info.bytes / 1024).toFixed(0)}KB ${note}`);
+    log.info(`  ${filename}  ${r.info.width}×${r.info.height}  ${(r.info.bytes / 1024).toFixed(0)}KB ${note}`);
     processed.push(r);
   }
 
-  // 4) main/tab + 打包
+  // 4) support image + 打包
   const coverIdx = Math.min(Math.max(1, cfg.cover), cfg.count) - 1;
+  if (isEmoji) {
+    const { tab } = await buildTab(processed[coverIdx]!.buffer);
+    const tabInfo = await inspectStaticPng(tab, 'tab.png');
+    const archivePaths = emojiPackManifest(cfg.count);
+    const preflight = validateEmojiPack({
+      kind: 'emoji',
+      count: cfg.count,
+      items: processed.map((item) => item.info),
+      tab: tabInfo,
+      archivePaths,
+    });
+    if (!preflight.ok) {
+      reportValidation('Emoji 預檢', preflight);
+      process.exitCode = 1;
+      return;
+    }
+
+    const result = await buildEmojiPack({
+      outDir,
+      name: cfg.name,
+      kind: 'emoji',
+      tab,
+      items: processed.map((item) => item.buffer),
+    });
+    const validation = validateEmojiPack({
+      kind: 'emoji',
+      count: cfg.count,
+      items: processed.map((item) => item.info),
+      tab: tabInfo,
+      archivePaths: result.files,
+      zipBytes: result.zipBytes,
+    });
+    if (!reportValidation('整包', validation)) {
+      process.exitCode = 1;
+      return;
+    }
+    log.ok(`已輸出 ${result.files.length} 檔到 ${result.dir}`);
+    log.ok(`zip：${result.zipPath}（${(result.zipBytes / 1024).toFixed(0)}KB）`);
+    return;
+  }
+
   const { main, tab, mainInfo, tabInfo } = await buildMainTab(processed[coverIdx]!.buffer);
   const result = await buildPack({
     outDir,

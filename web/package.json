@@ -16,6 +16,7 @@
     "test:video-spike": "tsx --tsconfig tsconfig.json scripts/video-all-frames-spike.mts",
     "preview": "vite preview",
     "smoke": "node scripts/smoke.mjs",
+    "smoke:emoji": "node scripts/emoji-smoke.mjs",
     "smoke:local-birefnet": "node scripts/local-birefnet-browser-smoke.mjs",
     "smoke:video": "node scripts/video-smoke.mjs"
   },

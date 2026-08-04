@@ -4,7 +4,7 @@ Last verified against the source tree on 2026-08-04.
 
 ## Purpose and boundaries
 
-`sticker-tool` is a deterministic post-processing and packaging system for LINE sticker assets. It accepts local images, sprite sheets, or animation frames and produces regular static PNG, browser Big Sticker PNG, regular animated APNG, or paired browser Pop-up Sticker packages plus metadata-based validation results.
+`sticker-tool` is a deterministic post-processing and packaging system for LINE sticker and Regular Emoji assets. It accepts local images, sprite sheets, or animation frames and produces Regular Sticker PNG/APNG, Regular Emoji PNG/APNG, browser Big Sticker PNG, or paired browser Pop-up Sticker packages plus target-specific validation results.
 
 The system deliberately does not call an AI image-generation API. Artwork can come from any external tool. The prompt builder and project-local skills help create suitable inputs, while the application owns repeatable image processing, packaging, and LINE-spec checks.
 
@@ -16,7 +16,7 @@ External image generator ───┼──> CLI or browser workflow
 Prompt builder ─────────────┘             │
                                           ├──> shared core decisions and validation
                                           ├──> platform-specific image pipeline
-                                          └──> main/tab/numbered files + ZIP or download
+                                          └──> target-specific support/numbered files + ZIP or download
 ```
 
 There are two runtime surfaces:
@@ -32,34 +32,37 @@ Both surfaces import `src/core/` directly. They intentionally have separate imag
 
 The shared core contains no Node filesystem or browser DOM dependencies.
 
-- `spec.ts` defines LINE regular-static, Big Sticker, animated, Pop-up Sticker, count, byte, frame, loop, main, tab, and ZIP limits.
+- `spec.ts` defines LINE regular-static, Big Sticker, animated, Pop-up Sticker, static/animated Regular Emoji, count, byte, frame, loop, support-image, naming, and ZIP limits.
 - `types.ts` defines normalized configuration and pipeline contracts.
-- `validate.ts` validates image metadata and complete package metadata.
+- `validate.ts` keeps sticker and emoji item/package validation separate. Emoji validation consumes evidence decoded from final PNG/APNG bytes and validates its own three-digit, main-less manifest.
 - `grid.ts` plans sprite-sheet dimensions and enforces character-sheet quality thresholds.
 - `sheet.ts` infers grid dimensions and finds low-occupancy gutter bands from foreground projections.
 - `cells.ts` performs connected-component assignment, preserves content that crosses nominal grid lines, and lays cells out for static or animated use.
 - `prompt.ts` builds static-sheet and animation-frame prompts without invoking a model. Both prompt
   types include background-removal-safe text guidance: unrequested text is prohibited, while requested
   lettering and symbols are rendered as opaque foreground artwork connected to the main subject.
-- `naming.ts` and `color.ts` provide deterministic naming and color parsing helpers.
+- `naming.ts` provides separate two-digit sticker and three-digit emoji naming plus the expected emoji archive manifest; `color.ts` provides deterministic color parsing helpers.
 
 This directory is the compatibility boundary between the CLI and web app. Shared behavioral changes should be implemented here when they do not require platform APIs.
 
 ### CLI and configuration: `src/cli/`, `src/config/`
 
-`src/cli/index.ts` registers five Commander commands:
+`src/cli/index.ts` registers five Commander commands and extends the existing commands with an Emoji product selection:
 
-- `build`: individual local images to a static pack.
-- `gen`: one or more existing sprite sheets to a static pack.
-- `anim`: a frame sheet to one APNG, or configured groups of individual frame images to a complete animated pack.
-- `prompt`: print an image-generation prompt.
-- `init`: write an annotated example configuration.
+- `build`: individual local images to a static Sticker or Regular Emoji pack; `--product emoji` is the direct-input selector.
+- `gen`: one or more existing sprite sheets to a static pack; the configuration chooses Sticker or Regular Emoji.
+- `anim`: a frame sheet to one APNG, or configured groups of individual frame images to a complete pack; `--product emoji` selects a single Animated Regular Emoji, while configured packs derive the product from `package.product`.
+- `prompt`: print a target-aware image-generation prompt from the configuration.
+- `init`: write an annotated Sticker template by default or a Regular Emoji template with `--product emoji`.
 
 `src/config/schema.ts` validates YAML or JSON with Zod. `src/config/load.ts` normalizes the result:
 
-- `package.animated` or any `stickers[].frames` entry selects animated mode.
+- `package.product` defaults to `sticker`; `product: emoji` requires `emojiSet: regular` in V1.
+- `package.animated` or any `stickers[].frames` entry selects the animated form of the chosen product.
 - Omitted background removal defaults to `true` for local sources and `false` for AI sources.
-- Omitted maximum dimensions use the selected sticker kind's LINE limits.
+- Emoji output dimensions are exactly 180×180. Omitting `processing.maxSize` selects that value; an explicit different value is rejected.
+- Animated Emoji defaults to a 300,000-byte limit and accepts only 5–20 frames, 1–4 loops, legal 1/2/3/4-second durations, and total playback no longer than four seconds.
+- Omitted `animation.autoFit` defaults to `false` for Emoji and `true` for legacy Sticker configurations; an explicit value is preserved.
 - Grid strings such as `4x2` become structured dimensions.
 
 Paths inside the configuration resolve relative to the configuration file. Paths supplied as CLI arguments resolve relative to the current working directory. CLI `count` and `name` options take precedence over configuration values.
@@ -81,13 +84,15 @@ The Node pipeline uses `sharp`, `@imgly/background-removal-node`, and `upng-js`.
 
 ### Packaging: `src/package/`
 
-`buildMainTab.ts` derives fixed-size main and tab assets. Animated packs receive an APNG `main.png` generated from the selected cover frames; `tab.png` remains static.
+`buildMainTab.ts` derives fixed-size support assets. Sticker packs receive `main.png` plus `tab.png`,
+and Animated Sticker packs receive an APNG main generated from the selected cover frames. Emoji calls
+the tab-only helper; `tab.png` remains static and no Emoji main file is generated.
 
-`buildZip.ts` writes `main.png`, `tab.png`, and zero-padded numbered files, then creates a ZIP containing exactly those files. It does not clean the output directory before writing, so stale files can remain beside the current package without entering the new ZIP.
+`buildZip.ts` writes sticker `main.png`, `tab.png`, and two-digit numbered files. `buildEmojiZip.ts` instead requires exactly one `tab.png` and the expected three-digit `001.png` onward, rejects missing, duplicate, or unexpected paths, and never accepts a `main.png`. Both create ZIPs from the current result only. They do not clean the output directory before writing, so stale files can remain beside the current package without entering the new ZIP.
 
 ### Browser application: `web/`
 
-`web/src/App.tsx` exposes five React tabs: build, sheet, animation, video-to-APNG, and prompt. The animation tab contains frame-sheet, regular animated-pack, and paired Pop-up Sticker modes. Every tab remains mounted while hidden so switching tabs preserves selected files and results. The video and Pop-up Sticker modes are browser-only and do not add CLI commands. `#/colab-birefnet` is an independent tutorial page; opening it hides but does not unmount the workflow tabs.
+`web/src/App.tsx` exposes five React tabs: build, sheet, animation, video-to-APNG, and prompt. Regular Emoji is a target inside Build, Sheet, both ordinary Animation modes, and Prompt rather than a sixth tab. The animation tab also contains a dedicated paired Pop-up Sticker mode. Every tab remains mounted while hidden so switching tabs preserves selected files and results. Video, Big Sticker, and Pop-up Sticker are browser-only; Video does not currently export Animated Emoji. `#/colab-birefnet` is an independent tutorial page; opening it hides but does not unmount the workflow tabs.
 
 `web/src/ui/` owns workflow state, logging, previews, downloads, validation display, and manual frame alignment. `SheetCutPreview.tsx` renders the Sheet tab's pre-process nominal grid without running background removal; the actual cutter may still snap its references to detected gutters. `PopupPackMode.tsx` owns the paired static/frame inputs and the browser-only Pop-up Sticker result. `ManualLayout.tsx` provides onion-skin alignment and applies user offsets before animation processing. `ColabBirefnetGuide.tsx` owns the tutorial and in-memory connection form; `colabBirefnetConnection.tsx` keeps the rotating endpoint and session key only for the current page lifetime and aborts active requests when the connection changes.
 
@@ -99,7 +104,7 @@ The Node pipeline uses `sharp`, `@imgly/background-removal-node`, and `upng-js`.
 - `@imgly/background-removal` provides the self-hosted browser-local IMG.LY adapter. Its per-job progress callback avoids cross-talk between the always-mounted tabs.
 - `sheetBackgroundRemoval.ts` applies semantic removal to overlapping nominal-cell crops, merges their alpha masks over the original RGB sheet, and then hands the full sheet to component-aware extraction.
 - `upng-js` remains the APNG encoder. Final-byte APNG inspection supplies the strict timing, loop, frame, alpha, and distinct-visual evidence used by Popup Sticker validation.
-- `zip.ts` emits the usual flat packs or the explicit Pop-up Sticker hierarchy: static cover/tab and numbered files under `png/`, with the animated cover and numbered files under `popup/`.
+- `zip.ts` emits sticker flat packs or the explicit Pop-up Sticker hierarchy. `emojiZip.ts` owns the independent main-less Regular Emoji manifest and final ZIP validation.
 - `fflate` creates ZIP bytes for download.
 - `videoSource.ts` uses Mediabunny plus WebCodecs to enumerate decoded presentation samples, normalize
   integer-microsecond intervals, apply display rotation/aspect metadata, and decode local frames.
@@ -126,14 +131,15 @@ Vite aliases `@core` to the repository's `src/core/`, so the browser consumes th
 ```text
 Natural-sort input files
   -> select requested count
+  -> choose Regular Sticker or Regular Emoji product profile
   -> choose no removal, color key, IMG.LY, local BiRefNet, or Colab BiRefNet
   -> apply the selected remover before fitting
   -> trim and fit with transparent margin
   -> optional stroke
   -> optional text
   -> original-color PNG encoding
-  -> derive main and tab from the selected cover
-  -> package numbered files
+  -> Sticker: derive main + tab and package two-digit files
+  -> Emoji: derive tab only and package three-digit files
   -> validate collected metadata and ZIP size
   -> browser: offer an explicit color-reduction retry only for a byte-limit failure
 ```
@@ -148,14 +154,14 @@ older static pipeline retains its existing automatic byte-fitting behavior.
 Count + character policy
   -> grid and sheet-count plan
   -> browser nominal cut guide before processing
-  -> choose regular static or browser Big Sticker output contract
+  -> choose regular static, browser Big Sticker, or Regular Emoji output contract
   -> background detection/removal
   -> foreground row/column projections
   -> gutter planning and grid mismatch inference
   -> connected-component assignment to cells
   -> per-cell centering
   -> static image pipeline with the selected max/min canvas and margin policy
-  -> main/tab/ZIP
+  -> target-specific support assets and ZIP
   -> kind-specific validation
 ```
 
@@ -173,6 +179,40 @@ explicit color-reduction retry, and shared validation rejects missing or indexed
 Big Sticker constants and metadata validation live in shared core; the current CLI configuration
 adapter does not expose a Big Sticker workflow.
 
+### Regular Emoji processing and packaging
+
+Regular Emoji reuses acquisition, removal, cutting, fitting, stroke, text, and encoding adapters, but
+uses a separate product profile at every contract boundary:
+
+```text
+8–40 image cells or 8–40 frame groups
+  -> trim content; for animation compute one sequence-wide layout
+  -> exact-fit every final item/frame to 180×180
+  -> preserve truecolor RGBA delivery bytes
+  -> animation: preserve all requested 5–20 frames
+  -> encode PNG or APNG
+  -> reopen final bytes and collect canvas/color/alpha/content evidence
+  -> APNG: also collect frames/loops/duration/distinct-frame evidence
+  -> build 96×74 tab from the selected cover
+  -> validate `tab.png` + `001.png` onward; reject `main.png`
+  -> enforce static `<20,000,000` or animated `≤20,000,000` ZIP boundary
+```
+
+Static items have a 1,000,000-byte limit. Animated items have a 300,000-byte limit, 1–4 loops, an
+exact 1/2/3/4-second per-loop duration, and at most four seconds across all loops. Frame sheets and
+configured frame groups reject counts outside 5–20 rather than subsampling them into the legal range.
+All decoded frames cannot be identical.
+
+Browser static Emoji first measures original-color output and exposes reduction only as a retry.
+Browser Animated Emoji exposes an explicit original/256/128/64-color selection; original means no
+quantization. The CLI follows `animation.autoFit` and its deterministic color ladder, reports reduction
+in processing notes, and supports disabling the search. Emoji always passes `preserveFrames`, so byte
+fitting cannot silently discard motion frames. Any result still over budget fails target validation.
+
+The result model is discriminated: Sticker results require a main image, while Emoji results cannot
+contain one and render 180×180 plus 32×32 previews. The four Emoji main-display choices are My Page
+submission metadata, not a file generated by this repository.
+
 The background-removal implementation differs by runtime:
 
 - Node: transparency pass-through, green chroma key, or semantic removal for opaque sheets.
@@ -184,7 +224,7 @@ The background-removal implementation differs by runtime:
 Configured frame groups follow this sequence:
 
 ```text
-Load at least 5 frames and subsample above 20
+Select target; Sticker normalizes the legacy frame range, Emoji requires 5–20 as supplied
   -> normalize and apply the selected background mode
   -> optional cross-frame subject stabilization
   -> independently exact-fit each frame to the same fixed canvas dimensions
@@ -195,16 +235,19 @@ Load at least 5 frames and subsample above 20
   -> read APNG metadata back
 ```
 
-The regular animation implementation treats `durationSec` as per-loop duration. It reduces that value
+The legacy Animated Sticker implementation treats `durationSec` as per-loop duration. It reduces that value
 if `loops × duration` would exceed four seconds, including to fractional values, and encodes distributed
 integer-millisecond delays. APNG loop count is explicitly rewritten to a finite value from 1 through 4.
 LINE only allows 1, 2, 3, or 4 seconds per playback, so the regular adapter's fractional clamp remains a
-known compliance gap. Popup mode avoids that path by exposing only legal duration/loop combinations and
-checking exact decoded duration from final bytes.
+known compliance gap. Animated Regular Emoji rejects invalid duration/loop combinations instead of
+clamping and inspects decoded final duration, loops, frame count, distinct frames, and bytes. Popup mode
+also avoids the legacy path by exposing only legal combinations and checking decoded final bytes.
 
 A frame sheet first applies the selected sheet background mode, then goes through component-aware extraction with `align: "grid"`. Semantic modes use the same overlapping-crop alpha merge as static sheets. The current implementation performs scene alignment and then lower-body X/Y anchoring while constructing the common grid-relative cells. Subject-anchor stabilization in `processAnimated` is disabled afterward because applying another alignment system could move scene elements out of the canvas. Independent frame groups apply their selected remover after frame-count normalization and before stabilization and fitting, reusing one model job for the group. The browser offers manual onion-skin adjustment as an additional path. The lower-body anchoring can erase intentional whole-body movement such as jumping; see the implementation audit.
 
-For complete animated packs, the selected cover's fitted frames also generate animated `main.png`; the first fitted cover frame generates static `tab.png`.
+For complete Animated Sticker packs, the selected cover's fitted frames also generate animated
+`main.png`; the first fitted cover frame generates static `tab.png`. Animated Regular Emoji uses only
+the static `tab.png` and never generates an uploaded `main.png`.
 
 ### Pop-up Sticker processing
 
@@ -287,19 +330,22 @@ because it cannot distinguish a flat background from matching subject details.
 
 ### Prompt generation
 
-Grid policy, style, identity constraints, background requirements, and per-cell variations are composed by pure functions in `src/core/prompt.ts`. The browser exposes both static-sheet and animation-frame prompts as copyable text. The current CLI `prompt` command always calls the static-sheet builder, even for an animated configuration. No artwork or network call is produced by this path.
+Grid policy, style, identity constraints, background requirements, product target, and per-cell variations are composed by pure functions in `src/core/prompt.ts`. Emoji prompts emphasize inline readability, low margins, and meaningful first frames. The browser exposes both static-sheet and animation-frame prompts as copyable text. The current CLI `prompt` command still calls the static-sheet builder even for an animated configuration, although it retains the Emoji target. No artwork or network call is produced by this path.
 
 ## Validation and trust boundaries
 
 The processing pipelines collect image metadata and pass it to shared pure validators. Validation covers
 allowed pack counts, bounds, even dimensions, alpha/content evidence, byte limits, APNG frame/loop/delay
 metadata, requested-target equality, adjacent decoded duplicates, main/tab evidence, and ZIP size when
-the adapter supplies those fields. Video V2 and Pop-up Sticker mode supply evidence reopened from final
-delivery bytes.
+the adapter supplies those fields. Regular Emoji, Video V2, and Pop-up Sticker mode supply evidence
+reopened from final delivery bytes. Emoji package validation also requires the exact three-digit
+manifest and rejects unexpected support files, including `main.png`.
 
-Validation operates on metadata returned by the current pipeline; it does not reopen and audit every file
-from the completed ZIP. Popup and Video V2 adapters represent decoded duration in `ImageInfo`; older
-regular animation adapters may still omit it.
+Validation operates on metadata returned by the current pipeline. Emoji builders first validate their
+expected manifest, while their item evidence is collected from each final encoded file before ZIP
+assembly; this is not an independent second decode of every completed ZIP entry. Popup, Emoji, and
+Video V2 adapters represent decoded duration in `ImageInfo`; older regular animation adapters may still
+omit it.
 
 Other older adapters do not yet reopen and audit every completed ZIP entry or populate every optional
 pixel/timing field, so a successful report remains a diagnostic rather than proof of marketplace
@@ -331,6 +377,24 @@ Independent frame files may drift inside their canvases, so anchor stabilization
 ### Degrade deterministically to satisfy byte limits
 
 Static images step down through color counts only when needed. Animated images search a deterministic ladder across color count and frame count according to the selected priority. If every allowed rung remains over budget, the best result is returned with an over-budget note and validation error.
+
+Emoji narrows this policy. The browser never reduces colors unless the user requests a retry or selects
+a color ceiling. The CLI defaults Emoji `animation.autoFit` to `false` and obeys an explicit opt-in;
+legacy Sticker keeps its previous enabled default. Both keep truecolor delivery output and preserve the
+requested animated Emoji frame count; an over-budget result remains a blocking error. The synthetic
+[5/10/20-frame feasibility matrix](doc/emoji-apng-feasibility.md) found a measured path below 300 KB for
+all low/high-motion cases, sometimes only at a 64-color ceiling. That is enough to retain UPNG for V1,
+not evidence that reduced real artwork is visually acceptable or that browser bytes match Node bytes.
+
+### Keep unverified marketplace behavior explicit
+
+Regular Emoji V1 implements only the free-count Regular and Animated Regular contracts. Fixed
+Kana/letter/number/symbol sequences require an ordered semantic-slot model and are not implemented.
+Video-to-Animated-Emoji, Creators Market authentication, direct upload, and My Page automation are also
+outside V1. Locally inspected ZIPs and passing validators are diagnostic evidence; acceptance by the
+current authenticated My Page flow has not been verified. PNG density can remain unknown and is emitted
+as a warning rather than a passing claim. Artistic meaning, first-frame clarity, and marketplace review
+remain human checks.
 
 ### Keep browser processing local by default
 

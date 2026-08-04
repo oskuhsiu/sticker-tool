@@ -3,9 +3,9 @@
  * 純型別、平台無關。raw YAML/JSON 由 config/ 的 zod schema 驗證並正規化成這些型別。
  */
 
-import type { StickerKind } from './spec.js';
+import type { EmojiSetType, LinePackKind } from './spec.js';
 
-export type { StickerKind };
+export type { EmojiKind, EmojiSetType, LinePackKind, StickerKind } from './spec.js';
 
 /** 來源：AI 生成 或 本機圖片 */
 export type Source = 'ai' | 'local';
@@ -142,8 +142,10 @@ export interface PackConfig {
   name: string;
   count: number;
   source: Source;
-  /** 由 stickers 是否含 frames、或 source 推得 */
-  kind: StickerKind;
+  /** 由 product 與是否含動畫影格正規化後的輸出類型 */
+  kind: LinePackKind;
+  /** Emoji V1 僅支援 regular；Sticker 不設定此欄位。 */
+  emojiSet?: EmojiSetType;
   ai: AiConfig;
   processing: ProcessingConfig;
   /** 用第幾張產 main/tab（1-based） */

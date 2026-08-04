@@ -4,8 +4,10 @@
  */
 
 import {
+  ANIMATED_EMOJI_SPEC,
   ANIMATED_SPEC,
   BIG_STICKER_SPEC,
+  EMOJI_SPEC,
   MAIN,
   POPUP_MAIN,
   POPUP_STICKER_SPEC,
@@ -13,13 +15,20 @@ import {
   TAB,
   ZIP_MAX_BYTES,
   allowedCounts,
+  isEmojiKind,
+  isEmojiZipBytesAllowed,
   isAllowedCount,
+  type EmojiKind,
+  type LinePackKind,
   type StickerKind,
 } from './spec.js';
 import {
   POPUP_ANIMATION_MAIN_PATH,
   POPUP_STATIC_MAIN_PATH,
   POPUP_STATIC_TAB_PATH,
+  TAB_FILE,
+  emojiFileName,
+  emojiPackManifest,
   popupAnimationFilePath,
   popupStaticFilePath,
 } from './naming.js';
@@ -33,6 +42,12 @@ export interface ImageInfo {
   bytes: number;
   hasAlpha: boolean;
   channels: number;
+  /** Final decoded file format, such as `png`. */
+  format?: string;
+  /** Archive filename/path evidence when available. */
+  filename?: string;
+  /** Final PNG density metadata in dots per inch, when present. */
+  densityDpi?: number;
   /** PNG color type from final bytes (6 = RGBA; optional for legacy validators). */
   colorType?: number;
   /** 動態：是否為 APNG（含 acTL） */
@@ -74,9 +89,17 @@ export function mergeResults(...results: ValidationResult[]): ValidationResult {
 
 const isEven = (n: number) => n % 2 === 0;
 
-/** 驗張數是否符合該貼圖類型白名單 */
-export function validateCount(kind: StickerKind, count: number): ValidationResult {
+/** 驗張數是否符合該貼圖／Emoji 類型規則 */
+export function validateCount(kind: LinePackKind, count: number): ValidationResult {
   if (!isAllowedCount(kind, count)) {
+    if (isEmojiKind(kind)) {
+      return result([
+        err(
+          'count',
+          `${kind} 張數須為 ${EMOJI_SPEC.minCount}–${EMOJI_SPEC.maxCount}，收到 ${count}`,
+        ),
+      ]);
+    }
     const allowed = allowedCounts(kind).join('/');
     return result([
       err('count', `${kind} 貼圖張數須為 ${allowed}，收到 ${count}`),
@@ -428,6 +451,235 @@ export function validateAnimatedImage(info: ImageInfo, target?: string): Validat
   return result(issues);
 }
 
+function validateEmojiRaster(
+  info: ImageInfo,
+  options: {
+    prefix: 'emoji' | 'animatedEmoji';
+    label: string;
+    maxBytes: number;
+    target?: string;
+  },
+): ValidationIssue[] {
+  const { prefix, label, maxBytes, target } = options;
+  const issues: ValidationIssue[] = [];
+
+  if (info.format !== 'png') {
+    issues.push(
+      err(
+        `${prefix}.format`,
+        `${label} 必須提供最終 PNG 格式證據，收到 ${info.format ?? '缺少證據'}`,
+        target,
+      ),
+    );
+  }
+  if (info.width !== EMOJI_SPEC.width || info.height !== EMOJI_SPEC.height) {
+    issues.push(
+      err(
+        `${prefix}.size`,
+        `${label} 尺寸須為 ${EMOJI_SPEC.width}×${EMOJI_SPEC.height}，收到 ${info.width}×${info.height}`,
+        target,
+      ),
+    );
+  }
+  if (!info.hasAlpha) {
+    issues.push(err(`${prefix}.alpha`, `${label} 必須含透明 alpha 通道`, target));
+  }
+  if (info.channels !== EMOJI_SPEC.channels || info.colorType !== 6) {
+    issues.push(
+      err(
+        `${prefix}.rgb`,
+        `${label} 必須是 RGBA PNG（4 channels、PNG color type 6），收到 ${info.channels} channels、color type ${info.colorType ?? '缺少證據'}`,
+        target,
+      ),
+    );
+  }
+  if (info.transparentPixels === undefined) {
+    issues.push(err(`${prefix}.transparentEvidence`, `${label} 缺少透明像素證據`, target));
+  } else if (info.transparentPixels < 1) {
+    issues.push(err(`${prefix}.transparentPixels`, `${label} 沒有任何透明像素`, target));
+  }
+  if (info.foregroundPixels === undefined) {
+    issues.push(err(`${prefix}.foregroundEvidence`, `${label} 缺少前景像素證據`, target));
+  } else if (info.foregroundPixels < 1) {
+    issues.push(err(`${prefix}.empty`, `${label} 沒有可見前景`, target));
+  }
+  if (info.bytes > maxBytes) {
+    issues.push(
+      err(
+        `${prefix}.bytes`,
+        `${label} ${info.bytes} bytes 超過單張上限 ${maxBytes} bytes`,
+        target,
+      ),
+    );
+  }
+  if (info.densityDpi === undefined) {
+    issues.push(
+      warn(
+        `${prefix}.densityEvidence`,
+        `${label} 缺少 PNG density 證據；本機驗證未宣稱已證明 ${EMOJI_SPEC.minDpi} dpi`,
+        target,
+      ),
+    );
+  } else if (!Number.isFinite(info.densityDpi) || info.densityDpi < EMOJI_SPEC.minDpi) {
+    issues.push(
+      err(
+        `${prefix}.density`,
+        `${label} density 須至少 ${EMOJI_SPEC.minDpi} dpi，收到 ${info.densityDpi}`,
+        target,
+      ),
+    );
+  }
+  if (info.filename !== undefined && target !== undefined && info.filename !== target) {
+    issues.push(
+      err(
+        `${prefix}.filename`,
+        `${label} 檔名須為 ${target}，收到 ${info.filename}`,
+        target,
+      ),
+    );
+  }
+
+  return issues;
+}
+
+/** 驗單張 LINE Regular Emoji 靜態 PNG。 */
+export function validateEmojiImage(info: ImageInfo, target?: string): ValidationResult {
+  const issues = validateEmojiRaster(info, {
+    prefix: 'emoji',
+    label: 'Emoji',
+    maxBytes: EMOJI_SPEC.maxBytes,
+    target,
+  });
+  if (info.isApng === undefined) {
+    issues.push(err('emoji.apngEvidence', '靜態 Emoji 缺少 APNG 排除證據', target));
+  } else if (info.isApng) {
+    issues.push(err('emoji.apng', '靜態 Emoji 不可包含 APNG 動畫區塊', target));
+  }
+  return result(issues);
+}
+
+/** 驗單張 LINE Animated Regular Emoji APNG。 */
+export function validateAnimatedEmojiImage(
+  info: ImageInfo,
+  target?: string,
+): ValidationResult {
+  const issues = validateEmojiRaster(info, {
+    prefix: 'animatedEmoji',
+    label: 'Animated Emoji',
+    maxBytes: ANIMATED_EMOJI_SPEC.maxBytes,
+    target,
+  });
+  const spec = ANIMATED_EMOJI_SPEC;
+
+  if (info.isApng !== true) {
+    issues.push(err('animatedEmoji.apng', 'Animated Emoji 必須提供有效 APNG 證據', target));
+  }
+
+  if (info.frames === undefined) {
+    issues.push(err('animatedEmoji.framesEvidence', 'Animated Emoji 缺少最終影格數證據', target));
+  } else if (
+    !Number.isInteger(info.frames) ||
+    info.frames < spec.minFrames ||
+    info.frames > spec.maxFrames
+  ) {
+    issues.push(
+      err(
+        'animatedEmoji.frames',
+        `Animated Emoji 影格數須為 ${spec.minFrames}–${spec.maxFrames}，收到 ${info.frames}`,
+        target,
+      ),
+    );
+  }
+  if (
+    info.requestedFrames !== undefined &&
+    info.frames !== undefined &&
+    info.frames !== info.requestedFrames
+  ) {
+    issues.push(
+      err(
+        'animatedEmoji.targetFrames',
+        `Animated Emoji 最終影格數 ${info.frames} 與設定目標 ${info.requestedFrames} 不一致`,
+        target,
+      ),
+    );
+  }
+
+  if (info.loops === undefined) {
+    issues.push(err('animatedEmoji.loopsEvidence', 'Animated Emoji 缺少循環次數證據', target));
+  } else if (
+    !Number.isInteger(info.loops) ||
+    info.loops < spec.minLoops ||
+    info.loops > spec.maxLoops
+  ) {
+    issues.push(
+      err(
+        'animatedEmoji.loops',
+        `Animated Emoji 循環次數須為 ${spec.minLoops}–${spec.maxLoops}，收到 ${info.loops}`,
+        target,
+      ),
+    );
+  }
+
+  if (info.durationMs === undefined) {
+    issues.push(
+      err('animatedEmoji.durationEvidence', 'Animated Emoji 缺少解碼後單輪播放時間證據', target),
+    );
+  } else {
+    const durationAllowed =
+      Number.isInteger(info.durationMs) &&
+      spec.playbackDurationsSec.some(
+        (seconds) =>
+          Math.abs(info.durationMs! - seconds * 1_000) <= spec.durationToleranceMs,
+      );
+    if (!durationAllowed) {
+      issues.push(
+        err(
+          'animatedEmoji.duration',
+          `Animated Emoji 單輪播放時間須為 1000/2000/3000/4000ms（容許 ±${spec.durationToleranceMs}ms），收到 ${info.durationMs}ms`,
+          target,
+        ),
+      );
+    }
+    if (
+      info.loops !== undefined &&
+      Number.isInteger(info.loops) &&
+      info.durationMs * info.loops > spec.maxDurationSec * 1_000
+    ) {
+      issues.push(
+        err(
+          'animatedEmoji.totalDuration',
+          `Animated Emoji 單輪 ${info.durationMs}ms × ${info.loops} loops 超過總播放 ${spec.maxDurationSec} 秒`,
+          target,
+        ),
+      );
+    }
+  }
+
+  if (info.distinctFrames === undefined) {
+    issues.push(
+      err('animatedEmoji.distinctEvidence', 'Animated Emoji 缺少不同畫格證據', target),
+    );
+  } else if (!Number.isInteger(info.distinctFrames)) {
+    issues.push(
+      err('animatedEmoji.distinctFrames', 'Animated Emoji 不同畫格數必須是整數', target),
+    );
+  } else if (info.distinctFrames < 2) {
+    issues.push(
+      err('animatedEmoji.identical', 'Animated Emoji 至少需要兩個不同的視覺畫格', target),
+    );
+  } else if (info.frames !== undefined && info.distinctFrames > info.frames) {
+    issues.push(
+      err(
+        'animatedEmoji.distinctFrames',
+        `Animated Emoji 不同畫格數 ${info.distinctFrames} 不可超過總影格數 ${info.frames}`,
+        target,
+      ),
+    );
+  }
+
+  return result(issues);
+}
+
 /** 驗 main.png（封面）。動態包的 main 必須是 APNG。 */
 export function validateMain(info: ImageInfo, kind: StickerKind): ValidationResult {
   const issues: ValidationIssue[] = [];
@@ -528,6 +780,149 @@ export function validateTab(info: ImageInfo): ValidationResult {
     issues.push(err('tab.bytes', `tab.png ${(info.bytes / 1024).toFixed(0)}KB 超過 1MB`));
   }
   return result(issues);
+}
+
+function validateEmojiTab(info: ImageInfo): ValidationResult {
+  const issues = validateTab(info).issues;
+  if (info.format !== 'png') {
+    issues.push(
+      err(
+        'emojiTab.format',
+        `Emoji tab.png 必須提供最終 PNG 格式證據，收到 ${info.format ?? '缺少證據'}`,
+        TAB_FILE,
+      ),
+    );
+  }
+  if (info.isApng !== false) {
+    issues.push(err('emojiTab.apng', 'Emoji tab.png 必須是靜態 PNG', TAB_FILE));
+  }
+  if (info.channels !== 4 || info.colorType !== 6) {
+    issues.push(
+      err(
+        'emojiTab.rgb',
+        `Emoji tab.png 必須是 RGBA PNG（4 channels、PNG color type 6），收到 ${info.channels} channels、color type ${info.colorType ?? '缺少證據'}`,
+        TAB_FILE,
+      ),
+    );
+  }
+  if (info.transparentPixels === undefined) {
+    issues.push(err('emojiTab.transparentEvidence', 'Emoji tab.png 缺少透明像素證據', TAB_FILE));
+  } else if (info.transparentPixels < 1) {
+    issues.push(err('emojiTab.transparentPixels', 'Emoji tab.png 沒有任何透明像素', TAB_FILE));
+  }
+  if (info.foregroundPixels === undefined) {
+    issues.push(err('emojiTab.foregroundEvidence', 'Emoji tab.png 缺少前景像素證據', TAB_FILE));
+  } else if (info.foregroundPixels < 1) {
+    issues.push(err('emojiTab.empty', 'Emoji tab.png 沒有可見前景', TAB_FILE));
+  }
+  if (info.densityDpi === undefined) {
+    issues.push(
+      warn(
+        'emojiTab.densityEvidence',
+        `Emoji tab.png 缺少 PNG density 證據；本機驗證未宣稱已證明 ${EMOJI_SPEC.minDpi} dpi`,
+        TAB_FILE,
+      ),
+    );
+  } else if (!Number.isFinite(info.densityDpi) || info.densityDpi < EMOJI_SPEC.minDpi) {
+    issues.push(
+      err(
+        'emojiTab.density',
+        `Emoji tab.png density 須至少 ${EMOJI_SPEC.minDpi} dpi，收到 ${info.densityDpi}`,
+        TAB_FILE,
+      ),
+    );
+  }
+  if (info.filename !== undefined && info.filename !== TAB_FILE) {
+    issues.push(
+      err('emojiTab.filename', `Emoji 聊天縮圖檔名須為 ${TAB_FILE}，收到 ${info.filename}`, TAB_FILE),
+    );
+  }
+  return result(issues);
+}
+
+function validateEmojiManifest(
+  archivePaths: readonly string[],
+  count: number,
+): ValidationResult {
+  if (!Number.isInteger(count) || count < 0 || count > 999) {
+    return result([
+      err('emoji.manifest.count', `無法為不合法張數 ${count} 建立 Emoji manifest`),
+    ]);
+  }
+
+  const issues: ValidationIssue[] = [];
+  const expected = emojiPackManifest(count);
+  const expectedSet = new Set(expected);
+  const actualSet = new Set<string>();
+
+  for (const path of archivePaths) {
+    if (actualSet.has(path)) {
+      issues.push(err('emoji.manifest.duplicate', `Emoji ZIP 含重複路徑 ${path}`, path));
+    }
+    actualSet.add(path);
+  }
+  for (const path of expected) {
+    if (!actualSet.has(path)) {
+      issues.push(err('emoji.manifest.missing', `Emoji ZIP 缺少必要路徑 ${path}`, path));
+    }
+  }
+  for (const path of actualSet) {
+    if (!expectedSet.has(path)) {
+      issues.push(err('emoji.manifest.unexpected', `Emoji ZIP 含非預期路徑 ${path}`, path));
+    }
+  }
+
+  return result(issues);
+}
+
+/**
+ * 驗 Regular Emoji 整包：只有 tab.png、三位數 items 與 product-specific ZIP 規則。
+ * 此 input 刻意沒有 main 欄位，避免把 Sticker archive shape 弱化成 optional main。
+ */
+export function validateEmojiPack(args: {
+  kind: EmojiKind;
+  count: number;
+  items: ImageInfo[];
+  tab: ImageInfo;
+  archivePaths: readonly string[];
+  zipBytes?: number;
+}): ValidationResult {
+  const { kind, count, items, tab, archivePaths, zipBytes } = args;
+  const results: ValidationResult[] = [validateCount(kind, count)];
+
+  if (items.length !== count) {
+    results.push(
+      result([
+        err('emoji.pack.count', `實際 Emoji 張數 ${items.length} 與宣告 ${count} 不符`),
+      ]),
+    );
+  }
+
+  const validateOne = kind === 'animated-emoji'
+    ? validateAnimatedEmojiImage
+    : validateEmojiImage;
+  items.forEach((item, index) => {
+    const target = index < 999 ? emojiFileName(index + 1) : undefined;
+    results.push(validateOne(item, target));
+  });
+
+  results.push(validateEmojiTab(tab));
+  results.push(validateEmojiManifest(archivePaths, count));
+
+  if (zipBytes !== undefined && !isEmojiZipBytesAllowed(kind, zipBytes)) {
+    const spec = kind === 'animated-emoji' ? ANIMATED_EMOJI_SPEC : EMOJI_SPEC;
+    const comparator = spec.zipMaxInclusive ? '不得超過' : '必須小於';
+    results.push(
+      result([
+        err(
+          'emoji.zip.bytes',
+          `${kind} ZIP ${zipBytes} bytes ${comparator} ${spec.zipMaxBytes} bytes`,
+        ),
+      ]),
+    );
+  }
+
+  return mergeResults(...results);
 }
 
 /**

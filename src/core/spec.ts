@@ -6,6 +6,8 @@
  *   creator.line.me/en/guideline/animationsticker （動態，查證 2026-06-09）
  *   creator.line.me/en/guideline/bigsticker       （大貼圖，查證 2026-08-04）
  *   creator.line.me/en/guideline/popupsticker     （Popup Sticker，查證 2026-08-04）
+ *   creator.line.me/en/guideline/emoji            （Emoji，查證 2026-08-04）
+ *   creator.line.me/en/guideline/animationemoji   （動態 Emoji，查證 2026-08-04）
  *
  * 本檔為純常數/純函式，平台無關（mobile 可直接重用）。
  */
@@ -111,6 +113,61 @@ export const ANIMATED_SPEC = {
   channels: 4 as const,
 } as const;
 
+/** Emoji 整包 ZIP 上限（bytes）；20MB。靜態與動態使用不同邊界比較。 */
+export const EMOJI_ZIP_MAX_BYTES = 20_000_000;
+
+/** Emoji 序號圖檔名位數（"001.png"…）。 */
+export const EMOJI_SEQ_DIGITS = 3;
+
+/** LINE Regular Emoji 規格。 */
+export const EMOJI_SPEC = {
+  /** 每張固定寬度（px） */
+  width: 180,
+  /** 每張固定高度（px） */
+  height: 180,
+  /** 單張檔案上限（bytes）；1MB */
+  maxBytes: 1_000_000,
+  /** 最低 dpi */
+  minDpi: 72,
+  /** Regular Emoji 最少張數 */
+  minCount: 8,
+  /** Regular Emoji 最多張數 */
+  maxCount: 40,
+  /** 透明 RGBA PNG */
+  channels: 4 as const,
+  /** 三位數序號 */
+  sequenceDigits: EMOJI_SEQ_DIGITS,
+  /** 整包 ZIP 上限 */
+  zipMaxBytes: EMOJI_ZIP_MAX_BYTES,
+  /** 靜態 Emoji 規定 ZIP 必須嚴格小於上限。 */
+  zipMaxInclusive: false,
+  /** Emoji 不上傳獨立 main.png。 */
+  requiresMain: false,
+} as const;
+
+/** LINE Animated Regular Emoji 規格。 */
+export const ANIMATED_EMOJI_SPEC = {
+  ...EMOJI_SPEC,
+  /** 單張檔案上限（bytes）；300KB */
+  maxBytes: 300_000,
+  /** APNG 最少影格 */
+  minFrames: 5,
+  /** APNG 最多影格 */
+  maxFrames: 20,
+  /** 循環次數下限 */
+  minLoops: 1,
+  /** 循環次數上限 */
+  maxLoops: 4,
+  /** 允許的單輪播放時間（秒） */
+  playbackDurationsSec: [1, 2, 3, 4] as const,
+  /** 解碼後整數 delay 累計容許誤差（ms） */
+  durationToleranceMs: 1,
+  /** loops × 單輪時長上限（秒） */
+  maxDurationSec: 4,
+  /** 動態 Emoji ZIP 可等於 20MB。 */
+  zipMaxInclusive: true,
+} as const;
+
 /** main.png（封面）：動態包必須是 APNG，首格當靜態縮圖 */
 export const MAIN = { width: 240, height: 240 } as const;
 
@@ -127,9 +184,25 @@ export const ZIP_MAX_BYTES = 60_000_000;
 export const SEQ_DIGITS = 2;
 
 export type StickerKind = 'static' | 'animated' | 'big' | 'popup';
+export type EmojiKind = 'emoji' | 'animated-emoji';
+export type LinePackKind = StickerKind | EmojiKind;
+export type EmojiSetType = 'regular';
+
+const REGULAR_EMOJI_COUNTS: readonly number[] = Object.freeze(
+  Array.from(
+    { length: EMOJI_SPEC.maxCount - EMOJI_SPEC.minCount + 1 },
+    (_, index) => EMOJI_SPEC.minCount + index,
+  ),
+);
+
+/** 判斷是否為 Emoji product kind。 */
+export function isEmojiKind(kind: LinePackKind): kind is EmojiKind {
+  return kind === 'emoji' || kind === 'animated-emoji';
+}
 
 /** 取得某種貼圖類型的張數白名單 */
-export function allowedCounts(kind: StickerKind): readonly number[] {
+export function allowedCounts(kind: LinePackKind): readonly number[] {
+  if (isEmojiKind(kind)) return REGULAR_EMOJI_COUNTS;
   if (kind === 'animated') return ANIMATED_SPEC.counts;
   if (kind === 'big') return BIG_STICKER_SPEC.counts;
   if (kind === 'popup') return POPUP_STICKER_SPEC.counts;
@@ -137,8 +210,25 @@ export function allowedCounts(kind: StickerKind): readonly number[] {
 }
 
 /** 該張數對該貼圖類型是否合法 */
-export function isAllowedCount(kind: StickerKind, count: number): boolean {
+export function isAllowedCount(kind: LinePackKind, count: number): boolean {
   return allowedCounts(kind).includes(count);
+}
+
+/** 只有 exact-canvas 產品會回傳固定尺寸；既有 Sticker 仍使用各自 bounds 規則。 */
+export function exactItemBounds(
+  kind: LinePackKind,
+): { width: number; height: number } | undefined {
+  if (isEmojiKind(kind)) {
+    return { width: EMOJI_SPEC.width, height: EMOJI_SPEC.height };
+  }
+  return undefined;
+}
+
+/** Emoji ZIP 是否符合該 product 的嚴格／含等號邊界。 */
+export function isEmojiZipBytesAllowed(kind: EmojiKind, bytes: number): boolean {
+  if (!Number.isInteger(bytes) || bytes < 0) return false;
+  const spec = kind === 'animated-emoji' ? ANIMATED_EMOJI_SPEC : EMOJI_SPEC;
+  return spec.zipMaxInclusive ? bytes <= spec.zipMaxBytes : bytes < spec.zipMaxBytes;
 }
 
 /** 大於等於 n 的最小偶數（向上取偶） */
@@ -155,7 +245,10 @@ export function floorEven(n: number): number {
 }
 
 /** 單格最大尺寸（依類型） */
-export function maxBounds(kind: StickerKind): { width: number; height: number } {
+export function maxBounds(kind: LinePackKind): { width: number; height: number } {
+  if (isEmojiKind(kind)) {
+    return { width: EMOJI_SPEC.width, height: EMOJI_SPEC.height };
+  }
   if (kind === 'animated') {
     return { width: ANIMATED_SPEC.maxWidth, height: ANIMATED_SPEC.maxHeight };
   }

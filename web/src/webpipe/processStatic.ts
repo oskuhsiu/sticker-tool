@@ -8,11 +8,11 @@ import { STATIC_SPEC } from '@core/spec.js';
 import type { Bounds, RemoveBgMode, StrokeSpec, TextSpec } from '@core/types.js';
 import type { ImageInfo } from '@core/validate.js';
 import { applyBackgroundRemoval } from './removeBackground.js';
-import { fitCanvas } from './fitCanvas.js';
+import { fitCanvas, type FitMode } from './fitCanvas.js';
 import { applyStroke } from './stroke.js';
 import { overlayText } from './text.js';
 import { fitPngUnderBytes } from './pngFit.js';
-import { pngImageInfo } from './png.js';
+import { decodePng, pngImageInfo } from './png.js';
 import type { Raster } from './raster.js';
 
 export interface ProcessStaticOptions {
@@ -20,6 +20,10 @@ export interface ProcessStaticOptions {
   removeBackground: RemoveBgMode;
   /** 基礎透明邊（px），預設 LINE 建議的 10px */
   marginPx?: number;
+  /** 輸出畫布策略；預設維持既有的 bounded trim 畫布。 */
+  canvasMode?: FitMode;
+  /** 是否先裁掉輸入透明邊；可與 exact 輸出搭配。 */
+  trimInput?: boolean;
   /** trim 後輸出的最小透明畫布尺寸（選填，內容維持等比） */
   minCanvas?: Bounds;
   stroke?: StrokeSpec;
@@ -57,7 +61,8 @@ export async function processStatic(
   const fitMargin = baseMargin + strokeWidth;
   let current = fitCanvas(bgRemoved, {
     bounds: opts.bounds,
-    mode: 'trim',
+    mode: opts.canvasMode ?? 'trim',
+    trimInput: opts.trimInput,
     marginPx: fitMargin,
     minCanvas: opts.minCanvas,
   });
@@ -82,10 +87,11 @@ export async function processStatic(
   if (fit.colors !== null) notes.push(`減色至 ${fit.colors} 色以符合 ${(maxBytes / 1024).toFixed(0)}KB`);
   if (fit.overBudget) notes.push(`⚠ 仍超過 ${(maxBytes / 1024).toFixed(0)}KB（${(fit.bytes / 1024).toFixed(0)}KB）`);
 
+  const finalRaster = decodePng(fit.png);
   let transparentPixels = 0;
   let foregroundPixels = 0;
-  for (let index = 3; index < current.data.length; index += 4) {
-    const alpha = current.data[index]!;
+  for (let index = 3; index < finalRaster.data.length; index += 4) {
+    const alpha = finalRaster.data[index]!;
     if (alpha < 255) transparentPixels++;
     if (alpha > 10) foregroundPixels++;
   }
@@ -93,7 +99,13 @@ export async function processStatic(
   return {
     png: fit.png,
     raster: current,
-    info: { ...pngImageInfo(fit.png), transparentPixels, foregroundPixels },
+    info: {
+      ...pngImageInfo(fit.png),
+      format: 'png',
+      isApng: false,
+      transparentPixels,
+      foregroundPixels,
+    },
     notes,
   };
 }

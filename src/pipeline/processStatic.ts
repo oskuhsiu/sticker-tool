@@ -9,7 +9,8 @@ import { STATIC_SPEC } from '../core/spec.js';
 import type { Bounds, RemoveBgMode, StrokeSpec, TextSpec } from '../core/types.js';
 import type { ImageInfo } from '../core/validate.js';
 import { applyBackgroundRemoval } from './removeBackground.js';
-import { fitCanvas } from './fitCanvas.js';
+import { fitCanvas, type FitMode } from './fitCanvas.js';
+import { readApngInfo } from './apng.js';
 import { applyStroke } from './stroke.js';
 import { overlayText } from './text.js';
 
@@ -18,9 +19,15 @@ export interface ProcessStaticOptions {
   removeBackground: RemoveBgMode;
   /** 基礎透明邊（px），預設 LINE 建議的 10px */
   marginPx?: number;
+  /** 輸出畫布策略；預設維持既有的 bounded trim 畫布。 */
+  canvasMode?: FitMode;
+  /** 是否先裁掉輸入透明邊；可與 exact 輸出搭配。 */
+  trimInput?: boolean;
   stroke?: StrokeSpec;
   text?: TextSpec;
   maxBytes?: number;
+  /** Keep the delivered PNG in truecolor RGBA mode even after color reduction. */
+  forbidPalette?: boolean;
 }
 
 export interface ProcessedSticker {
@@ -29,14 +36,30 @@ export interface ProcessedSticker {
   notes: string[];
 }
 
-async function toInfo(buffer: Buffer): Promise<ImageInfo> {
+/** Reopen a delivered static PNG and collect validation evidence from its final bytes. */
+export async function inspectStaticPng(buffer: Buffer, filename?: string): Promise<ImageInfo> {
   const meta = await sharp(buffer).metadata();
+  const { data } = await sharp(buffer).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  let transparentPixels = 0;
+  let foregroundPixels = 0;
+  for (let index = 3; index < data.length; index += 4) {
+    const alpha = data[index]!;
+    if (alpha < 255) transparentPixels++;
+    if (alpha > 10) foregroundPixels++;
+  }
   return {
     width: meta.width ?? 0,
     height: meta.height ?? 0,
     bytes: buffer.length,
     hasAlpha: meta.hasAlpha ?? false,
     channels: meta.channels ?? 0,
+    format: meta.format,
+    filename,
+    densityDpi: meta.density,
+    colorType: buffer[25],
+    isApng: readApngInfo(buffer).isApng,
+    transparentPixels,
+    foregroundPixels,
   };
 }
 
@@ -59,7 +82,8 @@ export async function processStatic(
   const fitMargin = baseMargin + strokeWidth;
   const fitted = await fitCanvas(bgRemoved, {
     bounds: opts.bounds,
-    mode: 'trim',
+    mode: opts.canvasMode ?? 'trim',
+    trimInput: opts.trimInput,
     marginPx: fitMargin,
   });
   let current = fitted.buffer;
@@ -78,9 +102,14 @@ export async function processStatic(
 
   // 5) 壓到 ≤ maxBytes（I-9 auto-fit）
   const { fitPngUnderBytes } = await import('./pngFit.js');
-  const fit = await fitPngUnderBytes(current, maxBytes);
+  const fit = await fitPngUnderBytes(current, maxBytes, {
+    forbidPalette: opts.forbidPalette,
+  });
   if (fit.colors !== null) notes.push(`減色至 ${fit.colors} 色以符合 ${(maxBytes / 1024).toFixed(0)}KB`);
-  if (fit.overBudget) notes.push(`⚠ 仍超過 ${(maxBytes / 1024).toFixed(0)}KB（${(fit.bytes / 1024).toFixed(0)}KB）`);
+  const output = fit.buffer;
+  if (output.length > maxBytes) {
+    notes.push(`⚠ 仍超過 ${(maxBytes / 1024).toFixed(0)}KB（${(output.length / 1024).toFixed(0)}KB）`);
+  }
 
-  return { buffer: fit.buffer, info: await toInfo(fit.buffer), notes };
+  return { buffer: output, info: await inspectStaticPng(output), notes };
 }

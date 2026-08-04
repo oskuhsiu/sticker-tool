@@ -919,28 +919,35 @@ Main 背景不能透明，需為不透明圖。
 
 ## 與 sticker-tool 的關係
 
-截至查證日，專案的 deterministic runtime 只支援：
+截至查證日，專案的 deterministic runtime 已支援：
 
-- 一般靜態貼圖。
-- 動態貼圖。
+- CLI 與 browser：一般靜態貼圖、一般動態貼圖、Regular Emoji、Animated Regular Emoji。
+- Browser：Big Sticker 與 Pop-up Sticker。
 
-目前**不代表已支援**自訂、訊息、大貼圖、全螢幕彈出、特效、emoji、動態 emoji 或 theme。
-這些類型需要不同資產集合、尺寸、style editor metadata 或平台檔名，不能只把一般貼圖尺寸改大就宣稱支援。
+Regular Emoji 整合在既有 Build、Sheet、Animation、Prompt 工作流中。V1 只實作 8–40 個自由內容的
+Regular Emoji；固定 Kana／英數／符號序列、Custom／Message／Effect Sticker、theme、
+Video-to-Animated-Emoji、LINE 帳號認證與直接上傳都**不代表已支援**。這些類型需要不同資產集合、
+ordered semantic slots、style editor metadata 或平台檔名，不能只改尺寸或張數便宣稱支援。
 
 本專案現有規格與驗證入口：
 
-- [`src/core/spec.ts`](../src/core/spec.ts)：一般靜態／動態貼圖數值常數。
-- [`src/core/validate.ts`](../src/core/validate.ts)：共用 metadata validation。
+- [`src/core/spec.ts`](../src/core/spec.ts)：貼圖、Regular Emoji、Animated Regular Emoji 的數值與 package constants。
+- [`src/core/validate.ts`](../src/core/validate.ts)：分離的 sticker／emoji item 與 package validation。
+- [`src/package/buildEmojiZip.ts`](../src/package/buildEmojiZip.ts)、[`web/src/webpipe/emojiZip.ts`](../web/src/webpipe/emojiZip.ts)：CLI／browser 的 emoji archive builder。
 - [`ARCHITECTURE.md`](../ARCHITECTURE.md)：CLI／browser 邊界與驗證信任範圍。
 - [`plan/implementation-audit.md`](../plan/implementation-audit.md)：已知合規落差與實測探針。
 
-目前一般／動態貼圖 ZIP 的專案慣例是 `main.png`、`tab.png`、`01.png` 起的兩位數序號。
-不要把這套命名直接外推到 pop-up、effect、emoji 或 theme；後者各有額外資產或另一套編號規則，
-而本專案尚未實作其完整 package contract。
+一般／動態貼圖 ZIP 使用 `main.png`、`tab.png`、`01.png` 起的兩位數序號。Regular Emoji
+使用獨立 contract：只有 `tab.png` 與 `001.png` 起的三位數 item，不上傳 `main.png`；動態 item
+仍以 `.png` 命名。Pop-up Sticker 使用 `png/` 與 `popup/` 兩層結構。不要把任一套命名外推到
+Effect、fixed-sequence emoji 或 theme。
 
 使用本工具時需保留以下判斷：
 
 - `validation ok` 只是目前 metadata 檢查沒有發現問題，不是 LINE 審核保證。
+- Emoji 會重新讀取最終 PNG／APNG bytes，驗證尺寸、色彩型別、影格、loops、duration、distinct frames、檔案大小與 ZIP manifest；這仍不等於 My Page 已接受。
+- 本專案已在本地檢查 emoji ZIP shape，但尚未以目前 authenticated My Page flow 完成 test upload；沒有 direct upload 功能。
+- PNG density 若無法從最終 bytes 證明，驗證結果保持 `unknown`／warning，不轉成合規通過聲明。
 - Alpha channel 存在不等於背景真的透明。
 - 尺寸與 bytes 合法不代表圖不空白、沒有殘底、第一格表意清楚、動畫確實有變化。
 - LINE uploader 可能採用本文未能從公開頁面確認的額外解析或壓縮行為。

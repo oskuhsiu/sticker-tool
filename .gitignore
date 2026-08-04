@@ -15,6 +15,10 @@ test/*
 !test/videoTimeline.test.ts
 !test/bigSticker.test.ts
 !test/popupSticker.test.ts
+!test/emoji.test.ts
+!test/emojiZip.test.ts
+!test/emojiProcessing.test.ts
+!test/emojiCliConfig.test.ts
 spike/
 fixtures/
 eval/

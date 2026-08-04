@@ -1,14 +1,21 @@
 /**
  * 動態貼圖（APNG）——同一分頁內的三種模式：
- *   單組圖：一張 frames-sheet 切格 → 穩定化 → fit → 一段動畫 APNG。
- *   整包：每張貼圖一組連續影格 → 8/16/24 張動態貼圖上架包（main 為 APNG）。
+ *   單組圖：一張 frames-sheet 切格 → 穩定化 → fit → 一段 Sticker／Emoji APNG。
+ *   整包：每個項目一組連續影格 → 動態貼圖或 Animated Regular Emoji 上架包。
  *   全螢幕貼圖整包：獨立靜態貼圖 + 每張 Pop-up APNG 影格 → 雙軌 ZIP。
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ANIMATED_SPEC, maxBounds } from '@core/spec.js';
+import { ANIMATED_EMOJI_SPEC, ANIMATED_SPEC, allowedCounts, maxBounds } from '@core/spec.js';
+import { emojiFileName, stickerFileName } from '@core/naming.js';
 import { parseColor } from '@core/color.js';
-import { validateAnimatedImage, validateCount, validatePack } from '@core/validate.js';
+import {
+  validateAnimatedEmojiImage,
+  validateAnimatedImage,
+  validateCount,
+  validateEmojiPack,
+  validatePack,
+} from '@core/validate.js';
 import { decodeBlob, yieldToUI, type Raster } from '../webpipe/raster.js';
 import {
   createBackgroundRemovalJob,
@@ -20,6 +27,7 @@ import { cutSheet } from '../webpipe/sheetAnalysis.js';
 import { setApngNumPlays } from '../webpipe/apng.js';
 import { processAnimated, type ProcessedAnimated } from '../webpipe/processAnimated.js';
 import { buildAnimatedMain, buildTab } from '../webpipe/mainTab.js';
+import { buildEmojiPackZip } from '../webpipe/emojiZip.js';
 import { buildPackZip, downloadBytes, safeName } from '../webpipe/zip.js';
 import { Field, FilePick, LogPane, PngPreview, Row, ValidationView, kb, sortFiles, useLogger } from './common.jsx';
 import { PackResult, type PackResultData } from './packResult.jsx';
@@ -32,6 +40,28 @@ import type { ValidationResult } from '@core/types.js';
 import { PopupPackMode } from './PopupPackMode.jsx';
 
 type Mode = 'sheet' | 'pack' | 'popup';
+type AnimatedTarget = 'animated' | 'animated-emoji';
+
+const EMOJI_MARGIN_PX = 4;
+const ANIMATED_EMOJI_LIMITS = {
+  minFrames: ANIMATED_EMOJI_SPEC.minFrames,
+  maxFrames: ANIMATED_EMOJI_SPEC.maxFrames,
+  maxDurationSec: ANIMATED_EMOJI_SPEC.maxDurationSec,
+  playbackDurationsSec: ANIMATED_EMOJI_SPEC.playbackDurationsSec,
+  label: 'Animated Regular Emoji',
+} as const;
+
+function assertAnimatedEmojiFrameCount(frameCount: number): void {
+  if (
+    !Number.isInteger(frameCount)
+    || frameCount < ANIMATED_EMOJI_SPEC.minFrames
+    || frameCount > ANIMATED_EMOJI_SPEC.maxFrames
+  ) {
+    throw new RangeError(
+      `Animated Regular Emoji 影格數須為 ${ANIMATED_EMOJI_SPEC.minFrames}–${ANIMATED_EMOJI_SPEC.maxFrames}，收到 ${frameCount}；不會自動抽格`,
+    );
+  }
+}
 
 export function AnimTab() {
   const [mode, setMode] = useState<Mode>('sheet');
@@ -44,7 +74,7 @@ export function AnimTab() {
         </label>
         <label data-testid="anim-mode-pack">
           <input type="radio" checked={mode === 'pack'} onChange={() => setMode('pack')} />
-          整包（每張貼圖一組影格）
+          整包（每個項目一組影格）
         </label>
         <label data-testid="anim-mode-popup">
           <input
@@ -64,12 +94,14 @@ export function AnimTab() {
 // ---------- 單組圖模式 ----------
 
 function SheetMode() {
+  const [target, setTarget] = useState<AnimatedTarget>('animated');
   const [sheet, setSheet] = useState<File[]>([]);
   const [gridText, setGridText] = useState('4x4');
   const [framesN, setFramesN] = useState<string>('');
   const [duration, setDuration] = useState(2);
   const [loops, setLoops] = useState(1);
   const [name, setName] = useState('anim');
+  const nameCustomizedRef = useRef(false);
   const [removeBgMode, setRemoveBgMode] = useState<WebBackgroundRemovalMode>('color-key');
   const [pickColor, setPickColor] = useState<[number, number, number] | null>(null);
   const [gridGuard, setGridGuard] = useState(true);
@@ -84,6 +116,7 @@ function SheetMode() {
   const [result, setResult] = useState<{ png: Uint8Array; caption: string; validation: ValidationResult } | null>(null);
   const logger = useLogger();
   const { connection: colabConnection, registerActiveRemoval } = useColabBirefnetConnection();
+  const isEmoji = target === 'animated-emoji';
 
   // 編好的 APNG 循環次數是 LINE 規格的 1–4；預覽循環＝把副本的 acTL num_plays 改 0（無限）
   const previewPng = useMemo(
@@ -93,23 +126,66 @@ function SheetMode() {
 
   /** 影格 → fit → APNG → 結果（切格流程與手動排版共用） */
   async function buildFrom(frames: Raster[], label: string): Promise<void> {
+    if (isEmoji) assertAnimatedEmojiFrameCount(frames.length);
+    const animation = makeAnimation({ loops, durationSec: duration, stabilize: false, maxColors });
     const proc = await processAnimated(frames, {
-      bounds: maxBounds('animated'),
+      bounds: maxBounds(target),
       removeBackground: false, // cutSheet 已去背
-      animation: makeAnimation({ loops, durationSec: duration, stabilize: false, maxColors }),
+      animation: isEmoji
+        ? { ...animation, maxBytes: ANIMATED_EMOJI_SPEC.maxBytes }
+        : animation,
+      ...(isEmoji
+        ? {
+            limits: ANIMATED_EMOJI_LIMITS,
+            requireConsistentFrameSize: true,
+            trimTransparentPadding: true,
+            marginPx: EMOJI_MARGIN_PX,
+            forbidPalette: true,
+          }
+        : {}),
       preserveFrames: true,
     });
     for (const n of proc.notes) logger.log('info', n);
-    const validation = validateAnimatedImage(proc.info);
+    const validation = isEmoji
+      ? validateAnimatedEmojiImage(proc.info)
+      : validateAnimatedImage(proc.info);
+    const durationEvidence = proc.info.durationMs === undefined
+      ? '單輪時長未知'
+      : `單輪 ${proc.info.durationMs}ms`;
+    const distinctEvidence = proc.info.distinctFrames === undefined
+      ? '不同畫格未知'
+      : `${proc.info.distinctFrames} 種不同畫格`;
     logger.log(
       validation.ok ? 'ok' : 'err',
-      `${label}：${proc.info.width}×${proc.info.height}  ${proc.info.frames}格×${proc.info.loops}loop  ${kb(proc.info.bytes)}`,
+      `${label}：${proc.info.width}×${proc.info.height}  ${proc.info.frames}格×${proc.info.loops}loop  ${durationEvidence}  ${distinctEvidence}  ${proc.info.bytes} bytes（${kb(proc.info.bytes)}）`,
     );
     setResult({
       png: proc.png,
-      caption: `${name}.png  ${proc.info.width}×${proc.info.height}  ${proc.info.frames}格  ${kb(proc.info.bytes)}`,
+      caption: `${name}.png  ${proc.info.width}×${proc.info.height}  ${proc.info.frames}格×${proc.info.loops}loop  ${durationEvidence}  ${distinctEvidence}  ${proc.info.bytes} bytes（${kb(proc.info.bytes)}）`,
       validation,
     });
+  }
+
+  function changeTarget(next: AnimatedTarget) {
+    setTarget(next);
+    if (!nameCustomizedRef.current) {
+      setName(next === 'animated-emoji' ? '001' : 'anim');
+    }
+    setDuration(2);
+    setLoops(1);
+    setMaxColors(0);
+    setReplayKey(0);
+    setEditor(null);
+    setResult(null);
+    logger.clear();
+  }
+
+  function changeDuration(next: number) {
+    setDuration(next);
+    if (target === 'animated-emoji') {
+      const maxLoops = Math.max(1, Math.floor(ANIMATED_EMOJI_SPEC.maxDurationSec / next));
+      setLoops((current) => Math.min(current, maxLoops));
+    }
   }
 
   async function run() {
@@ -133,6 +209,7 @@ function SheetMode() {
         return;
       }
       const count = framesN.trim() ? Number(framesN) : grid.cols * grid.rows;
+      if (isEmoji) assertAnimatedEmojiFrameCount(count);
       removalJob = await createBackgroundRemovalJob({
         mode: removeBgMode,
         signal: abort.signal,
@@ -185,6 +262,7 @@ function SheetMode() {
       }
       logger.log('info', '影格已按原圖格線對齊（場景固定）→ 跳過錨點穩定化');
 
+      if (isEmoji) assertAnimatedEmojiFrameCount(cut.cells.length);
       setEditor({ frames: cut.cells, id: Date.now() });
       await buildFrom(cut.cells, '動畫 APNG');
     } catch (e) {
@@ -219,12 +297,16 @@ function SheetMode() {
   const sheetInferenceEstimate = estimateGrid
     ? estimateGrid.cols * estimateGrid.rows
     : null;
+  const emojiLoopMax = isEmoji
+    ? Math.max(1, Math.floor(ANIMATED_EMOJI_SPEC.maxDurationSec / duration))
+    : ANIMATED_SPEC.maxLoops;
 
   return (
     <>
       <p className="tab-desc">
         把一張「連續影格組圖」（每格是動作的一個影格）按元件偵測逐格實際範圍（格線僅參照、越線不切斷）→
-        按原圖格線對齊（場景固定不閃）→ 編成一段 APNG。影格組圖可用「產圖 Prompt」分頁的動態模式產 prompt。
+        按原圖格線對齊（場景固定不閃）→ 編成一段{isEmoji ? ' Animated Regular Emoji' : '動態貼圖'} APNG。
+        影格組圖可用「產圖 Prompt」分頁的動態模式產 prompt。
         自動對齊不滿意時可用「手動排版」逐格拖曳對位再打包。
       </p>
       <FilePick
@@ -243,22 +325,69 @@ function SheetMode() {
         colorHelp={<span className="layout-hint">可自動偵測，或在下方直接點選背景色</span>}
       />
       <Row>
+        <Field label="輸出規格">
+          <select
+            data-testid="anim-sheet-spec-select"
+            aria-label="動畫輸出規格"
+            value={target}
+            disabled={busy}
+            onChange={(event) => changeTarget(event.target.value as AnimatedTarget)}
+          >
+            <option value="animated">Animated Sticker</option>
+            <option value="animated-emoji">Animated Regular Emoji</option>
+          </select>
+        </Field>
         <Field label="網格（如 4x4）">
           <input value={gridText} onChange={(e) => setGridText(e.target.value)} style={{ width: '6em' }} />
         </Field>
         <Field label="取前 N 格（空＝全部）">
-          <input value={framesN} onChange={(e) => setFramesN(e.target.value)} style={{ width: '6em' }} />
+          <input
+            type="number"
+            min={ANIMATED_EMOJI_SPEC.minFrames}
+            max={ANIMATED_EMOJI_SPEC.maxFrames}
+            value={framesN}
+            onChange={(e) => setFramesN(e.target.value)}
+            style={{ width: '6em' }}
+          />
         </Field>
         <Field label="單輪時長（秒）">
-          <input type="number" min={0.2} max={4} step={0.1} value={duration} onChange={(e) => setDuration(Number(e.target.value))} />
+          {isEmoji ? (
+            <select value={duration} onChange={(e) => changeDuration(Number(e.target.value))}>
+              {ANIMATED_EMOJI_SPEC.playbackDurationsSec.map((seconds) => (
+                <option key={seconds} value={seconds}>{seconds}</option>
+              ))}
+            </select>
+          ) : (
+            <input type="number" min={0.2} max={4} step={0.1} value={duration} onChange={(e) => changeDuration(Number(e.target.value))} />
+          )}
         </Field>
-        <Field label="循環次數（1–4）">
-          <input type="number" min={1} max={4} value={loops} onChange={(e) => setLoops(Number(e.target.value))} />
+        <Field label={`循環次數（1–${emojiLoopMax}）`}>
+          <input
+            type="number"
+            min={1}
+            max={emojiLoopMax}
+            value={loops}
+            onChange={(e) => {
+              const next = Number(e.target.value);
+              setLoops(isEmoji ? Math.max(1, Math.min(next, emojiLoopMax)) : next);
+            }}
+          />
         </Field>
         <Field label="輸出檔名">
-          <input value={name} onChange={(e) => setName(e.target.value)} />
+          <input
+            value={name}
+            onChange={(e) => {
+              nameCustomizedRef.current = true;
+              setName(e.target.value);
+            }}
+          />
         </Field>
       </Row>
+      {isEmoji && (
+        <p className="layout-hint" data-testid="anim-sheet-emoji-limits">
+          {`Animated Regular Emoji：固定 ${ANIMATED_EMOJI_SPEC.width}×${ANIMATED_EMOJI_SPEC.height}px；${ANIMATED_EMOJI_SPEC.minFrames}–${ANIMATED_EMOJI_SPEC.maxFrames} 格；單輪只可 ${ANIMATED_EMOJI_SPEC.playbackDurationsSec.join('/')} 秒，loops × 單輪 ≤${ANIMATED_EMOJI_SPEC.maxDurationSec} 秒；單檔 ≤${ANIMATED_EMOJI_SPEC.maxBytes / 1000}KB；保留影格並輸出 truecolor RGBA APNG。`}
+        </p>
+      )}
       <Row>
         <Field label="網格防呆（網格與內容不符時擋下）">
           <input type="checkbox" checked={gridGuard} onChange={(e) => setGridGuard(e.target.checked)} />
@@ -268,7 +397,7 @@ function SheetMode() {
         </Field>
         <Field label="減色（檔案較小）">
           <select value={maxColors} onChange={(e) => setMaxColors(Number(e.target.value))}>
-            <option value={0}>不降色（超過 1MB 時提示）</option>
+            <option value={0}>不降色（超過 {isEmoji ? '300KB' : '1MB'} 時提示）</option>
             <option value={256}>最多 256 色</option>
             <option value={128}>最多 128 色</option>
             <option value={64}>最多 64 色</option>
@@ -278,7 +407,7 @@ function SheetMode() {
       {removeBgMode === 'color-key' && <ColorPickFromImage file={sheet[0] ?? null} value={pickColor} onChange={setPickColor} />}
       <div className="run-row">
         <button className="btn primary" disabled={busy || sheet.length === 0} onClick={() => void run()}>
-          {busy ? '處理中…' : '切格並產生動畫'}
+          {busy ? '處理中…' : `切格並產生${isEmoji ? ' Animated Emoji' : '動畫'}`}
         </button>
         {busy && <button className="btn" onClick={() => abortRef.current?.abort()}>取消</button>}
         {modelStatus && <span className="model-status">{modelStatus}</span>}
@@ -385,6 +514,7 @@ function ColorPickFromImage(props: {
 // ---------- 整包模式 ----------
 
 function PackMode() {
+  const [target, setTarget] = useState<AnimatedTarget>('animated');
   const [count, setCount] = useState(8);
   const [frameSets, setFrameSets] = useState<File[][]>(() => Array.from({ length: 8 }, () => []));
   const [name, setName] = useState('My Animated Stickers');
@@ -406,6 +536,7 @@ function PackMode() {
   const [result, setResult] = useState<PackResultData | null>(null);
   const logger = useLogger();
   const { connection: colabConnection, registerActiveRemoval } = useColabBirefnetConnection();
+  const isEmoji = target === 'animated-emoji';
 
   function changeCount(n: number) {
     setCount(n);
@@ -414,6 +545,30 @@ function PackMode() {
       while (next.length < n) next.push([]);
       return next;
     });
+  }
+
+  function changeTarget(next: AnimatedTarget) {
+    setTarget(next);
+    setCount(8);
+    setFrameSets((prev) => {
+      const resized = prev.slice(0, 8);
+      while (resized.length < 8) resized.push([]);
+      return resized;
+    });
+    setCover(1);
+    setDuration(2);
+    setLoops(1);
+    setMaxColorsPack(0);
+    setResult(null);
+    logger.clear();
+  }
+
+  function changeDuration(next: number) {
+    setDuration(next);
+    if (target === 'animated-emoji') {
+      const maxLoops = Math.max(1, Math.floor(ANIMATED_EMOJI_SPEC.maxDurationSec / next));
+      setLoops((current) => Math.min(current, maxLoops));
+    }
   }
 
   async function run() {
@@ -425,15 +580,39 @@ function PackMode() {
     const unregister = removeBgMode === 'colab-birefnet' ? registerActiveRemoval(abort) : null;
     let removalJob: BackgroundRemovalJob | null = null;
     try {
-      const cv = validateCount('animated', count);
+      const cv = validateCount(target, count);
       if (!cv.ok) {
         for (const i of cv.issues) logger.log('err', i.message);
         return;
       }
-      const animation = makeAnimation({ loops, durationSec: duration, stabilize, maxColors: maxColorsPack });
+      let invalidFrameSet = false;
+      for (let index = 0; index < count; index++) {
+        const frameCount = frameSets[index]?.length ?? 0;
+        if (
+          frameCount < ANIMATED_EMOJI_SPEC.minFrames
+          || (isEmoji && frameCount > ANIMATED_EMOJI_SPEC.maxFrames)
+        ) {
+          const filename = isEmoji ? emojiFileName(index + 1) : stickerFileName(index + 1);
+          const range = isEmoji
+            ? `${ANIMATED_EMOJI_SPEC.minFrames}–${ANIMATED_EMOJI_SPEC.maxFrames}`
+            : `至少 ${ANIMATED_SPEC.minFrames}`;
+          const suffix = isEmoji ? '；不會自動抽格' : '';
+          logger.log(
+            'err',
+            `${filename} 影格數須為 ${range}，收到 ${frameCount}${suffix}`,
+          );
+          invalidFrameSet = true;
+        }
+      }
+      if (invalidFrameSet) return;
+
+      const baseAnimation = makeAnimation({ loops, durationSec: duration, stabilize, maxColors: maxColorsPack });
+      const animation = isEmoji
+        ? { ...baseAnimation, maxBytes: ANIMATED_EMOJI_SPEC.maxBytes }
+        : baseAnimation;
       const stroke = makeStroke(strokeOn, strokeWidth, strokeColor);
       const texts = textsRaw.split('\n');
-      const bounds = maxBounds('animated');
+      const bounds = maxBounds(target);
       const parsedColor = parseColor(backgroundColor);
       removalJob = await createBackgroundRemovalJob({
         mode: removeBgMode,
@@ -448,10 +627,6 @@ function PackMode() {
       const processedList: ProcessedAnimated[] = [];
       for (let i = 0; i < count; i++) {
         const files = frameSets[i] ?? [];
-        if (files.length === 0) {
-          logger.log('err', `第 ${i + 1} 張：尚未選擇影格（需 ${ANIMATED_SPEC.minFrames}–${ANIMATED_SPEC.maxFrames} 格）`);
-          return;
-        }
         logger.log('step', `處理第 ${i + 1}/${count} 張（${files.length} 格）…`);
         const frames: Raster[] = [];
         for (const f of sortFiles(files)) frames.push(await decodeBlob(f));
@@ -466,19 +641,70 @@ function PackMode() {
           stroke,
           text: makeText(texts[i] ?? '', textStyle),
           animation,
+          ...(isEmoji
+            ? {
+                limits: ANIMATED_EMOJI_LIMITS,
+                requireConsistentFrameSize: true,
+                trimTransparentPadding: true,
+                marginPx: EMOJI_MARGIN_PX + (stroke?.enabled ? stroke.width : 0),
+                forbidPalette: true,
+              }
+            : {}),
           preserveFrames: true,
         });
         const note = proc.notes.length ? `（${proc.notes.join('；')}）` : '';
-        logger.log('info', `${String(i + 1).padStart(2, '0')}.png  ${proc.info.width}×${proc.info.height}  ${proc.info.frames}格×${proc.info.loops}loop  ${kb(proc.info.bytes)} ${note}`);
+        const filename = isEmoji ? emojiFileName(i + 1) : stickerFileName(i + 1);
+        const durationEvidence = proc.info.durationMs === undefined
+          ? '單輪時長未知'
+          : `單輪 ${proc.info.durationMs}ms`;
+        const distinctEvidence = proc.info.distinctFrames === undefined
+          ? '不同畫格未知'
+          : `${proc.info.distinctFrames} 種不同畫格`;
+        logger.log(
+          'info',
+          `${filename}  ${proc.info.width}×${proc.info.height}  ${proc.info.frames}格×${proc.info.loops}loop  ${durationEvidence}  ${distinctEvidence}  ${proc.info.bytes} bytes（${kb(proc.info.bytes)}） ${note}`,
+        );
         processedList.push(proc);
         await yieldToUI();
       }
 
-      // main（APNG）+ tab（封面首格靜態）
+      // Sticker 有 APNG main；Emoji 只有封面首格產生的靜態 tab。
       const coverIdx = Math.min(Math.max(1, cover), count) - 1;
       const coverProc = processedList[coverIdx]!;
+      const { tab, tabInfo: rawTabInfo } = buildTab(coverProc.fittedFrames[0]!);
+
+      if (isEmoji) {
+        const tabInfo = { ...rawTabInfo, format: 'png' as const, isApng: false as const };
+        logger.log('step', `tab.png ${tabInfo.width}×${tabInfo.height}（聊天室縮圖用第 ${coverIdx + 1} 張首格）`);
+        const built = buildEmojiPackZip({
+          name,
+          kind: 'animated-emoji',
+          tab,
+          items: processedList.map((item) => item.png),
+        });
+        logger.log('ok', `Animated Regular Emoji zip 打包完成（${kb(built.zipBytes)}）`);
+        const validation = validateEmojiPack({
+          kind: 'animated-emoji',
+          count,
+          items: processedList.map((item) => item.info),
+          tab: tabInfo,
+          archivePaths: Object.keys(built.files),
+          zipBytes: built.zipBytes,
+        });
+        setResult({
+          kind: 'animated-emoji',
+          name,
+          stickers: processedList.map((item) => ({ png: item.png, info: item.info, notes: item.notes })),
+          tab,
+          zip: built.zip,
+          validation,
+          animated: true,
+        });
+        return;
+      }
+
       const { main, mainInfo } = buildAnimatedMain(coverProc.fittedFrames, animation);
-      const { tab, tabInfo } = buildTab(coverProc.fittedFrames[0]!);
+      const tabInfo = rawTabInfo;
       logger.log('step', `main.png（APNG）${mainInfo.width}×${mainInfo.height} ${mainInfo.frames}格、tab.png ${tabInfo.width}×${tabInfo.height}`);
 
       const { zip, zipBytes } = buildPackZip({ main, tab, stickers: processedList.map((p) => p.png) });
@@ -519,37 +745,77 @@ function PackMode() {
 
   const inferenceEstimate = frameSets
     .slice(0, count)
-    .reduce((sum, files) => sum + Math.min(files.length, ANIMATED_SPEC.maxFrames), 0);
+    .reduce((sum, files) => sum + Math.min(files.length, ANIMATED_EMOJI_SPEC.maxFrames), 0);
+  const emojiLoopMax = isEmoji
+    ? Math.max(1, Math.floor(ANIMATED_EMOJI_SPEC.maxDurationSec / duration))
+    : ANIMATED_SPEC.maxLoops;
 
   return (
     <>
       <p className="tab-desc">
-        每張貼圖給一組連續影格（{ANIMATED_SPEC.minFrames}–{ANIMATED_SPEC.maxFrames} 格，檔名排序），
-        各自穩定化 → fit → APNG，最後組成 8/16/24 張的動態貼圖上架包（main.png 為 APNG）。
+        每個項目給一組連續影格（{ANIMATED_EMOJI_SPEC.minFrames}–{ANIMATED_EMOJI_SPEC.maxFrames} 格，檔名排序），
+        各自穩定化 → fit → APNG，最後組成
+        {isEmoji
+          ? ` ${ANIMATED_EMOJI_SPEC.minCount}–${ANIMATED_EMOJI_SPEC.maxCount} 張的 Animated Regular Emoji 上架包（只有 tab.png，不含 main.png）。`
+          : ' 8/16/24 張的動態貼圖上架包（main.png 為 APNG）。'}
       </p>
       <Row>
+        <Field label="輸出規格">
+          <select
+            data-testid="anim-pack-spec-select"
+            aria-label="動畫整包輸出規格"
+            value={target}
+            disabled={busy}
+            onChange={(event) => changeTarget(event.target.value as AnimatedTarget)}
+          >
+            <option value="animated">Animated Sticker</option>
+            <option value="animated-emoji">Animated Regular Emoji</option>
+          </select>
+        </Field>
         <Field label="張數">
           <select value={count} onChange={(e) => changeCount(Number(e.target.value))}>
-            {ANIMATED_SPEC.counts.map((c) => (
+            {allowedCounts(target).map((c) => (
               <option key={c} value={c}>
                 {c}
               </option>
             ))}
           </select>
         </Field>
-        <Field label="貼圖包名">
+        <Field label={isEmoji ? 'Emoji 包名' : '貼圖包名'}>
           <input value={name} onChange={(e) => setName(e.target.value)} />
         </Field>
         <Field label="單輪時長（秒）">
-          <input type="number" min={0.2} max={4} step={0.1} value={duration} onChange={(e) => setDuration(Number(e.target.value))} />
+          {isEmoji ? (
+            <select value={duration} onChange={(e) => changeDuration(Number(e.target.value))}>
+              {ANIMATED_EMOJI_SPEC.playbackDurationsSec.map((seconds) => (
+                <option key={seconds} value={seconds}>{seconds}</option>
+              ))}
+            </select>
+          ) : (
+            <input type="number" min={0.2} max={4} step={0.1} value={duration} onChange={(e) => changeDuration(Number(e.target.value))} />
+          )}
         </Field>
-        <Field label="循環次數（1–4）">
-          <input type="number" min={1} max={4} value={loops} onChange={(e) => setLoops(Number(e.target.value))} />
+        <Field label={`循環次數（1–${emojiLoopMax}）`}>
+          <input
+            type="number"
+            min={1}
+            max={emojiLoopMax}
+            value={loops}
+            onChange={(e) => {
+              const next = Number(e.target.value);
+              setLoops(isEmoji ? Math.max(1, Math.min(next, emojiLoopMax)) : next);
+            }}
+          />
         </Field>
-        <Field label="封面用第幾張">
+        <Field label={isEmoji ? '聊天室縮圖用第幾張' : '封面用第幾張'}>
           <input type="number" min={1} max={count} value={cover} onChange={(e) => setCover(Number(e.target.value))} />
         </Field>
       </Row>
+      {isEmoji && (
+        <p className="layout-hint" data-testid="anim-pack-emoji-limits">
+          {`Animated Regular Emoji：每張固定 ${ANIMATED_EMOJI_SPEC.width}×${ANIMATED_EMOJI_SPEC.height}px；${ANIMATED_EMOJI_SPEC.minCount}–${ANIMATED_EMOJI_SPEC.maxCount} 張；單張 ≤${ANIMATED_EMOJI_SPEC.maxBytes / 1000}KB；${ANIMATED_EMOJI_SPEC.minFrames}–${ANIMATED_EMOJI_SPEC.maxFrames} 格；單輪 ${ANIMATED_EMOJI_SPEC.playbackDurationsSec.join('/')} 秒且 loops × 單輪 ≤${ANIMATED_EMOJI_SPEC.maxDurationSec} 秒；ZIP ≤${ANIMATED_EMOJI_SPEC.zipMaxBytes / 1_000_000}MB；三位數檔名、不含 main.png。`}
+        </p>
+      )}
       <BackgroundRemovalControl
         value={removeBgMode}
         onChange={setRemoveBgMode}
@@ -564,7 +830,7 @@ function PackMode() {
         </Field>
         <Field label="減色（檔案較小）">
           <select value={maxColorsPack} onChange={(e) => setMaxColorsPack(Number(e.target.value))}>
-            <option value={0}>不降色（超過 1MB 時提示）</option>
+            <option value={0}>不降色（超過 {isEmoji ? '300KB' : '1MB'} 時提示）</option>
             <option value={256}>最多 256 色</option>
             <option value={128}>最多 128 色</option>
             <option value={64}>最多 64 色</option>
@@ -588,7 +854,7 @@ function PackMode() {
         {Array.from({ length: count }, (_, i) => (
           <FilePick
             key={i}
-            label={`第 ${String(i + 1).padStart(2, '0')} 張的影格`}
+            label={`第 ${isEmoji ? emojiFileName(i + 1) : stickerFileName(i + 1)} 的影格`}
             multiple
             files={frameSets[i] ?? []}
             onChange={(files) =>
@@ -604,7 +870,9 @@ function PackMode() {
       </div>
       <details className="advanced">
         <summary>逐張疊字（選用）</summary>
-        <p className="tab-desc">每行對應一張貼圖（第 1 行 → 01.png…），空行＝不疊字；會疊在每個影格上。</p>
+        <p className="tab-desc">
+          每行對應一個項目（第 1 行 → {isEmoji ? '001.png' : '01.png'}…），空行＝不疊字；會疊在每個影格上。
+        </p>
         <textarea rows={4} value={textsRaw} onChange={(e) => setTextsRaw(e.target.value)} />
         <Row>
           <Field label="水平位置 %">
@@ -623,13 +891,32 @@ function PackMode() {
       </details>
       <div className="run-row">
         <button className="btn primary" disabled={busy} onClick={() => void run()}>
-          {busy ? '處理中…' : '打包動態貼圖'}
+          {busy ? '處理中…' : `打包${isEmoji ? ' Animated Emoji' : '動態貼圖'}`}
         </button>
         {busy && <button className="btn" onClick={() => abortRef.current?.abort()}>取消</button>}
         {modelStatus && <span className="model-status">{modelStatus}</span>}
       </div>
       <LogPane lines={logger.lines} />
-      {result && <PackResult data={result} />}
+      {result && (
+        <>
+          <div className="validation" data-testid="animated-pack-final-evidence">
+            <strong>最終 APNG 解碼結果</strong>
+            {result.stickers.map((item, index) => {
+              const filename = result.kind === 'animated-emoji'
+                ? emojiFileName(index + 1)
+                : stickerFileName(index + 1);
+              return (
+                <div key={filename} className="v-issue">
+                  {filename}：{item.info.frames ?? '未知'} 格、{item.info.loops ?? '未知'} loops、
+                  單輪 {item.info.durationMs ?? '未知'}ms、{item.info.distinctFrames ?? '未知'} 種不同畫格、
+                  {item.info.bytes} bytes（{kb(item.info.bytes)}）
+                </div>
+              );
+            })}
+          </div>
+          <PackResult data={result} />
+        </>
+      )}
     </>
   );
 }

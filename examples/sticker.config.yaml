@@ -7,6 +7,8 @@
 
 package:
   name: "My Stickers"
+  # product: sticker            # 省略時仍為 sticker；Emoji 請用 product: emoji + emojiSet: regular
+  # emojiSet: regular           # 僅 product: emoji 可用
   count: 8                    # 8/16/24/32/40（動態僅 8/16/24）；角色包 8 最佳、16 會警告、≥24 需 forceOversizeSet
   # animated: false           # 設 true 為動態包（或在 stickers 用 frames 觸發）
 

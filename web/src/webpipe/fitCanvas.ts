@@ -1,9 +1,12 @@
 /**
  * 等比縮放 + 置中 + padding 到 bounds，確保偶數長寬與透明背景（瀏覽器版 fitCanvas）。
  *
- * 兩種模式（與 CLI 版一致）：
- *   'trim'  — 去掉透明邊 → 等比縮放塞進 (bounds − margin) → 輸出貼齊內容+margin 的偶數畫布。
+ * 兩種輸出模式（與 CLI 版一致）：
+ *   'trim'  — 輸出貼齊內容+margin 的偶數畫布。
  *   'exact' — 輸出剛好等於 bounds，內容置中加 padding（main/tab、動態固定畫布用）。
+ *
+ * 是否先裁掉輸入的透明邊由 trimInput 獨立控制。未指定時沿用舊行為：
+ * trim 輸出會裁邊，exact 輸出保留原始畫布。
  */
 
 import { ceilEven, floorEven } from '@core/spec.js';
@@ -15,6 +18,8 @@ export type FitMode = 'trim' | 'exact';
 export interface FitOptions {
   bounds: Bounds;
   mode?: FitMode;
+  /** 是否先裁掉輸入透明邊；預設為 mode === 'trim'，以保留既有行為。 */
+  trimInput?: boolean;
   /**
    * Optional lower bound for trim-mode output dimensions. The canvas is padded
    * transparently to this size after proportional fitting; content is never
@@ -29,6 +34,7 @@ export interface FitOptions {
 
 export function fitCanvas(input: Raster, opts: FitOptions): Raster {
   const { bounds, minCanvas, mode = 'trim', marginPx = 0, allowUpscale = true } = opts;
+  const trimInput = opts.trimInput ?? mode === 'trim';
 
   validateBounds('bounds', bounds);
   if (minCanvas) validateBounds('minCanvas', minCanvas);
@@ -76,7 +82,7 @@ export function fitCanvas(input: Raster, opts: FitOptions): Raster {
   }
 
   let content = input;
-  if (mode === 'trim') {
+  if (trimInput) {
     const box = trimBounds(input, 10);
     if (box) content = cropRaster(input, box.left, box.top, box.width, box.height);
     // 全透明 → 維持原圖（對應 CLI 版 trim blank 的 fallback）

@@ -1,9 +1,12 @@
 /**
  * 等比縮放 + 置中 + padding 到 bounds，確保偶數長寬與透明背景。
  *
- * 兩種模式：
- *   'trim'  — 去掉透明邊 → 等比縮放塞進 (bounds − margin) → 輸出貼齊內容+margin 的偶數畫布（靜態貼圖主用）。
+ * 兩種輸出模式：
+ *   'trim'  — 輸出貼齊內容+margin 的偶數畫布（靜態貼圖主用）。
  *   'exact' — 輸出剛好等於 bounds，內容置中加 padding（main/tab、動態固定畫布用）。
+ *
+ * 是否先裁掉輸入的透明邊由 trimInput 獨立控制。未指定時沿用舊行為：
+ * trim 輸出會裁邊，exact 輸出保留原始畫布。
  */
 
 import sharp from 'sharp';
@@ -15,6 +18,8 @@ export type FitMode = 'trim' | 'exact';
 export interface FitOptions {
   bounds: Bounds;
   mode?: FitMode;
+  /** 是否先裁掉輸入透明邊；預設為 mode === 'trim'，以保留既有行為。 */
+  trimInput?: boolean;
   /** 內容四周保留的透明邊（px）。LINE 建議靜態留 10px。 */
   marginPx?: number;
   /** padding 底色，預設全透明 */
@@ -59,6 +64,7 @@ export async function fitCanvas(input: Buffer | string, opts: FitOptions): Promi
   const {
     bounds,
     mode = 'trim',
+    trimInput = mode === 'trim',
     marginPx = 0,
     background = TRANSPARENT,
     allowUpscale = true,
@@ -66,7 +72,7 @@ export async function fitCanvas(input: Buffer | string, opts: FitOptions): Promi
 
   const base = loadRGBA(input);
   const content =
-    mode === 'trim'
+    trimInput
       ? await trimToContent(base)
       : await (async () => {
           const { data, info } = await base.png().toBuffer({ resolveWithObject: true });

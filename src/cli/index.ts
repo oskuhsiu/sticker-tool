@@ -21,7 +21,7 @@ import { parseSize, log } from './util.js';
 const program = new Command();
 program
   .name('sticker-tool')
-  .description('LINE 貼圖製作工具：原圖/AI → 去背裁切縮放 → 符合規格的上架包')
+  .description('LINE 貼圖／Emoji 製作工具：原圖/AI → 去背裁切縮放 → 符合規格的上架包')
   .version('0.1.0');
 
 const intArg = (v: string) => parseInt(v, 10);
@@ -35,15 +35,16 @@ const floatArg = (v: string) => parseFloat(v);
 program
   .command('build')
   .argument('<inputDir>', '輸入圖片目錄')
-  .description('本機圖片 → 靜態貼圖上架包')
-  .requiredOption('-c, --count <n>', '張數（8/16/24/32/40）', intArg)
+  .description('本機圖片 → 靜態貼圖或 Regular Emoji 上架包')
+  .requiredOption('-c, --count <n>', '張數（依 product 驗證）', intArg)
+  .option('--product <product>', '輸出產品：sticker | emoji', buildDefaults.product)
   .option('-o, --out <dir>', '輸出目錄', buildDefaults.out)
   .option('-n, --name <name>', '貼圖包名（zip 檔名）', 'My Stickers')
   .option('--no-remove-bg', '不要去背（本機來源預設會去背）')
   .option('--stroke', '加白色描邊')
   .option('--stroke-width <px>', '描邊寬度', intArg, buildDefaults.strokeWidth)
   .option('--stroke-color <hex>', '描邊顏色', buildDefaults.strokeColor)
-  .option('--max-size <WxH>', '單張尺寸上限', parseSize, buildDefaults.maxSize)
+  .option('--max-size <WxH>', '單張尺寸上限（Emoji 若指定只能是 180x180）', parseSize)
   .option('--cover <n>', '用第幾張產 main/tab', intArg, buildDefaults.cover)
   .action(async (inputDir: string, raw) => {
     const opts: BuildOptions = {
@@ -56,13 +57,14 @@ program
       strokeColor: raw.strokeColor,
       maxSize: raw.maxSize,
       cover: raw.cover,
+      product: raw.product,
     };
     await runBuild(inputDir, opts);
   });
 
 program
   .command('gen')
-  .description('現成組圖（char-gen 產出）→ 切格 → 靜態貼圖上架包')
+  .description('現成組圖（char-gen 產出）→ 切格 → 靜態貼圖或 Regular Emoji 上架包')
   .requiredOption('--config <file>', '設定檔（YAML/JSON）')
   .option('--sheet <path>', 'char-gen 產出的組圖（可重複指定，每張版面一張）', collect, [])
   .option('-o, --out <dir>', '輸出目錄', 'out')
@@ -87,11 +89,12 @@ program
   .option('--frames <n>', '單組圖模式：取前 N 格（預設＝grid 全部）', intArg)
   .option('--duration <sec>', '單組圖模式：總時長秒（覆寫）', floatArg)
   .option('--loops <n>', '循環次數 1–4（覆寫）', intArg)
+  .option('--product <product>', '單組圖輸出產品：sticker | emoji（整包由 config 決定）')
   .option('--dump-frames', '單組圖模式：把切出的逐格影格落地成 <out>/<name>_frames/frame_NN.png（除錯/量測用）')
   .option('--dump-cells', '單組圖模式：把「未經 fit 縮放」的原始切格落地成 <out>/<name>_cells/cell_NN.png（除錯/量測用）')
   .option('-o, --out <dir>', '輸出目錄', 'out')
-  .option('-c, --count <n>', '覆寫張數（整包 8/16/24）', intArg)
-  .option('-n, --name <name>', '輸出檔名（單組圖）/包名（整包）')
+  .option('-c, --count <n>', '覆寫整包張數（依 product 驗證）', intArg)
+  .option('-n, --name <name>', '輸出檔名（單組圖）/貼圖或 Emoji 包名（整包）')
   .action(async (raw) => {
     await runAnim({
       config: raw.config,
@@ -105,6 +108,7 @@ program
       out: raw.out,
       count: raw.count,
       name: raw.name,
+      product: raw.product,
     });
   });
 
@@ -121,9 +125,10 @@ program
   .command('init')
   .description('產生範例設定檔')
   .option('-o, --out <file>', '輸出路徑', 'sticker.config.yaml')
+  .option('--product <product>', '範例產品：sticker | emoji', 'sticker')
   .option('--force', '覆寫既有檔')
   .action(async (raw) => {
-    await runInit({ out: raw.out, force: !!raw.force });
+    await runInit({ out: raw.out, force: !!raw.force, product: raw.product });
   });
 
 program.parseAsync(process.argv).catch((e: unknown) => {

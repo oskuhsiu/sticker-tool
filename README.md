@@ -1,6 +1,6 @@
 # sticker-tool
 
-`sticker-tool` turns local images, externally generated sprite sheets, or animation frames into deterministic packages that target the [LINE Creators Market](https://creator.line.me/en/guideline/sticker) formats, including browser workflows for [Big Stickers](https://creator.line.me/en/guideline/bigsticker/) and [Pop-up Stickers](https://creator.line.me/en/guideline/popupsticker/).
+`sticker-tool` turns local images, externally generated sprite sheets, or animation frames into deterministic packages that target the [LINE Creators Market](https://creator.line.me/en/guideline/sticker) formats. Supported targets include Regular Stickers, [Regular Emoji](https://creator.line.me/en/guideline/emoji/), [Animated Regular Emoji](https://creator.line.me/en/guideline/animationemoji/), and browser workflows for [Big Stickers](https://creator.line.me/en/guideline/bigsticker/) and [Pop-up Stickers](https://creator.line.me/en/guideline/popupsticker/).
 
 It provides two execution surfaces:
 
@@ -14,13 +14,14 @@ AI image generation is intentionally outside the application. Use any image gene
 - Static sticker packs from individual PNG, JPEG, or WebP files.
 - Static packs from one or more sprite sheets; the browser can emit regular static or Big Sticker packs.
 - Animated APNG stickers from frame files or a frame sheet.
+- Static and animated Regular Emoji from the same CLI and browser image, sheet, animation, and prompt workflows.
 - Browser Pop-up Sticker packs from explicit static artwork plus one 5–20-frame animation set per sticker.
 - Animated APNG packs cropped from a fixed-grid video sheet in the browser.
 - Transparent, green-screen, and opaque-background handling.
 - Content-aware sheet cutting that finds gutters and preserves components crossing nominal grid lines.
 - Canvas fitting, even dimensions, transparent margins, optional outlines, and text overlays.
-- Opt-in color reduction for the browser image, sheet, regular-animation, and Pop-up workflows; their first pass preserves original colors.
-- `main.png`, `main_popup.png` where required, `tab.png`, numbered sticker files, ZIP packaging, and shared metadata-based LINE checks.
+- Opt-in color reduction for browser workflows; static Emoji starts at original color and animation reduction is selected explicitly. The CLI retains its configured deterministic fit ladder.
+- Product-specific support assets, numbered files, ZIP packaging, and shared final-byte-aware LINE checks. Emoji ZIPs contain `tab.png` plus three-digit items and deliberately omit `main.png`.
 - Browser-side previews, pre-process sprite-sheet cut guides, downloads, grid mismatch warnings, and manual animation alignment.
 - Prompt generation for static sticker sheets and animation frame sheets.
 - A standalone Colab + BiRefNet tutorial with a downloadable Notebook, an astronaut benchmark, and CPU/GPU/model choices.
@@ -84,6 +85,60 @@ npm run sticker -- anim --config anim.config.yaml --out ./out
 
 Each `stickers[].frames` entry must contain 5–20 individual frame image paths. It does not accept a frame-sheet PNG or an already encoded APNG as one entry.
 
+### Regular Emoji CLI workflows
+
+Build a static Regular Emoji pack from 8–40 individual images:
+
+```bash
+npm run sticker -- build ./emoji-input \
+  --product emoji \
+  --count 8 \
+  --out ./out \
+  --name "My Emoji"
+```
+
+Create the annotated Regular Emoji configuration and build a static pack from a sheet:
+
+```bash
+npm run sticker -- init --product emoji --out emoji.config.yaml
+npm run sticker -- gen \
+  --config emoji.config.yaml \
+  --sheet ./emoji-sheet.png \
+  --out ./out
+```
+
+The generated static ZIP contains exactly `tab.png` plus `001.png` onward. It does not contain an emoji
+`main.png`; Creators Market asks the creator to select four registered emoji for the main display in
+My Page. The output directory is not cleaned first, so inspect the ZIP rather than treating unrelated
+pre-existing files beside it as package entries.
+
+Create one Animated Regular Emoji APNG from a frame sheet:
+
+```bash
+npm run sticker -- anim \
+  --sheet ./emoji-frames.png \
+  --grid 4x2 \
+  --frames 8 \
+  --duration 2 \
+  --loops 1 \
+  --product emoji \
+  --out ./out
+```
+
+Without `--name`, this single-animation mode writes `001.png`. It does not build a complete pack. To
+build a full animated pack, set `package.animated: true` and provide 5–20 individual paths in every
+`stickers[].frames` entry, then run:
+
+```bash
+npm run sticker -- anim --config animated-emoji.config.yaml --out ./out
+```
+
+The complete animated ZIP again contains only `tab.png` plus `001.png` onward. The CLI reopens each
+encoded APNG and requires an exact 180×180 canvas, 5–20 decoded frames, 1–4 loops, a 1/2/3/4-second
+one-loop duration, total playback no longer than four seconds, at least two distinct frames, and no
+more than 300,000 bytes. Invalid final bytes produce a non-zero command result instead of a successful
+package report.
+
 Generate a prompt without calling an image model:
 
 ```bash
@@ -113,6 +168,8 @@ The CLI accepts YAML or JSON. Run `init` for the annotated example, or start fro
 ```yaml
 package:
   name: "My Stickers"
+  # product: sticker # use emoji for Regular Emoji; omitted means sticker
+  # emojiSet: regular # required when product is emoji
   count: 8
   # animated: true
 
@@ -138,7 +195,7 @@ cover: 1
 animation:
   loops: 1
   durationSec: 2 # current pipeline treats this as per-loop; use only 1, 2, 3, or 4
-  autoFit: true # accepted by schema; current animation pipeline always auto-fits
+  autoFit: true # explicit opt-in for Emoji; omitted defaults to false for Emoji and true for Sticker
   priority: balanced
   minColors: 16
   maxColors: 0
@@ -156,18 +213,29 @@ stickers:
       font: ./fonts/NotoSansTC-Bold.otf
 ```
 
+For Regular Emoji, the normalized output canvas is always exactly 180×180; an explicit different
+`processing.maxSize` is rejected. Counts may be any integer from 8 through 40, rather than only the
+discrete sticker counts. `package.animated: true` or the presence of `stickers[].frames` selects
+Animated Regular Emoji. Its default `animation.maxBytes` is 300000; a stricter value is allowed and a
+larger one is rejected. Omitted `animation.autoFit` defaults to `false` for Emoji and remains `true`
+for legacy Sticker configurations. Setting it to `true` enables the CLI's deterministic color search
+and reports any reduction in processing notes. Emoji processing never silently reduces the requested
+frame count below the 5–20-frame contract. See the synthetic
+[APNG feasibility matrix](doc/emoji-apng-feasibility.md) for measured 5/10/20-frame results and its
+explicit real-artwork and My Page limitations.
+
 Paths declared inside the configuration file, such as frame and font paths, resolve relative to that file. CLI arguments such as `--sheet` and `--out` resolve relative to the current working directory. Command-line `--count` and `--name` values override the configuration.
 
-The current schema accepts some fields that are not consumed consistently by every workflow, including `ai.crop`, `animation.autoFit`, and several per-sticker generation fields. See [plan/implementation-audit.md](plan/implementation-audit.md) before relying on advanced configuration.
+The current schema accepts some fields that are not consumed consistently by every workflow, including `ai.crop` and several per-sticker generation fields. See [plan/implementation-audit.md](plan/implementation-audit.md) before relying on advanced configuration.
 
 ## Web app
 
 The web application is under [`web/`](web/). It has five tabs. Four correspond to CLI workflows; the
 video workflow is browser-only:
 
-- Local images → static pack.
-- Sprite sheet → regular static or Big Sticker pack, with a cut guide before processing.
-- Frame sheet or frame groups → APNG, animated pack, or a paired static/Pop-up Sticker pack.
+- Local images → Regular Sticker or Regular Emoji static pack.
+- Sprite sheet → Regular Sticker, Big Sticker, or Regular Emoji static pack, with a cut guide before processing.
+- Frame sheet or frame groups → Animated Sticker, Animated Regular Emoji, or a paired static/Pop-up Sticker pack.
 - Fixed-grid video → all-presentation-frame raw master → exact-target animated pack.
 - Static or animated image prompt generation.
 
@@ -188,7 +256,23 @@ npm run preview
 
 The GitHub Pages workflow builds and deploys the site on pushes to either `main` or `master`. See [web/README.md](web/README.md) for browser-specific behavior and smoke-test instructions.
 
-The browser **Sprite sheet** tab can target either a regular static pack or a Big Sticker pack. Its
+The browser merges Regular Emoji into the existing source workflows rather than adding another tab.
+In **Local images** and **Sprite sheet**, choose **Regular Emoji** and any count from 8 through 40. In
+both sheet and grouped-frame modes under **Animated APNG**, choose **Animated Regular Emoji**. Every
+item is trimmed and fitted to an exact 180×180 transparent truecolor PNG/APNG canvas. Results display
+full-size and 32×32 chat-size previews; animated results also report evidence decoded from the final
+bytes, including frame count, loops, duration, distinct frames, and encoded size.
+
+Browser static Emoji preserves original colors on its first attempt. If the final item or ZIP byte gate
+fails, the result offers an explicit color-reduction retry. Animated Emoji exposes `Original`, 256,
+128, and 64-color choices before processing; `Original` performs no reduction, and the other choices
+preserve the selected 5–20 frames. A pack that remains over 300,000 bytes per animation, contains an
+invalid APNG, or reaches another blocking validation error has no enabled ZIP download. The Emoji ZIP
+builder validates its final manifest and contains only `tab.png` plus `001.png` onward—never
+`main.png`.
+
+The browser **Sprite sheet** tab can target a regular static pack, a Big Sticker pack, or a Regular
+Emoji pack. Its
 pre-process overlay shows the nominal equal grid and row-major sticker numbers; the actual extraction
 may move those references to nearby transparent gutters. Big Sticker output is padded, without
 stretching, to at least 80×524 and capped at 396×660 pixels. It uses even RGBA PNG dimensions, no
@@ -277,9 +361,28 @@ IMG.LY, local BiRefNet, and Colab BiRefNet are mutually exclusive. None silently
 
 The final ZIP is limited to 60 MB. Regular static, Big Sticker, animated, and paired Pop-up Sticker package contracts are validated separately.
 
-Validation success is diagnostic, not proof that LINE will accept a package. The Popup Sticker and
-Video V2 browser paths reopen final APNG bytes for timing, loop, frame, alpha, and visible-content
-evidence; some older CLI and browser adapters still provide less complete metadata. The source-grounded
+Regular Emoji uses a separate package contract:
+
+| Constraint | Static Regular Emoji | Animated Regular Emoji |
+|---|---:|---:|
+| Item canvas | Exactly 180×180 PNG | Exactly 180×180 APNG with a `.png` extension |
+| File size | At most 1,000,000 bytes | At most 300,000 bytes |
+| Pack count | Any integer from 8 through 40 | Any integer from 8 through 40 |
+| Animation | — | 5–20 frames; 1–4 loops; 1/2/3/4 seconds per loop; total ≤4 seconds |
+| Main image | None uploaded; select four emoji in My Page | None uploaded; select four emoji in My Page |
+| Tab image | 96×74 PNG | 96×74 PNG |
+| Item names | `001.png` onward | `001.png` onward |
+| ZIP size | Strictly less than 20,000,000 bytes | At most 20,000,000 bytes |
+
+Regular Emoji V1 does not author the fixed Kana, letter, number, or symbol sequences, does not expose
+Animated Emoji from the Video tab, and does not upload directly to Creators Market. The generated ZIP
+shape has been inspected locally, but acceptance by the current authenticated My Page flow has not been
+verified. PNG density may be reported as unknown; that warning is not converted into proof of
+compliance. Inline meaning, first-frame clarity, rights, and review policy remain manual checks.
+
+Validation success is diagnostic, not proof that LINE will accept a package. Regular Emoji, Popup Sticker,
+and Video V2 paths inspect final delivery bytes for their target-specific evidence; some older CLI and
+browser adapters still provide less complete metadata. The source-grounded
 list of known functional and compliance gaps is [plan/implementation-audit.md](plan/implementation-audit.md).
 
 ## Project layout

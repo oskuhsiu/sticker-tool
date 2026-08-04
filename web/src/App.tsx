@@ -46,7 +46,7 @@ export function App() {
           <header>
             <h1>sticker-tool</h1>
             <p>
-              LINE 貼圖打包工具——去背、切格、縮放置中、描邊、疊字、APNG、全螢幕貼圖、上架包驗證。
+              LINE 貼圖與 Emoji 打包工具——去背、切格、縮放置中、描邊、疊字、APNG、全螢幕貼圖、上架包驗證。
               預設在瀏覽器內處理；只有你主動啟用自己的 Colab session 時，裁切格才會送到該臨時 endpoint。
             </p>
             <a className="app-guide-link" href="#/colab-birefnet">Colab + BiRefNet 教學</a>
@@ -69,12 +69,16 @@ export function App() {
           <footer>
             <p>
               規格：一般靜態 ≤370×320、大貼圖 80×524–396×660、動態 ≤320×270（一邊 ≥270）、
-              全螢幕 APNG ≤480×480（一邊須為 480）；單檔 ≤1MB、偶數長寬、透明 PNG/APNG。
+              全螢幕 APNG ≤480×480（一邊須為 480）、Emoji 固定 180×180；貼圖與靜態 Emoji 單檔 ≤1MB，
+              動態 Emoji 單檔 ≤300KB，透明 PNG/APNG；貼圖維持規格要求的偶數長寬。
               一般／大貼圖張數為 8／16／24／32／40；動態／全螢幕包為 8／16／24。
-              大貼圖與全螢幕包另檢查 RGB 真彩色並拒絕索引色。
+              Regular Emoji 為 8–40 張，使用三位數檔名、只有 tab.png 而沒有獨立 main.png。
+              大貼圖、全螢幕包與 Emoji 另檢查 RGB 真彩色並拒絕索引色。
               詳見 <a href="https://creator.line.me/zh-hant/guideline/sticker" target="_blank" rel="noreferrer">一般貼圖規範</a>
               {' '}、<a href="https://creator.line.me/zh-hant/guideline/bigsticker/" target="_blank" rel="noreferrer">大貼圖規範</a>
-              {' '}與 <a href="https://creator.line.me/zh-hant/guideline/popupsticker/" target="_blank" rel="noreferrer">全螢幕貼圖規範</a>。
+              {' '}、<a href="https://creator.line.me/zh-hant/guideline/popupsticker/" target="_blank" rel="noreferrer">全螢幕貼圖規範</a>
+              {' '}、<a href="https://creator.line.me/en/guideline/emoji/" target="_blank" rel="noreferrer">Emoji 規範</a>
+              {' '}與 <a href="https://creator.line.me/en/guideline/animationemoji/" target="_blank" rel="noreferrer">動態 Emoji 規範</a>。
             </p>
           </footer>
         </div>

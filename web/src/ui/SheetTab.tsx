@@ -1,13 +1,11 @@
-/**
- * 組圖（sprite sheet）→ 切格 → 靜態貼圖上架包（對應 CLI `gen`）。
- * 組圖來源：外部 AI 工具（搭配「產圖 Prompt」分頁產的 prompt）或任何現成大圖。
- */
+/** Sprite sheet to a Static Sticker, Big Sticker, or Regular Emoji upload pack. */
 
 import { useMemo, useRef, useState } from 'react';
-import { BIG_STICKER_SPEC, STATIC_SPEC, ZIP_MAX_BYTES, allowedCounts, maxBounds } from '@core/spec.js';
+import { BIG_STICKER_SPEC, EMOJI_SPEC, STATIC_SPEC, ZIP_MAX_BYTES, allowedCounts, maxBounds } from '@core/spec.js';
+import { emojiFileName, stickerFileName } from '@core/naming.js';
 import { planGrid } from '@core/grid.js';
 import type { GridLayout } from '@core/types.js';
-import { validatePack } from '@core/validate.js';
+import { validateEmojiPack, validatePack } from '@core/validate.js';
 import { decodeBlob, yieldToUI, type Raster } from '../webpipe/raster.js';
 import {
   createBackgroundRemovalJob,
@@ -17,11 +15,12 @@ import {
 import { removeSheetBackgroundByCells } from '../webpipe/sheetBackgroundRemoval.js';
 import { cutSheet } from '../webpipe/sheetAnalysis.js';
 import { processStatic, type ProcessedSticker } from '../webpipe/processStatic.js';
-import { buildMainTab } from '../webpipe/mainTab.js';
+import { buildMainTab, buildTab } from '../webpipe/mainTab.js';
+import { buildEmojiPackZip } from '../webpipe/emojiZip.js';
 import { buildPackZip } from '../webpipe/zip.js';
 import { registerUploadedFont } from '../webpipe/text.js';
 import { Field, FilePick, LogPane, Row, kb, sortFiles, useLogger } from './common.jsx';
-import { PackResult, type PackResultData } from './packResult.jsx';
+import { ColorReductionPrompt, PackResult, type PackResultData } from './packResult.jsx';
 import {
   DEFAULT_TEXT_STYLE,
   customGridIssue,
@@ -35,9 +34,12 @@ import { BackgroundRemovalControl } from './BackgroundRemovalControl.jsx';
 import { useColabBirefnetConnection } from './colabBirefnetConnection.jsx';
 import { SheetCutPreview } from './SheetCutPreview.jsx';
 
+type SheetTarget = 'static' | 'big' | 'emoji';
+const EMOJI_MARGIN_PX = 4;
+
 export function SheetTab() {
   const [sheets, setSheets] = useState<File[]>([]);
-  const [stickerKind, setStickerKind] = useState<'static' | 'big'>('static');
+  const [stickerKind, setStickerKind] = useState<SheetTarget>('static');
   const [count, setCount] = useState(8);
   const [name, setName] = useState('My Stickers');
   const [isCharacter, setIsCharacter] = useState(true);
@@ -55,6 +57,7 @@ export function SheetTab() {
   const [busy, setBusy] = useState(false);
   const [modelStatus, setModelStatus] = useState<string | null>(null);
   const [result, setResult] = useState<PackResultData | null>(null);
+  const [zipOverBudget, setZipOverBudget] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const logger = useLogger();
   const { connection: colabConnection, registerActiveRemoval } = useColabBirefnetConnection();
@@ -62,6 +65,7 @@ export function SheetTab() {
   async function run(reduceColorsOverride = reduceColors) {
     logger.clear();
     setResult(null);
+    setZipOverBudget(null);
     setBusy(true);
     const abort = new AbortController();
     abortRef.current = abort;
@@ -141,7 +145,11 @@ export function SheetTab() {
       logger.log('ok', `共切出 ${cells.length} 格`);
 
       // 3) 逐格處理（cutSheet 已整張去背 → 不重複去背）
-      const spec = stickerKind === 'big' ? BIG_STICKER_SPEC : STATIC_SPEC;
+      const spec = stickerKind === 'big'
+        ? BIG_STICKER_SPEC
+        : stickerKind === 'emoji'
+          ? EMOJI_SPEC
+          : STATIC_SPEC;
       const bounds = maxBounds(stickerKind);
       const stroke = makeStroke(strokeOn, strokeWidth, strokeColor);
       const texts = textsRaw.split('\n');
@@ -156,21 +164,67 @@ export function SheetTab() {
                 minCanvas: { width: BIG_STICKER_SPEC.minWidth, height: BIG_STICKER_SPEC.minHeight },
                 marginPx: 0,
               }
+            : stickerKind === 'emoji'
+              ? {
+                  canvasMode: 'exact' as const,
+                  trimInput: true,
+                  marginPx: EMOJI_MARGIN_PX,
+                }
             : {}),
           stroke,
           text: makeText(texts[i] ?? '', style),
           maxBytes: spec.maxBytes,
           reduceColors: reduceColorsOverride,
-          forbidPalette: stickerKind === 'big',
+          forbidPalette: stickerKind === 'big' || stickerKind === 'emoji',
         });
         const note = r.notes.length ? `（${r.notes.join('；')}）` : '';
-        logger.log('info', `${String(i + 1).padStart(2, '0')}.png  ${r.info.width}×${r.info.height}  ${kb(r.info.bytes)} ${note}`);
+        const filename = stickerKind === 'emoji' ? emojiFileName(i + 1) : stickerFileName(i + 1);
+        logger.log('info', `${filename}  ${r.info.width}×${r.info.height}  ${kb(r.info.bytes)} ${note}`);
         processed.push(r);
         await yieldToUI();
       }
 
       // 4) main/tab + 打包 + 驗證
       const coverIdx = Math.min(Math.max(1, cover), count) - 1;
+      if (stickerKind === 'emoji') {
+        const { tab, tabInfo: rawTabInfo } = buildTab(processed[coverIdx]!.raster);
+        const tabInfo = { ...rawTabInfo, format: 'png' as const, isApng: false as const };
+        let built: ReturnType<typeof buildEmojiPackZip>;
+        try {
+          built = buildEmojiPackZip({
+            name,
+            kind: 'emoji',
+            tab,
+            items: processed.map((item) => item.png),
+          });
+        } catch (error) {
+          if (error instanceof RangeError) {
+            setZipOverBudget(error.message);
+            logger.log('err', error.message);
+            return;
+          }
+          throw error;
+        }
+        logger.log('ok', `Emoji zip 打包完成（${kb(built.zipBytes)}）`);
+        const validation = validateEmojiPack({
+          kind: 'emoji',
+          count,
+          items: processed.map((item) => item.info),
+          tab: tabInfo,
+          archivePaths: Object.keys(built.files),
+          zipBytes: built.zipBytes,
+        });
+        setResult({
+          kind: 'emoji',
+          name,
+          stickers: processed,
+          tab,
+          zip: built.zip,
+          validation,
+        });
+        return;
+      }
+
       const { main, tab, mainInfo, tabInfo } = buildMainTab(processed[coverIdx]!.raster);
       const { zip, zipBytes } = buildPackZip({ main, tab, stickers: processed.map((p) => p.png) });
       logger.log('ok', `zip 打包完成（${kb(zipBytes)}）`);
@@ -200,6 +254,21 @@ export function SheetTab() {
     }
   }
 
+  function changeTarget(next: SheetTarget) {
+    setStickerKind(next);
+    setCount(8);
+    setCover(1);
+    setReduceColors(false);
+    setResult(null);
+    setZipOverBudget(null);
+    logger.clear();
+  }
+
+  function retryWithColorReduction() {
+    setReduceColors(true);
+    void run(true);
+  }
+
   const previewState = useMemo((): { layout: GridLayout | null; issue: string | null } => {
     try {
       const d = planGrid(count, { isCharacter, forceOversizeSet: false });
@@ -224,7 +293,7 @@ export function SheetTab() {
   return (
     <section>
       <p className="tab-desc">
-        把一張（或多張）含網格的組圖切成個別貼圖再打包：偵測背景（透明/綠幕/不透明）→ 去背 →
+        把一張（或多張）含網格的組圖切成個別貼圖或 Regular Emoji 再打包：偵測背景（透明/綠幕/不透明）→ 去背 →
         切線吸附到真實透明縫 → 校正 → 打包。組圖可用「產圖 Prompt」分頁產的 prompt 餵給任何 AI 產圖工具取得。
       </p>
       <FilePick label="組圖（sprite sheet）" multiple files={sheets} onChange={setSheets} />
@@ -237,18 +306,19 @@ export function SheetTab() {
         colorHelp={<span className="layout-hint">自動偵測綠幕或邊框背景色</span>}
       />
       <Row>
-        <Field label="貼圖規格">
+        <Field label="輸出規格">
           <select
             data-testid="sheet-spec-select"
             aria-label="貼圖規格"
             value={stickerKind}
+            disabled={busy}
             onChange={(e) => {
-              setStickerKind(e.target.value as 'static' | 'big');
-              setResult(null);
+              changeTarget(e.target.value as SheetTarget);
             }}
           >
             <option value="static">一般靜態貼圖</option>
             <option value="big">大貼圖</option>
+            <option value="emoji">Regular Emoji</option>
           </select>
         </Field>
         <Field label="張數">
@@ -273,11 +343,16 @@ export function SheetTab() {
           {`大貼圖限制：${BIG_STICKER_SPEC.minWidth}×${BIG_STICKER_SPEC.minHeight}–${BIG_STICKER_SPEC.maxWidth}×${BIG_STICKER_SPEC.maxHeight} px；8／16／24／32／40 張；寬高皆須為偶數；透明 truecolor PNG；單張 ≤${BIG_STICKER_SPEC.maxBytes / 1_000_000}MB、整包 ≤${ZIP_MAX_BYTES / 1_000_000}MB；不需預留 margin。預設不降色，超標後才提供選用重試。`}
         </p>
       )}
+      {stickerKind === 'emoji' && (
+        <p className="layout-hint" data-testid="sheet-emoji-limits">
+          {`Regular Emoji：每張固定 ${EMOJI_SPEC.width}×${EMOJI_SPEC.height}px；可選 ${EMOJI_SPEC.minCount}–${EMOJI_SPEC.maxCount} 張；單張 ≤${EMOJI_SPEC.maxBytes / 1_000_000}MB；ZIP 必須小於 ${EMOJI_SPEC.zipMaxBytes / 1_000_000}MB；使用三位數檔名且不含 main.png。`}
+        </p>
+      )}
       <Row>
-        <Field label="貼圖包名">
+        <Field label={stickerKind === 'emoji' ? 'Emoji 包名' : '貼圖包名'}>
           <input value={name} onChange={(e) => setName(e.target.value)} />
         </Field>
-        <Field label="封面用第幾張">
+        <Field label={stickerKind === 'emoji' ? '聊天室縮圖用第幾張' : '封面用第幾張'}>
           <input type="number" min={1} max={count} value={cover} onChange={(e) => setCover(Number(e.target.value))} />
         </Field>
         <Field label="白色描邊">
@@ -296,7 +371,7 @@ export function SheetTab() {
       </Row>
       <details className="advanced">
         <summary>逐格疊字（選用）</summary>
-        <p className="tab-desc">每行對應一格（第 1 行 → 01.png…），空行＝該格不疊字。</p>
+        <p className="tab-desc">每行對應一格（第 1 行 → {stickerKind === 'emoji' ? '001.png' : '01.png'}…），空行＝該格不疊字。</p>
         <textarea
           rows={4}
           placeholder={'嗨\n讚\n（空行＝不疊字）'}
@@ -340,13 +415,16 @@ export function SheetTab() {
         {modelStatus && <span className="model-status">{modelStatus}</span>}
       </div>
       <LogPane lines={logger.lines} />
+      {zipOverBudget && (
+        <ColorReductionPrompt
+          message={`Emoji ZIP 超過上限，未保留可下載結果。${zipOverBudget}`}
+          onRetry={reduceColors ? undefined : retryWithColorReduction}
+        />
+      )}
       {result && (
         <PackResult
           data={result}
-          onReduceColors={reduceColors ? undefined : () => {
-            setReduceColors(true);
-            void run(true);
-          }}
+          onReduceColors={reduceColors ? undefined : retryWithColorReduction}
         />
       )}
     </section>

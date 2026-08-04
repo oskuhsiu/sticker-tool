@@ -2,7 +2,7 @@
  * 讀取 YAML/JSON 設定檔 → 驗證（zod）→ 正規化成 core 的 PackConfig。
  *
  * 正規化規則：
- *  - kind：package.animated 或任一 sticker 有 frames → 'animated'，否則 'static'。
+ *  - kind：先解析 product，再由 package.animated / frames 決定是否 animated。
  *  - removeBackground 省略時依來源：local→true、ai→false（解 I-10 #2 預設來源）。
  *  - maxSize 省略時用該 kind 的規格上限。
  *  - grid "4x3" → {cols,rows}；"auto" 保留。
@@ -11,8 +11,8 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import YAML from 'yaml';
-import { maxBounds } from '../core/spec.js';
-import type { PackConfig, StickerKind } from '../core/types.js';
+import { ANIMATED_EMOJI_SPEC, ANIMATED_SPEC, maxBounds } from '../core/spec.js';
+import type { LinePackKind, PackConfig } from '../core/types.js';
 import { ConfigSchema, type RawConfig } from './schema.js';
 
 function parseGrid(grid: 'auto' | string): 'auto' | { cols: number; rows: number } {
@@ -25,18 +25,25 @@ function parseGrid(grid: 'auto' | string): 'auto' | { cols: number; rows: number
 /** 把驗證過的 raw config 正規化成 PackConfig */
 export function normalizeConfig(raw: RawConfig): PackConfig {
   const hasFrames = raw.stickers.some((s) => Array.isArray(s.frames) && s.frames.length > 0);
-  const kind: StickerKind = raw.package.animated || hasFrames ? 'animated' : 'static';
+  const animated = raw.package.animated === true || hasFrames;
+  const kind: LinePackKind = raw.package.product === 'emoji'
+    ? animated ? 'animated-emoji' : 'emoji'
+    : animated ? 'animated' : 'static';
 
   const removeBackground =
     raw.processing.removeBackground ?? (raw.source === 'local' ? true : false);
   const maxSize: [number, number] =
     raw.processing.maxSize ?? [maxBounds(kind).width, maxBounds(kind).height];
+  const animationMaxBytes = raw.animation.maxBytes ?? (
+    raw.package.product === 'emoji' ? ANIMATED_EMOJI_SPEC.maxBytes : ANIMATED_SPEC.maxBytes
+  );
 
   return {
     name: raw.package.name,
     count: raw.package.count,
     source: raw.source,
     kind,
+    emojiSet: raw.package.product === 'emoji' ? raw.package.emojiSet : undefined,
     ai: {
       style: raw.ai.style,
       transparent: raw.ai.transparent,
@@ -53,7 +60,11 @@ export function normalizeConfig(raw: RawConfig): PackConfig {
       maxSize,
     },
     cover: raw.cover,
-    animation: raw.animation,
+    animation: {
+      ...raw.animation,
+      maxBytes: animationMaxBytes,
+      autoFit: raw.animation.autoFit ?? (raw.package.product === 'emoji' ? false : true),
+    },
     stickers: raw.stickers,
   };
 }

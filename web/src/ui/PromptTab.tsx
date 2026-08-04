@@ -5,18 +5,20 @@
  */
 
 import { useMemo, useState } from 'react';
-import { STATIC_SPEC } from '@core/spec.js';
+import { allowedCounts } from '@core/spec.js';
 import { gridDimsFor, planGrid } from '@core/grid.js';
 import { buildFramesPrompt, buildSheetPrompt } from '@core/prompt.js';
 import type { GridLayout } from '@core/types.js';
 import { CopyButton, Field, Row } from './common.jsx';
 
 type Mode = 'sheet' | 'frames';
+type PromptTarget = 'sticker' | 'emoji';
 
 const DEFAULT_STYLE = 'flat cartoon, bold black outline, pastel palette';
 
 export function PromptTab() {
   const [mode, setMode] = useState<Mode>('sheet');
+  const [target, setTarget] = useState<PromptTarget>('sticker');
   const [style, setStyle] = useState(DEFAULT_STYLE);
   const [count, setCount] = useState(8);
   const [frames, setFrames] = useState(16);
@@ -34,8 +36,22 @@ export function PromptTab() {
         if (n !== frames) warnings.push(`影格數已夾到 LINE 允許範圍（5–20）：${n}`);
         const dims = gridDimsFor(n);
         const layout: GridLayout = { count: n, cols: dims.cols, rows: dims.rows, sheets: 1, cellsPerSheet: n };
-        const text = buildFramesPrompt({ style, layout, motion, isCharacter, transparent, hasReference });
-        return { prompts: [{ title: `動態影格組圖（${dims.cols}×${dims.rows}，${n} 格）`, text }], warnings };
+        const text = buildFramesPrompt({
+          style,
+          layout,
+          motion,
+          isCharacter,
+          transparent,
+          hasReference,
+          product: target,
+        });
+        return {
+          prompts: [{
+            title: `${target === 'emoji' ? 'Animated Regular Emoji' : '動態貼圖'}影格組圖（${dims.cols}×${dims.rows}，${n} 格）`,
+            text,
+          }],
+          warnings,
+        };
       }
 
       const decision = planGrid(count, { isCharacter, forceOversizeSet: false });
@@ -63,6 +79,7 @@ export function PromptTab() {
           transparent,
           cellVariations: cellVariations.slice(s * layout.cellsPerSheet, s * layout.cellsPerSheet + thisCount),
           hasReference,
+          product: target,
         });
         prompts.push({
           title:
@@ -76,22 +93,41 @@ export function PromptTab() {
     } catch (e) {
       return { prompts: [], warnings, error: e instanceof Error ? e.message : String(e) };
     }
-  }, [mode, style, count, frames, motion, isCharacter, transparent, hasReference, variationsRaw]);
+  }, [mode, target, style, count, frames, motion, isCharacter, transparent, hasReference, variationsRaw]);
+
+  function changeTarget(next: PromptTarget) {
+    setTarget(next);
+    setCount(8);
+    setFrames(16);
+  }
 
   return (
     <section>
       <p className="tab-desc">
-        產生餵給外部 AI 產圖工具的 prompt（本站不產圖）。建議流程：附上角色參考圖 + 這段 prompt →
-        產出組圖 → 回「組圖切格」（靜態）或「動態 APNG」（影格）分頁打包。
+        產生餵給外部 AI 產圖工具的 Sticker／Emoji prompt（本站不產圖）。建議流程：附上角色參考圖 +
+        這段 prompt → 產出組圖 → 回「組圖切格」（靜態）或「動態 APNG」（影格）分頁打包。
       </p>
+      <Row>
+        <Field label="產圖目標">
+          <select
+            data-testid="prompt-product-select"
+            aria-label="產圖目標"
+            value={target}
+            onChange={(event) => changeTarget(event.target.value as PromptTarget)}
+          >
+            <option value="sticker">Sticker</option>
+            <option value="emoji">Regular Emoji</option>
+          </select>
+        </Field>
+      </Row>
       <div className="mode-switch">
         <label>
           <input type="radio" checked={mode === 'sheet'} onChange={() => setMode('sheet')} />
-          靜態貼圖組圖
+          {target === 'emoji' ? 'Regular Emoji 組圖' : '靜態貼圖組圖'}
         </label>
         <label>
           <input type="radio" checked={mode === 'frames'} onChange={() => setMode('frames')} />
-          動態影格組圖
+          {target === 'emoji' ? 'Animated Regular Emoji 影格組圖' : '動態貼圖影格組圖'}
         </label>
       </div>
       <Row>
@@ -101,7 +137,7 @@ export function PromptTab() {
         {mode === 'sheet' ? (
           <Field label="張數">
             <select value={count} onChange={(e) => setCount(Number(e.target.value))}>
-              {STATIC_SPEC.counts.map((c) => (
+              {allowedCounts(target === 'emoji' ? 'emoji' : 'static').map((c) => (
                 <option key={c} value={c}>
                   {c}
                 </option>

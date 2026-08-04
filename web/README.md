@@ -7,14 +7,55 @@ with Canvas, WebAssembly, and Web Workers, and the built site can be hosted on G
 
 | Tab | CLI equivalent | Purpose |
 |---|---|---|
-| Local images | `build` | Individual images to a fitted static LINE pack |
-| Sprite sheet | `gen` for regular static packs | Pre-process cut guide, gutter-aware extraction, and regular static or Big Sticker packaging |
-| Animated APNG | `anim` for regular animation | One frame sheet to APNG, frame groups to an animated pack, or paired static/frame inputs to a browser-only Pop-up Sticker pack |
+| Local images | `build` | Individual images to a fitted Regular Sticker or Regular Emoji pack |
+| Sprite sheet | `gen` for regular static/Emoji packs | Pre-process cut guide, gutter-aware extraction, and Regular Sticker, Big Sticker, or Regular Emoji packaging |
+| Animated APNG | `anim` for regular animation/Emoji | One frame sheet to APNG, frame groups to an Animated Sticker or Animated Regular Emoji pack, or paired static/frame inputs to a browser-only Pop-up Sticker pack |
 | Video → APNG | Web only | Fixed-grid video to an editable all-frame raw master and animated pack |
-| Prompt | `prompt` | Static-sheet or animation-frame prompts for external image tools |
+| Prompt | `prompt` | Sticker- or Emoji-aware static-sheet and animation-frame prompts for external image tools |
 
 The separate `#/colab-birefnet` route explains how to launch the optional BiRefNet notebook, benchmark
 it with the built-in astronaut image, and connect a temporary Cloudflare Quick Tunnel endpoint.
+
+## Regular Emoji workflows
+
+[Regular Emoji](https://creator.line.me/en/guideline/emoji/) is integrated into the existing tabs; it
+does not have a separate top-level page. Choose **Regular Emoji** in Local images or Sprite sheet for a
+static package. Choose **Animated Regular Emoji** in either the frame-sheet or grouped-frame mode under
+Animated APNG. Prompt has matching static and animated targets, including small-inline readability and
+first-frame guidance.
+
+Both products accept any integer count from 8 through 40 and emit exact 180×180 transparent truecolor
+items. Static items are PNG files up to 1,000,000 bytes. Animated items are APNG files with a `.png`
+extension, 5–20 frames, 1–4 loops, an exact 1/2/3/4-second one-loop duration, total playback no longer
+than four seconds, at least two distinct decoded frames, and at most 300,000 bytes. A 96×74 `tab.png`
+is required. There is no uploaded `main.png`; four registered emoji are selected for the main display
+later in LINE My Page.
+
+The downloaded ZIP has this exact shape:
+
+```text
+tab.png
+001.png
+002.png
+…
+```
+
+The static ZIP must be strictly smaller than 20,000,000 bytes; the animated ZIP may equal that limit.
+The browser validates the expected paths and target-specific final bytes before enabling download. A
+blocking error leaves ZIP download unavailable rather than producing a knowingly invalid archive.
+Result cards show each item at 180×180 and a representative 32×32 inline size. Animated results also
+show decoded frames, loops, one-loop duration, distinct-frame count, and exact encoded bytes.
+
+Static Emoji keeps original colors on the first pass and offers an explicit reduction retry after a
+byte-limit failure. Animated Emoji exposes `Original`, 256, 128, and 64-color choices; `Original` does
+not quantize, while reduced choices retain all selected frames. Frame-sheet counts outside 5–20 and
+grouped-pack items outside 5–20 are rejected before encoding. Over-budget output remains a hard error.
+
+Regular Emoji V1 does not implement the six fixed Kana/letter/number/symbol set contracts. The Video
+tab cannot export Animated Emoji, and the application neither authenticates with nor uploads directly
+to Creators Market. The local ZIP shape and final-byte validators have been exercised, but current My
+Page acceptance has not been verified. PNG density may remain unknown, and semantic requirements such
+as small-size legibility or first-frame meaning still require human review.
 
 ## Sprite sheet and Big Stickers
 
@@ -138,6 +179,10 @@ subject crossing a grid line is not clipped at a mask boundary.
 
 - `../src/core/` contains platform-neutral specification, validation, timeline, grid, and prompt rules.
 - `src/webpipe/` implements browser raster, background removal, APNG, video, storage, and ZIP adapters.
+- `src/webpipe/emojiZip.ts` assembles and validates the main-less, three-digit Emoji archive separately
+  from sticker and Pop-up package shapes.
+- `src/ui/packResult.tsx` uses a discriminated result model so Emoji previews cannot accidentally render
+  or package a sticker `main.png`.
 - `src/ui/PopupPackMode.tsx` owns paired static/pop-up inputs, processing progress, previews, and package download.
 - `videoSource.ts` uses Mediabunny/WebCodecs and closes every decoded `VideoSample` promptly.
 - `rawVideoMaster.ts`, `masterApng.ts`, and `videoMasterStore.ts` own all-frame raw storage.
@@ -159,10 +204,12 @@ npm run test:colab
 npm run test:local-birefnet
 npm run test:background-removal
 npm run test:output-safety # truecolor Big/Pop-up and opt-in reduction contracts
+npx tsx --tsconfig tsconfig.json scripts/emoji-processing-contract.mts
 npm run test:video          # V2 round-trip, strict rejection, V1 mapping, render contracts
 npm run test:video-spike    # requires ffmpeg/ffprobe
 npm run preview -- --port 4179
 node scripts/smoke.mjs http://127.0.0.1:4179/
+node scripts/emoji-smoke.mjs http://127.0.0.1:4179/
 node scripts/video-smoke.mjs http://127.0.0.1:4179/ # requires ffmpeg and Chrome
 ```
 
@@ -173,6 +220,12 @@ invalid-package confirmation, and builds a valid eight-sticker LINE package.
 The main browser smoke also rejects an extreme custom preview grid, checks truecolor Big output, builds
 an eight-item Pop-up Sticker pack, and verifies the color type and all 19 expected ZIP entries in
 addition to exercising the existing static, animated, and prompt paths.
+
+The Emoji processing contract covers exact static fitting, shared animated-sequence fitting, preserved
+frame counts, final decoded facts, and output safety. The dedicated Emoji browser smoke drives both
+static and animated UI journeys, opens both ZIP downloads, asserts `tab.png` plus three-digit items with
+no `main.png`, and reopens the animated bytes to verify canvas, color type, frames, loops, duration, and
+distinct motion. It can also be invoked as `npm run smoke:emoji -- http://127.0.0.1:4179/`.
 
 ## Deployment
 

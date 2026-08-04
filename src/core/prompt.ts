@@ -8,7 +8,9 @@
  * 純字串組裝、平台無關。
  */
 
-import type { GridLayout, StickerKind } from './types.js';
+import type { GridLayout } from './types.js';
+
+export type PromptProduct = 'sticker' | 'emoji';
 
 /** codex 端的輸出契約（CLI-only；mobile 省略）。讓 codex 的隨機性只剩「像素長相」。 */
 export interface OutputContract {
@@ -32,6 +34,8 @@ export interface SheetPromptOptions {
   hasReference?: boolean;
   /** 輸出契約（CLI 注入；mobile 省略） */
   output?: OutputContract;
+  /** 產圖目標；省略時維持既有 Sticker prompt。 */
+  product?: PromptProduct;
 }
 
 export interface FramesPromptOptions {
@@ -44,6 +48,8 @@ export interface FramesPromptOptions {
   transparent: boolean;
   hasReference?: boolean;
   output?: OutputContract;
+  /** 產圖目標；Animated Emoji 會加入首格語意與 inline 可讀性要求。 */
+  product?: PromptProduct;
 }
 
 /** 通用貼圖表情/情境（不足時補位用；夠表達日常聊天情緒） */
@@ -144,17 +150,34 @@ function foregroundTextBlock(): string {
   ].join('\n');
 }
 
-function layoutBlock(layout: GridLayout): string {
+function layoutBlock(layout: GridLayout, product: PromptProduct): string {
   const { cols, rows, count } = layout;
   const cells = cols * rows;
+  const item = product === 'emoji' ? 'emoji' : 'sticker';
   const lines = [
     `LAYOUT: a single sprite sheet, a strict ${cols}×${rows} grid (cols×rows = ${cells} cells).`,
-    `Fill the first ${count} cells, one distinct sticker per cell, reading left-to-right, top-to-bottom.`,
+    `Fill the first ${count} cells, one distinct ${item} per cell, reading left-to-right, top-to-bottom.`,
     'Each cell: subject centered with even margins; subject fully inside its cell; no overlap or bleed',
     'between cells; equal cell sizes; consistent subject scale across cells.',
   ];
   if (cells > count) {
     lines.push(`Leave the remaining ${cells - count} cell(s) empty (transparent / background only).`);
+  }
+  return lines.join('\n');
+}
+
+function emojiReadabilityBlock(animated: boolean): string {
+  const lines = [
+    'EMOJI READABILITY (critical): each item will be displayed as a very small inline chat image.',
+    'Use one instantly recognizable reaction or symbol, a strong silhouette, thick dark outlines,',
+    'high contrast, and minimal outer margins. Avoid tiny decoration, thin lines, or details that',
+    'disappear when reduced. Compose for an exact 180×180 transparent output canvas.',
+  ];
+  if (animated) {
+    lines.push(
+      'FIRST-FRAME MEANING (critical): frame 1 must communicate the intended reaction by itself',
+      'before playback starts; motion should reinforce that same meaning and remain clear at 180×180.',
+    );
   }
   return lines.join('\n');
 }
@@ -179,21 +202,31 @@ function outputBlock(output: OutputContract, layout: GridLayout): string {
  * mobile 省略 output → 得到純創意 prompt 給使用者貼到外部工具。
  */
 export function buildSheetPrompt(opts: SheetPromptOptions): string {
-  const { style, layout, isCharacter, transparent, cellVariations, hasReference = false, output } =
-    opts;
+  const {
+    style,
+    layout,
+    isCharacter,
+    transparent,
+    cellVariations,
+    hasReference = false,
+    output,
+    product = 'sticker',
+  } = opts;
   const exprs = expressionsFor(layout.count, cellVariations);
   const perCell = exprs.map((e, i) => `  Cell ${i + 1}: ${e}`).join('\n');
+  const item = product === 'emoji' ? 'emoji' : 'sticker';
 
   const blocks = [
-    `Create a LINE-sticker sprite sheet of ${layout.count} stickers.`,
+    `Create a LINE-${item} sprite sheet of ${layout.count} ${item} items.`,
     styleBlock(style),
     consistencyBlock(isCharacter, hasReference),
     backgroundBlock(transparent),
     foregroundTextBlock(),
-    layoutBlock(layout),
+    layoutBlock(layout, product),
     `PER-CELL CONTENT (same character, different pose/expression):\n${perCell}`,
-    'Make each sticker expressive, readable at small size, and friendly for chat use.',
+    `Make each ${item} expressive, readable at small size, and friendly for chat use.`,
   ];
+  if (product === 'emoji') blocks.splice(5, 0, emojiReadabilityBlock(false));
   if (output) blocks.push(outputBlock(output, layout));
   return blocks.join('\n\n');
 }
@@ -203,16 +236,25 @@ export function buildSheetPrompt(opts: SheetPromptOptions): string {
  * 各影格須角色一致、物件邊界對齊，疊起來才不會抖動/殘影（見 M5）。
  */
 export function buildFramesPrompt(opts: FramesPromptOptions): string {
-  const { style, layout, motion, isCharacter, transparent, hasReference = false, output } = opts;
+  const {
+    style,
+    layout,
+    motion,
+    isCharacter,
+    transparent,
+    hasReference = false,
+    output,
+    product = 'sticker',
+  } = opts;
   const frames = layout.count;
 
   const blocks = [
-    `Create ${frames} CONSECUTIVE ANIMATION FRAMES of a single looping motion: "${motion}".`,
+    `Create ${frames} CONSECUTIVE ${product === 'emoji' ? 'ANIMATED EMOJI' : 'ANIMATED STICKER'} FRAMES of a single looping motion: "${motion}".`,
     styleBlock(style),
     consistencyBlock(isCharacter, hasReference),
     backgroundBlock(transparent),
     foregroundTextBlock(),
-    layoutBlock(layout),
+    layoutBlock(layout, product),
     [
       'FRAME RULES: frames are time-ordered (cell 1 = first frame … last cell = last frame).',
       'The subject must stay in the SAME position and scale across frames — only the moving parts',
@@ -220,6 +262,7 @@ export function buildFramesPrompt(opts: FramesPromptOptions): string {
       'smoothly back into frame 1.',
     ].join('\n'),
   ];
+  if (product === 'emoji') blocks.splice(5, 0, emojiReadabilityBlock(true));
   if (output) blocks.push(outputBlock(output, layout));
   return blocks.join('\n\n');
 }
