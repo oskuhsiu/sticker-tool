@@ -30,6 +30,11 @@ export default defineConfig({
       '@core': path.join(here, '../src/core'),
     },
   },
+  // Workers are not part of Vite's initial dependency scan. Pre-bundle this
+  // worker-only import at startup so first use does not reload and erase UI state.
+  optimizeDeps: {
+    include: ['@huggingface/transformers'],
+  },
   server: {
     fs: { allow: [path.join(here, '..')] },
   },

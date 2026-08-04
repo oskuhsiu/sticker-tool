@@ -19,6 +19,8 @@ test/*
 !test/emojiZip.test.ts
 !test/emojiProcessing.test.ts
 !test/emojiCliConfig.test.ts
+!test/staticFinalBytes.test.ts
+!test/videoCrop.test.ts
 spike/
 fixtures/
 eval/

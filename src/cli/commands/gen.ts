@@ -129,7 +129,7 @@ export async function runGen(opts: GenOptions): Promise<void> {
       marginPx: isEmoji ? 0 : undefined,
       canvasMode: isEmoji ? 'exact' : undefined,
       trimInput: isEmoji ? true : undefined,
-      forbidPalette: isEmoji,
+      forbidPalette: true,
     });
     if (isEmoji) r.info.filename = filename;
     const note = r.notes.length ? `（${r.notes.join('；')}）` : '';

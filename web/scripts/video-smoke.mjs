@@ -1,5 +1,5 @@
 /**
- * Focused browser E2E for Video → APNG V2.
+ * Focused browser E2E for Video → APNG V3.
  * Requires ffmpeg and a separately running Vite preview server.
  * Usage: node scripts/video-smoke.mjs http://127.0.0.1:4179/
  */
@@ -85,7 +85,10 @@ async function configureSource(count, cols, rows) {
 async function assertGridPreviewsAligned() {
   await page.waitForFunction(() => {
     const previews = [...document.querySelectorAll('[data-tab="video"] .video-grid-preview')];
-    return previews.length === 4 && previews.every((preview) => preview.querySelector('img')?.complete);
+    return previews.length === 4 && previews.every((preview) => {
+      const image = preview.querySelector('img');
+      return image?.complete && image.naturalWidth > 0 && image.naturalHeight > 0;
+    });
   });
   const mismatches = await page.locator('[data-tab="video"] .video-grid-preview').evaluateAll((previews) =>
     previews.flatMap((preview, index) => {
@@ -106,6 +109,19 @@ async function assertGridPreviewsAligned() {
   if (mismatches.length) throw new Error(mismatches.join('\n'));
 }
 
+async function assertGridEditsSyncCount() {
+  await page.getByLabel('欄').fill('3');
+  if (await page.getByLabel('來源貼圖格數').inputValue() !== '6') {
+    throw new Error('3×2 網格應自動更新來源貼圖格數為 6');
+  }
+  await assertGridPreviewsAligned();
+  await page.getByLabel('欄').fill('4');
+  if (await page.getByLabel('來源貼圖格數').inputValue() !== '8') {
+    throw new Error('4×2 網格應自動更新來源貼圖格數為 8');
+  }
+  await assertGridPreviewsAligned();
+}
+
 async function buildRawMaster(expectedCount) {
   await page.getByRole('button', { name: '擷取範圍內所有 frames 並建立 raw master' }).click();
   await page.waitForSelector('[data-tab="video"] >> text=逐張 exact-target 編輯', { timeout: 180_000 });
@@ -120,6 +136,10 @@ async function renderAll() {
   await page.waitForSelector('[data-tab="video"] >> text=所有 dirty previews 已通過', { timeout: 240_000 });
 }
 
+function linePackButton(product) {
+  return page.getByRole('button', { name: `建立 ${product} LINE ZIP / 最終驗證` });
+}
+
 try {
   await page.goto(BASE, { waitUntil: 'load' });
   await page.waitForTimeout(800);
@@ -129,6 +149,13 @@ try {
   const metadataText = await page.locator('[data-tab="video"] .video-source-card .tab-desc').first().textContent();
   if (!metadataText?.includes('12 個 presentation frames')) throw new Error('probe 未顯示實際 12 格');
   if (await page.locator('label', { hasText: 'master 取樣格數' }).count()) throw new Error('V2 不應再顯示 master 取樣格數');
+  await page.getByLabel('自選網格預覽時間').waitFor();
+  await page.waitForSelector('[data-tab="video"] >> text=只會更新下方「自選」時間點的網格畫面');
+  if (!/\d+\.\d{3} 秒/.test(await page.locator('[data-tab="video"] .video-scrub-value').textContent() ?? '')) {
+    throw new Error('自選網格預覽時間必須顯示目前秒數');
+  }
+  await assertGridEditsSyncCount();
+  results.push('✓ 修改欄列會同步來源貼圖格數，preview remount 後仍保有有效影像');
   await configureSource(6, 3, 2);
   await assertGridPreviewsAligned();
   results.push('✓ 四個時間預覽的裁切格線與影像 bounds 完全對齊');
@@ -136,14 +163,14 @@ try {
   if (modelRequested) throw new Error('raw ingest 與 color-key 不應下載語意去背模型');
   results.push('✓ 12 個 presentation frames 全數進入 6 張 raw master，沒有固定 20 格取樣器');
 
-  await page.getByRole('button', { name: '建立 LINE ZIP / 最終驗證' }).click();
-  await page.waitForSelector('[data-tab="video"] >> text=缺少必要 sticker bytes');
-  if (await page.locator('[role="dialog"] >> text=這不是符合 LINE Sticker 規則的 ZIP').count()) {
+  await linePackButton('Animated Sticker').click();
+  await page.waitForSelector('[data-tab="video"] >> text=缺少必要成品 bytes');
+  if (await page.locator('[role="dialog"] >> text=這不是符合 Animated Sticker 規則的 ZIP').count()) {
     throw new Error('缺少必要 bytes 的結構性失敗不應提供 override dialog');
   }
   await renderAll();
-  await page.getByRole('button', { name: '建立 LINE ZIP / 最終驗證' }).click();
-  await page.waitForSelector('[role="dialog"] >> text=這不是符合 LINE Sticker 規則的 ZIP', { timeout: 120_000 });
+  await linePackButton('Animated Sticker').click();
+  await page.waitForSelector('[role="dialog"] >> text=這不是符合 Animated Sticker 規則的 ZIP', { timeout: 120_000 });
   await page.waitForSelector('[role="dialog"] >> text=animated 貼圖張數須為 8/16/24，收到 6');
   await page.waitForSelector('[role="dialog"] >> text=我了解，下載標示為不合規的 ZIP');
   await page.getByRole('button', { name: '返回修正' }).click();
@@ -166,14 +193,14 @@ try {
   results.push('✓ 單張 hard target=5 從 raw master 重編，controlled player 使用 final decoded timing');
 
   const projectDownloadPromise = page.waitForEvent('download');
-  await page.getByRole('button', { name: '下載 Project ZIP V2' }).click();
+  await page.getByRole('button', { name: '下載 Project ZIP V3' }).click();
   const projectDownload = await projectDownloadPromise;
   const projectPath = await projectDownload.path();
-  if (!projectPath) throw new Error('Project V2 download path unavailable');
+  if (!projectPath) throw new Error('Project V3 download path unavailable');
   const entries = unzipSync(new Uint8Array(readFileSync(projectPath)));
   const manifest = JSON.parse(strFromU8(entries['sticker-project.json']));
-  if (manifest.version !== 2 || manifest.frameCoverage !== 'all-presentation-frames' || manifest.backgroundStage !== 'raw') {
-    throw new Error('Project manifest 不是 all-frame/raw V2');
+  if (manifest.version !== 3 || manifest.target !== 'animated-sticker' || manifest.frameCoverage !== 'all-presentation-frames' || manifest.backgroundStage !== 'raw') {
+    throw new Error('Project manifest 不是 Animated Sticker all-frame/raw V3');
   }
   if (manifest.master.sourceFrameCount !== 12) throw new Error(`Project 應保存 12 source refs，實際 ${manifest.master.sourceFrameCount}`);
   for (const sticker of manifest.master.stickers) {
@@ -181,22 +208,106 @@ try {
     if (samples !== 12) throw new Error(`${sticker.id} 只保存 ${samples}/12 sample refs`);
   }
   if (Object.keys(entries).some((entry) => entry.startsWith('source/') || entry.startsWith('audio/'))) {
-    throw new Error('Project V2 不得內嵌 source video/audio');
+    throw new Error('Project V3 不得內嵌 source video/audio');
   }
-  results.push('✓ Project V2 manifest/ZIP 保存每張完整 12 sample refs、raw checksums，且不含來源影片或音軌');
+  results.push('✓ Project V3 manifest/ZIP 保存產品目標、每張完整 12 sample refs、raw checksums，且不含來源影片或音軌');
 
   await page.setInputFiles('[data-tab="video"] input[type=file][accept^=".zip"]', projectPath);
-  await page.waitForSelector('[data-tab="video"] >> text=已恢復 Project V2 的 12 個 sample refs', { timeout: 120_000 });
-  if (await page.getByLabel('目標格數').inputValue() !== '5') throw new Error('V2 re-import 未恢復第 1 張 target=5');
+  await page.waitForSelector('[data-tab="video"] >> text=已恢復 Project V3（Animated Sticker）的 12 個 sample refs', { timeout: 120_000 });
+  if (await page.getByLabel('目標格數').inputValue() !== '5') throw new Error('V3 re-import 未恢復第 1 張 target=5');
   await page.waitForSelector('[data-tab="video"] >> text=final 5/5 格');
-  results.push('✓ Project V2 可在沒有原影片與 decoder 的情況下恢復 draft/current/editor');
+  results.push('✓ Project V3 可在沒有原影片與 decoder 的情況下恢復 target/draft/current/editor');
 
-  await page.getByRole('button', { name: '建立 LINE ZIP / 最終驗證' }).click();
+  await linePackButton('Animated Sticker').click();
   await page.waitForSelector('[data-tab="video"] >> text=全部符合 LINE 規格', { timeout: 180_000 });
   const lineDownload = page.getByRole('button', { name: /下載 LINE ZIP/ });
   if (!(await lineDownload.isEnabled())) throw new Error('合規 final bytes 未開放一般 LINE ZIP');
-  if (modelRequested) throw new Error('整個 color-key V2 smoke 不應下載語意模型');
+  if (modelRequested) throw new Error('整個 color-key V3 smoke 不應下載語意模型');
   results.push('✓ 8 張 current + cover actual timeline → main/tab/LINE ZIP，final-byte validation 通過');
+
+  await uploadVideo();
+  await page.getByLabel('輸出產品').selectOption('animated-emoji');
+  await configureSource(8, 4, 2);
+  await buildRawMaster(8);
+  await renderAll();
+  await linePackButton('Animated Regular Emoji').click();
+  await page.waitForSelector('[data-tab="video"] >> text=Animated Regular Emoji LINE ZIP 已完成', { timeout: 180_000 });
+  const emojiDownloadPromise = page.waitForEvent('download');
+  await page.getByRole('button', { name: /下載 LINE ZIP/ }).click();
+  const emojiDownload = await emojiDownloadPromise;
+  const emojiPath = await emojiDownload.path();
+  if (!emojiPath) throw new Error('Animated Emoji download path unavailable');
+  const emojiEntries = unzipSync(new Uint8Array(readFileSync(emojiPath)));
+  const emojiNames = Object.keys(emojiEntries).sort();
+  const expectedEmojiNames = ['001.png', '002.png', '003.png', '004.png', '005.png', '006.png', '007.png', '008.png', 'tab.png'];
+  if (JSON.stringify(emojiNames) !== JSON.stringify(expectedEmojiNames)) {
+    throw new Error(`Animated Emoji ZIP manifest 錯誤：${emojiNames.join(', ')}`);
+  }
+  if ('main.png' in emojiEntries) throw new Error('Animated Emoji ZIP 不得包含 main.png');
+  for (const name of expectedEmojiNames.slice(0, 8)) {
+    const decoded = UPNG.decode(emojiEntries[name]);
+    if (decoded.width !== 180 || decoded.height !== 180 || decoded.ctype !== 6) {
+      throw new Error(`${name} 應為 180×180 truecolor RGBA APNG，實際 ${decoded.width}×${decoded.height} ctype=${decoded.ctype}`);
+    }
+    if (emojiEntries[name].length > 300_000) throw new Error(`${name} 超過 Animated Emoji 300KB 上限`);
+  }
+  results.push('✓ Animated Emoji target → 180×180 truecolor、001.png…、無 main.png 的完整 LINE ZIP');
+
+  await uploadVideo();
+  await page.getByLabel('輸出產品').selectOption('popup');
+  await configureSource(8, 4, 2);
+  await buildRawMaster(8);
+  await renderAll();
+  await page.getByLabel('配對靜態圖使用 frame').selectOption('1');
+  await page.waitForSelector('[data-tab="video"] >> text=配對靜態來源：第 2 格');
+  if (await page.getByRole('button', { name: '依序產生所有 dirty previews' }).isEnabled()) {
+    throw new Error('切換 Popup 配對靜態 frame 不應要求重編 APNG');
+  }
+  const popupProjectDownloadPromise = page.waitForEvent('download');
+  await page.getByRole('button', { name: '下載 Project ZIP V3' }).click();
+  const popupProjectDownload = await popupProjectDownloadPromise;
+  const popupProjectPath = await popupProjectDownload.path();
+  if (!popupProjectPath) throw new Error('Popup Project V3 download path unavailable');
+  const popupProjectEntries = unzipSync(new Uint8Array(readFileSync(popupProjectPath)));
+  const popupManifest = JSON.parse(strFromU8(popupProjectEntries['sticker-project.json']));
+  if (popupManifest.target !== 'popup' || popupManifest.settings[0].staticFrameIndex !== 1) {
+    throw new Error('Popup Project V3 未保存產品或使用者選取的靜態 frame');
+  }
+  if (popupManifest.master.stickers.some((sticker) => sticker.width !== 480 || sticker.height !== 480)) {
+    throw new Error('Popup raw master 必須全部是 480×480');
+  }
+  await linePackButton('Pop-up Sticker').click();
+  await page.waitForSelector('[data-tab="video"] >> text=Pop-up Sticker LINE ZIP 已完成', { timeout: 180_000 });
+  const popupDownloadPromise = page.waitForEvent('download');
+  await page.getByRole('button', { name: /下載 LINE ZIP/ }).click();
+  const popupDownload = await popupDownloadPromise;
+  const popupPath = await popupDownload.path();
+  if (!popupPath) throw new Error('Pop-up Sticker download path unavailable');
+  const popupEntries = unzipSync(new Uint8Array(readFileSync(popupPath)));
+  const expectedPopupNames = [
+    ...Array.from({ length: 8 }, (_, index) => `png/${String(index + 1).padStart(2, '0')}.png`),
+    'png/main.png',
+    'png/tab.png',
+    ...Array.from({ length: 8 }, (_, index) => `popup/${String(index + 1).padStart(2, '0')}.png`),
+    'popup/main_popup.png',
+  ].sort();
+  const popupNames = Object.keys(popupEntries).sort();
+  if (JSON.stringify(popupNames) !== JSON.stringify(expectedPopupNames)) {
+    throw new Error(`Pop-up ZIP manifest 錯誤：${popupNames.join(', ')}`);
+  }
+  for (let index = 1; index <= 8; index++) {
+    const staticName = `png/${String(index).padStart(2, '0')}.png`;
+    const animatedName = `popup/${String(index).padStart(2, '0')}.png`;
+    const staticImage = UPNG.decode(popupEntries[staticName]);
+    const animatedImage = UPNG.decode(popupEntries[animatedName]);
+    if (staticImage.width > 370 || staticImage.height > 320 || staticImage.ctype !== 6) {
+      throw new Error(`${staticName} 不是合規 truecolor 靜態尺寸`);
+    }
+    if (animatedImage.width !== 480 || animatedImage.height !== 480 || animatedImage.ctype !== 6 || !animatedImage.tabs.acTL) {
+      throw new Error(`${animatedName} 不是 480×480 truecolor APNG`);
+    }
+  }
+  results.push('✓ Pop-up target → 每張選一格衍生靜態圖、480×480 APNG、完整 png/ + popup/ LINE ZIP');
 } catch (error) {
   results.push(`✗ 失敗：${error.message}`);
   try {

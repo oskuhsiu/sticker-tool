@@ -7,10 +7,10 @@ with Canvas, WebAssembly, and Web Workers, and the built site can be hosted on G
 
 | Tab | CLI equivalent | Purpose |
 |---|---|---|
-| Local images | `build` | Individual images to a fitted Regular Sticker or Regular Emoji pack |
+| Local images | `build` | Individual images to a fitted Regular Sticker, Big Sticker, or Regular Emoji pack |
 | Sprite sheet | `gen` for regular static/Emoji packs | Pre-process cut guide, gutter-aware extraction, and Regular Sticker, Big Sticker, or Regular Emoji packaging |
 | Animated APNG | `anim` for regular animation/Emoji | One frame sheet to APNG, frame groups to an Animated Sticker or Animated Regular Emoji pack, or paired static/frame inputs to a browser-only Pop-up Sticker pack |
-| Video → APNG | Web only | Fixed-grid video to an editable all-frame raw master and animated pack |
+| Video → APNG | Web only | Fixed-grid video to editable Animated Sticker, Animated Emoji, or derived-static Pop-up packs |
 | Prompt | `prompt` | Sticker- or Emoji-aware static-sheet and animation-frame prompts for external image tools |
 
 The separate `#/colab-birefnet` route explains how to launch the optional BiRefNet notebook, benchmark
@@ -51,9 +51,9 @@ byte-limit failure. Animated Emoji exposes `Original`, 256, 128, and 64-color ch
 not quantize, while reduced choices retain all selected frames. Frame-sheet counts outside 5–20 and
 grouped-pack items outside 5–20 are rejected before encoding. Over-budget output remains a hard error.
 
-Regular Emoji V1 does not implement the six fixed Kana/letter/number/symbol set contracts. The Video
-tab cannot export Animated Emoji, and the application neither authenticates with nor uploads directly
-to Creators Market. The local ZIP shape and final-byte validators have been exercised, but current My
+Regular Emoji V1 does not implement the six fixed Kana/letter/number/symbol set contracts. Video can
+export Animated Regular Emoji as an immutable project target, but the application neither authenticates
+with nor uploads directly to Creators Market. The local ZIP shape and final-byte validators have been exercised, but current My
 Page acceptance has not been verified. PNG density may remain unknown, and semantic requirements such
 as small-size legibility or first-frame meaning still require human review.
 
@@ -64,7 +64,7 @@ The overlay uses row-major `01`… numbering and shares the rendered image bound
 while the image scales. It is a planning guide: the actual component-aware cutter may move the reference
 lines to nearby transparent gutters and preserves components that cross a nominal line.
 
-The Sprite sheet tab can produce either a regular static pack or a
+The Local images and Sprite sheet tabs can produce either a regular static pack or a
 [LINE Big Sticker](https://creator.line.me/en/guideline/bigsticker/) pack. Big Sticker images use even
 RGBA PNG dimensions from 80×524 through 396×660, at most 1 MB each, and no proactively added display
 margin; LINE adds the appropriate margin. Content is scaled proportionally and transparent-padded to
@@ -72,7 +72,7 @@ the minimum canvas instead of being stretched. Counts remain 8, 16, 24, 32, or 4
 remains limited to 60 MB. Numbered output is truecolor RGBA, not indexed PNG. The first package keeps
 the original colors; after a byte-limit failure, the result offers an explicit color-reduction retry
 that still emits truecolor RGBA. Main and tab images remain 240×240 and 96×74. This Big Sticker mode is
-Web-only; the CLI `gen` command continues to produce regular static stickers.
+Web-only; the CLI `build` and `gen` commands continue to produce regular static stickers.
 
 Custom sheet grids are bounded before the SVG cut guide or cutter allocates cells. Values above 64 on
 either axis or above 400 total cells are rejected; LINE's largest supported static/Big pack needs only
@@ -117,32 +117,40 @@ reduction; quantized candidates remain truecolor RGBA and preserve the selected 
 APNG is encoded and inspected, its fitted 480×480 RGBA frame buffers are discarded instead of being
 retained for the rest of the pack.
 
-## Video → APNG V2
+## Video → APNG V3
 
 The video workflow accepts a local video that Mediabunny and the browser can demux and decode. It does
 not use `HTMLVideoElement.currentTime` seeking or a fixed 10/20/30/40/60-frame sampler.
 
 1. Upload a video. The browser probes its container, codec, coded/display geometry, rotation, pixel
    aspect ratio, duration, first timestamp, and every decoded presentation sample.
-2. Choose a global editable time window and fixed grid. Start, middle, end, and scrub previews show the
-   same crop overlay. Preflight reports actual source frames, crop-frames, and a raw RGBA upper bound.
+2. Select Animated Sticker, Animated Regular Emoji, or Pop-up Sticker, then choose a global editable time window and
+   fixed grid. Start, middle, end, and scrub previews show the same crop overlay. Changing grid columns
+   or rows updates the source-cell count. Preflight reports actual source frames, crop-frames, and a raw
+   RGBA upper bound.
 3. Confirm ingest. Every presentation sample intersecting the range is decoded in order, fed to every
-   crop, and immediately released. Raw crops are written to bounded lossless APNG chunks in memory or
-   IndexedDB. Equal visuals may share payload bytes, but every source timestamp/duration remains indexed.
-4. Edit stickers independently. Each draft owns a source range, hard 5–20-frame target, legal
-   1/2/3/4-second per-loop duration, finite loop count, background mode, and optional color ceiling.
+   crop, proportionally fitted to the selected product canvas, and immediately released. Target-fitted
+   raw RGB/alpha is written to bounded lossless APNG chunks in memory or IndexedDB. Equal visuals may
+   share payload bytes, but every source timestamp/duration remains indexed.
+4. Edit stickers independently. Each draft owns a source range, hard 5–20-frame target, target-legal
+   per-loop duration, finite loop count, background mode, and compression mode. A Pop-up draft also
+   chooses which final frame becomes its paired static image. Automatic
+   color fitting is the default; advanced controls can preserve original colors or set a palette ceiling.
 5. Generate one preview or all dirty previews. Time-uniform candidates expand deterministically when
    adjacent equal results are removed. Delays are positive integers with the exact requested total.
    Color search may reduce colors, but never silently reduces the requested frame target.
 6. Inspect the controlled canvas player. It uses frames and delays decoded from current APNG bytes and
    supports play, pause, restart, frame position, elapsed time, and progress. Only the active editor runs.
-7. Save Project ZIP V2 at any time, or build a LINE ZIP after all required current bytes exist.
+7. Save Project ZIP V3 at any time, or build a target-specific LINE ZIP after all required current bytes
+   exist. Sticker ZIPs contain `main.png`, `tab.png`, and `01.png` onward. Animated Emoji ZIPs contain
+   `tab.png` and `001.png` onward and never contain `main.png`. Pop-up ZIPs contain `png/main.png`,
+   `png/tab.png`, paired `png/01.png` and `popup/01.png` sets, plus `popup/main_popup.png`.
 
 The beta ingest budget is 512 MiB. If preflight exceeds it, shorten the range or reduce the grid. The
 budget is backed by the CFR/VFR/rotation/cancellation and 8/24-crop spike in
 `scripts/video-all-frames-spike.mts`.
 
-Background removal is never baked into V2 ingest. `none` preserves raw pixels; color-keying is local;
+Background removal is never baked into V3 ingest. `none` preserves target-fitted raw pixels; color-keying is local;
 IMG.LY, local BiRefNet, and Colab BiRefNet are lazy, mutually exclusive render-stage choices. Only
 selected candidates are processed, sequentially, with a bounded session cache. A model or remote error
 does not silently fall back and does not overwrite the prior current render.
@@ -152,12 +160,18 @@ validation passes. Missing sticker bytes are a structural hard stop. If complete
 rule, the UI lists the errors and requires explicit confirmation before downloading a file named
 `NOT-LINE-COMPLIANT`.
 
-Project ZIP V2 contains checksummed raw chunks, complete sample/visual indices, drafts, current renders,
-selection/final-byte evidence, and implementation versions. It excludes source video, audio, model
+Project ZIP V3 contains the product target, checksummed raw chunks, complete sample/visual indices,
+drafts, current renders, selection/final-byte evidence, and implementation versions. It excludes source video, audio, model
 caches, endpoint URLs, and session keys. Import bounds entry count and expanded bytes, rejects unsafe,
 duplicate, missing, or undeclared paths, validates SHA-256 and decoded visual indices, and streams master
-entries directly to the project store. V1 archives import only as `sampled-legacy`/`baked-legacy`; the UI
-does not invent missing source frames or pre-removal RGB.
+entries directly to the project store. V2 archives migrate to Animated Sticker. V1 archives import only
+as `sampled-legacy`/`baked-legacy`; the UI does not invent missing source frames or pre-removal RGB.
+
+Pop-up is a paired Video target: after rendering, the user selects one frame from each APNG and the app
+fits it into the required static `png/` track before packaging. The dedicated static-plus-animation
+workflow remains available for separately authored static art. Effect is shown as unsupported until its
+independent core and ZIP contracts exist; the Video tab does not claim that a resized APNG alone is an
+upload-ready Effect package.
 
 ## Background-removal choices
 

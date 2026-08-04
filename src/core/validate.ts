@@ -111,6 +111,9 @@ export function validateCount(kind: LinePackKind, count: number): ValidationResu
 /** 驗單張靜態貼圖 */
 export function validateStaticImage(info: ImageInfo, target?: string): ValidationResult {
   const issues: ValidationIssue[] = [];
+  if (info.format !== undefined && info.format.toLowerCase() !== 'png') {
+    issues.push(err('static.format', `靜態貼圖必須是 PNG，收到 ${info.format}`, target));
+  }
   if (info.width > STATIC_SPEC.maxWidth || info.height > STATIC_SPEC.maxHeight) {
     issues.push(
       err(
@@ -125,6 +128,21 @@ export function validateStaticImage(info: ImageInfo, target?: string): Validatio
   }
   if (!info.hasAlpha) {
     issues.push(err('static.alpha', '靜態貼圖須為透明 RGBA PNG（缺 alpha 通道）', target));
+  }
+  if (info.colorType !== undefined && info.colorType !== 6) {
+    issues.push(
+      err(
+        'static.rgb',
+        `靜態貼圖必須是 RGBA PNG（PNG color type 6），收到 ${info.colorType}`,
+        target,
+      ),
+    );
+  }
+  if (info.transparentPixels !== undefined && info.transparentPixels < 1) {
+    issues.push(err('static.transparentPixels', '靜態貼圖沒有任何透明像素，背景可能尚未去除', target));
+  }
+  if (info.foregroundPixels !== undefined && info.foregroundPixels < 1) {
+    issues.push(err('static.empty', '靜態貼圖沒有可見前景', target));
   }
   if (info.bytes > STATIC_SPEC.maxBytes) {
     issues.push(

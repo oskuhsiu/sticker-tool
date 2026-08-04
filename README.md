@@ -11,11 +11,11 @@ AI image generation is intentionally outside the application. Use any image gene
 
 ## Features
 
-- Static sticker packs from individual PNG, JPEG, or WebP files.
-- Static packs from one or more sprite sheets; the browser can emit regular static or Big Sticker packs.
+- Static sticker packs from individual PNG, JPEG, or WebP files; the browser can emit Regular or Big Sticker packs.
+- Static packs from one or more sprite sheets; the browser can emit Regular or Big Sticker packs.
 - Animated APNG stickers from frame files or a frame sheet.
 - Static and animated Regular Emoji from the same CLI and browser image, sheet, animation, and prompt workflows.
-- Browser Pop-up Sticker packs from explicit static artwork plus one 5–20-frame animation set per sticker.
+- Browser Pop-up Sticker packs either from explicit static artwork plus frame sets, or from Video animations with one user-selected frame per item as the paired static image.
 - Animated APNG packs cropped from a fixed-grid video sheet in the browser.
 - Transparent, green-screen, and opaque-background handling.
 - Content-aware sheet cutting that finds gutters and preserves components crossing nominal grid lines.
@@ -233,7 +233,7 @@ The current schema accepts some fields that are not consumed consistently by eve
 The web application is under [`web/`](web/). It has five tabs. Four correspond to CLI workflows; the
 video workflow is browser-only:
 
-- Local images → Regular Sticker or Regular Emoji static pack.
+- Local images → Regular Sticker, Big Sticker, or Regular Emoji static pack.
 - Sprite sheet → Regular Sticker, Big Sticker, or Regular Emoji static pack, with a cut guide before processing.
 - Frame sheet or frame groups → Animated Sticker, Animated Regular Emoji, or a paired static/Pop-up Sticker pack.
 - Fixed-grid video → all-presentation-frame raw master → exact-target animated pack.
@@ -271,8 +271,8 @@ invalid APNG, or reaches another blocking validation error has no enabled ZIP do
 builder validates its final manifest and contains only `tab.png` plus `001.png` onward—never
 `main.png`.
 
-The browser **Sprite sheet** tab can target a regular static pack, a Big Sticker pack, or a Regular
-Emoji pack. Its
+The browser **Local images** and **Sprite sheet** tabs can target a regular static pack, a Big Sticker
+pack, or a Regular Emoji pack. The Sprite sheet tab's
 pre-process overlay shows the nominal equal grid and row-major sticker numbers; the actual extraction
 may move those references to nearby transparent gutters. Big Sticker output is padded, without
 stretching, to at least 80×524 and capped at 396×660 pixels. It uses even RGBA PNG dimensions, no
@@ -313,37 +313,55 @@ Current Colab images may preinstall Google ADK, Gradio, and FastHTML versions wh
 The optional Colab branch sends one input image or already-cropped sheet/video cell at a time to that temporary endpoint, receives a bounded grayscale mask, and applies alpha locally. For sheets, overlapping nominal-cell masks are merged before component-aware cutting so a subject crossing a grid line is not clipped. Original video, audio, complete video frames, downloads, and Project ZIP never leave the browser. The rotating `*.trycloudflare.com/remove` URL and random session key stay only in current React memory. Colab and Quick Tunnel runtimes are temporary and unguaranteed; restarting either requires a new connection.
 
 The **Video → APNG** tab accepts a local video that Mediabunny and the current browser can demux and
-decode. Uploading probes container, codec, display geometry, rotation, pixel aspect ratio, and every
+decode. Before ingest, the user selects one project-level product: Animated Sticker, Animated Regular
+Emoji, or Pop-up Sticker. Uploading probes container, codec, display geometry, rotation, pixel aspect ratio, and every
 decoded presentation sample. After the user chooses an editable range and a fixed grid, the browser
-decodes every presentation frame in that range, applies the same crop plan to it, and streams unmodified
-RGBA crops into bounded, lossless raw-master chunks. Identical visual payloads may be shared, but every
-source timestamp and duration remains in the index. The source video and audio are never embedded.
+decodes every presentation frame in that range, applies the same crop plan, and proportionally fits each
+crop onto the selected product canvas. Target-fitted raw RGB/alpha is streamed into bounded, lossless
+master chunks. Identical visual payloads may be shared, but every source timestamp and duration remains
+in the index. The source video and audio are never embedded.
 
-Each sticker has its own editable range, hard 5–20 frame target, legal 1/2/3/4-second per-loop duration,
-finite loop count, and background-removal mode. Background removal is lazy: it runs only for selected
+Each item has its own editable range, hard 5–20 frame target, legal 1/2/3/4-second per-loop duration,
+finite loop count, background-removal mode, and compression choice. Animated Sticker uses its
+aspect-preserving 320×270 boundary and 1 MB item limit. Animated Emoji uses an exact 180×180 truecolor
+canvas and 300 KB item limit. Pop-up uses a 480×480 truecolor animation canvas, 1–3-second playback
+contract, and lets each editor choose one final animation frame to derive its paired regular-size static
+PNG. Compression defaults to automatic;
+the advanced control can explicitly preserve original colors or set a palette ceiling. Background removal is lazy: it runs only for selected
 render candidates and is cached in a bounded session LRU. Exact-target encoding may reduce colors but
 does not silently remove frames to satisfy the 1 MB limit. Adjacent equal final visuals are coalesced,
 their duration moves to the previous visual, and deterministic replacement candidates are tried. The
 result is reopened and validated from its actual APNG bytes.
 
 Only the active editor autoplays, using a controlled canvas player driven by decoded final frames and
-delays. A normal LINE ZIP is offered only when all current bytes match their drafts and final-byte
-validation passes. If all required bytes exist but a LINE rule fails, the UI lists the errors and can
-produce an explicitly confirmed `NOT-LINE-COMPLIANT` ZIP. Missing required bytes remain a hard stop.
+delays. Animated Sticker exports `main.png`, `tab.png`, and `01.png` onward. Animated Emoji exports
+`tab.png` and `001.png` onward, with no `main.png`. Pop-up exports paired `png/` and `popup/` trees;
+`png/NN.png` is fitted from the frame selected for that item, while `popup/NN.png` retains the full APNG. A normal LINE ZIP is offered only when all current
+bytes match their drafts and target-specific final-byte validation passes. If all required bytes exist
+but a LINE rule fails, the UI lists the errors and can produce an explicitly confirmed
+`NOT-LINE-COMPLIANT` ZIP. Missing required bytes remain a hard stop.
 
-Project ZIP V2 stores the raw-master sample/visual index, checksummed chunks, drafts, current renders,
-selection evidence, and implementation versions. Import uses bounded streaming decompression, strict
-entry/path/schema checks, and SHA-256 verification. V1 projects remain importable as
+Project ZIP V3 stores the selected product, raw-master sample/visual index, checksummed chunks, drafts,
+current renders, selection evidence, and implementation versions. Import uses bounded streaming
+decompression, strict entry/path/schema checks, target/canvas checks, and SHA-256 verification. V2
+projects migrate explicitly to Animated Sticker; V1 projects remain importable as
 `sampled-legacy`/`baked-legacy`; missing frames or pre-removal RGB are never invented.
 
-The video source grid may contain any positive number of cells, including fewer than the 8 stickers
-required for a LINE animated pack. Such sources can still produce editable APNGs and a Project ZIP;
-the LINE ZIP validation gate continues to require 8, 16, or 24 stickers. Solid-color keying is off by
+The video source grid may contain any positive number of cells, including fewer than a complete LINE
+pack. Such sources can still produce editable APNGs and a Project ZIP; the LINE ZIP validation gate
+requires 8, 16, or 24 Animated Stickers or Pop-up Stickers, or any integer from 8 through 40 Animated Emoji. Grid column
+or row changes update the source-cell count immediately. Solid-color keying is off by
 default because a black background may share pixels with hair, eyes, clothing, or text outlines.
 Colab BiRefNet is also off by default and requires an explicit connection. The source step reports the
 actual presentation-frame count, crop-frame count, and an upper-bound RGBA estimate before ingest.
 The beta hard limit is 512 MiB; users must shorten the editable range or reduce the grid when the estimate
-exceeds it. There is no master sampling-count control in V2.
+exceeds it. There is no master sampling-count control in V3.
+
+Pop-up is a complete Video output target because the user explicitly selects one final frame per item
+to generate the required paired static image; changing that selection does not re-encode the APNG. The
+dedicated Pop-up workflow remains available when independent static artwork is preferred. Effect remains
+unsupported until its separate naming, validation, paired-project, and upload-package contracts are
+implemented; the app does not label an animation-only archive as a complete Effect package.
 
 IMG.LY, local BiRefNet, and Colab BiRefNet are mutually exclusive. None silently falls back to solid-color keying: local BiRefNet may fall back only from WebGPU to local WASM, while a model or remote-session failure is reported and leaves the source/settings available for retry.
 
@@ -374,14 +392,14 @@ Regular Emoji uses a separate package contract:
 | Item names | `001.png` onward | `001.png` onward |
 | ZIP size | Strictly less than 20,000,000 bytes | At most 20,000,000 bytes |
 
-Regular Emoji V1 does not author the fixed Kana, letter, number, or symbol sequences, does not expose
-Animated Emoji from the Video tab, and does not upload directly to Creators Market. The generated ZIP
+Regular Emoji V1 does not author the fixed Kana, letter, number, or symbol sequences and does not upload
+directly to Creators Market. Animated Emoji is also available as a project-level Video target. The generated ZIP
 shape has been inspected locally, but acceptance by the current authenticated My Page flow has not been
 verified. PNG density may be reported as unknown; that warning is not converted into proof of
 compliance. Inline meaning, first-frame clarity, rights, and review policy remain manual checks.
 
 Validation success is diagnostic, not proof that LINE will accept a package. Regular Emoji, Popup Sticker,
-and Video V2 paths inspect final delivery bytes for their target-specific evidence; some older CLI and
+and Video V3 paths inspect final delivery bytes for their target-specific evidence; some older CLI and
 browser adapters still provide less complete metadata. The source-grounded
 list of known functional and compliance gaps is [plan/implementation-audit.md](plan/implementation-audit.md).
 
@@ -411,6 +429,7 @@ Read [ARCHITECTURE.md](ARCHITECTURE.md) for the component boundaries, data flows
 - Animated frame files are stabilized before fitting. Frame sheets skip the later subject-anchor stabilizer, but the current grid extraction also applies scene and lower-body alignment; this can suppress intentional motion such as jumping.
 - The CLI overwrites files produced by the current run but does not clean unrelated or stale files from an existing output directory. The ZIP contains only files from the current run.
 - The generated-image and packaging workflows are separated so a packaging adjustment does not require regenerating artwork.
-- Video codec support follows the current browser media stack. The video workflow uses time-uniform
-  seek samples rather than claiming to enumerate every compressed source frame, and it ignores source
-  audio because the Creators Market animated-sticker upload set has no audio file entry.
+- Video codec support follows the current browser media stack. The video workflow enumerates every
+  decoded presentation sample intersecting the selected range while keeping sample timing separate
+  from deduplicated visual payloads. It does not claim to enumerate compressed packets, and it ignores
+  source audio because the Creators Market animated-sticker upload set has no audio file entry.

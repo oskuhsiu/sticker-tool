@@ -8,16 +8,17 @@ import {
   Zip,
   ZipPassThrough,
 } from 'fflate';
-import type { VideoGridPlan } from '@core/videoCrop.js';
+import { planVideoOutputCanvas, type VideoGridPlan } from '@core/videoCrop.js';
+import { ANIMATED_EMOJI_SPEC, ANIMATED_SPEC, POPUP_STICKER_SPEC } from '@core/spec.js';
 import {
   VIDEO_PROJECT_SCHEMA,
   VIDEO_PROJECT_VERSION,
   isVideoProjectManifestHeader,
   type VideoBackgroundStage,
   type VideoFrameCoverage,
+  type VideoOutputTarget,
   type VideoSelectionPlanV2,
 } from '@core/videoProject.js';
-import { pngImageInfo } from './png.js';
 import {
   type MasterApngChunk,
   type MasterApngSet,
@@ -52,9 +53,10 @@ interface RenderManifestV2 {
   errors: string[];
 }
 
-export interface VideoProjectManifestV2 {
+export interface VideoProjectManifestV3 {
   schema: typeof VIDEO_PROJECT_SCHEMA;
   version: typeof VIDEO_PROJECT_VERSION;
+  target: VideoOutputTarget;
   createdAt: string;
   name: string;
   cover: number;
@@ -94,7 +96,7 @@ export interface VideoProjectManifestV2 {
 }
 
 export interface VideoProjectRuntime {
-  manifest: VideoProjectManifestV2;
+  manifest: VideoProjectManifestV3;
   master: MasterApngSet;
   current: Array<VideoRenderSnapshot | null>;
 }
@@ -233,6 +235,7 @@ function renderPath(index: number): string {
 }
 
 export async function buildVideoProjectZip(args: {
+  target: VideoOutputTarget;
   name: string;
   createdAt?: string;
   cover: number;
@@ -243,7 +246,7 @@ export async function buildVideoProjectZip(args: {
   master: MasterApngSet;
   settings: VideoStickerSettings[];
   current: Array<VideoRenderSnapshot | null>;
-}): Promise<{ zip: Uint8Array; manifest: VideoProjectManifestV2 }> {
+}): Promise<{ zip: Uint8Array; manifest: VideoProjectManifestV3 }> {
   if (args.master.stickers.length !== args.current.length || args.current.length !== args.settings.length) {
     throw new Error('Project ZIP 無法建立：master、settings、current 張數不一致');
   }
@@ -292,9 +295,10 @@ export async function buildVideoProjectZip(args: {
       errors: [...snapshot.errors],
     });
   }
-  const manifest: VideoProjectManifestV2 = {
+  const manifest: VideoProjectManifestV3 = {
     schema: VIDEO_PROJECT_SCHEMA,
     version: VIDEO_PROJECT_VERSION,
+    target: args.target,
     createdAt: args.createdAt ?? new Date().toISOString(),
     name: args.name,
     cover: args.cover,
@@ -329,6 +333,7 @@ export async function buildVideoProjectZip(args: {
   };
   const report = strToU8(JSON.stringify({
     generatedAt: new Date().toISOString(),
+    target: manifest.target,
     frameCoverage: manifest.frameCoverage,
     backgroundStage: manifest.backgroundStage,
     current: current.map((render) => render ? {
@@ -499,7 +504,17 @@ function assertBackground(value: unknown, path: string): void {
   if (background.tolerance !== undefined) requireFinite(background.tolerance, `${path}.tolerance`);
 }
 
-function assertSettings(value: unknown, path: string, stickerId: string): void {
+function assertSettings(
+  value: unknown,
+  path: string,
+  stickerId: string,
+  target: VideoOutputTarget,
+): void {
+  const contract = target === 'animated-emoji'
+    ? ANIMATED_EMOJI_SPEC
+    : target === 'popup'
+      ? POPUP_STICKER_SPEC
+      : ANIMATED_SPEC;
   const settings = requireRecord(value, path);
   if (requireString(settings.stickerId, `${path}.stickerId`) !== stickerId) {
     throw new Error(`${path}.stickerId 與 master 不一致`);
@@ -507,13 +522,25 @@ function assertSettings(value: unknown, path: string, stickerId: string): void {
   const startUs = requireInteger(settings.rangeStartUs, `${path}.rangeStartUs`);
   const endUs = requireInteger(settings.rangeEndUs, `${path}.rangeEndUs`, 1);
   if (endUs <= startUs) throw new Error(`${path} range 無效`);
-  const targetFrames = requireInteger(settings.targetFrames, `${path}.targetFrames`, 5);
-  if (targetFrames > 20) throw new Error(`${path}.targetFrames 必須是 5–20`);
-  if (![1000, 2000, 3000, 4000].includes(requireInteger(settings.perLoopDurationMs, `${path}.perLoopDurationMs`, 1))) {
+  const targetFrames = requireInteger(settings.targetFrames, `${path}.targetFrames`, contract.minFrames);
+  if (targetFrames > contract.maxFrames) throw new Error(`${path}.targetFrames 必須是 ${contract.minFrames}–${contract.maxFrames}`);
+  if (target === 'popup') {
+    const staticFrameIndex = requireInteger(settings.staticFrameIndex, `${path}.staticFrameIndex`, 0);
+    if (staticFrameIndex >= targetFrames) {
+      throw new Error(`${path}.staticFrameIndex 必須小於 targetFrames`);
+    }
+  } else if (settings.staticFrameIndex !== undefined) {
+    requireInteger(settings.staticFrameIndex, `${path}.staticFrameIndex`, 0);
+  }
+  const durationMs = requireInteger(settings.perLoopDurationMs, `${path}.perLoopDurationMs`, 1);
+  if (!contract.playbackDurationsSec.some((seconds) => seconds * 1000 === durationMs)) {
     throw new Error(`${path}.perLoopDurationMs 不合法`);
   }
   const loops = requireInteger(settings.loops, `${path}.loops`, 1);
-  if (loops > 4 || (settings.perLoopDurationMs as number) * loops > 4000) throw new Error(`${path}.loops 不合法`);
+  if (loops > contract.maxLoops || durationMs * loops > contract.maxDurationSec * 1000) throw new Error(`${path}.loops 不合法`);
+  if (settings.preserveColors !== undefined && typeof settings.preserveColors !== 'boolean') {
+    throw new Error(`${path}.preserveColors 必須是 boolean`);
+  }
   requireInteger(settings.maxColors, `${path}.maxColors`);
   assertBackground(settings.background, `${path}.background`);
 }
@@ -606,10 +633,11 @@ function assertGrid(value: unknown, source: Record<string, unknown>): void {
   });
 }
 
-function assertV2Manifest(value: unknown): asserts value is VideoProjectManifestV2 {
-  if (!isVideoProjectManifestHeader(value) || value.version !== 2) throw new Error('不支援的 Project ZIP schema 或版本');
-  const manifest = value as Partial<VideoProjectManifestV2>;
+function assertV3Manifest(value: unknown): asserts value is VideoProjectManifestV3 {
+  if (!isVideoProjectManifestHeader(value) || value.version !== VIDEO_PROJECT_VERSION) throw new Error('不支援的 Project ZIP schema 或版本');
+  const manifest = value as Partial<VideoProjectManifestV3>;
   if (
+    !['animated-sticker', 'animated-emoji', 'popup'].includes(manifest.target ?? '') ||
     manifest.sourceTimingUnit !== 'microseconds' ||
     !['all-presentation-frames', 'sampled-legacy'].includes(manifest.frameCoverage ?? '') ||
     !['raw', 'baked-legacy'].includes(manifest.backgroundStage ?? '') ||
@@ -624,7 +652,7 @@ function assertV2Manifest(value: unknown): asserts value is VideoProjectManifest
     manifest.settings.length !== manifest.master.stickers.length ||
     manifest.current.length !== manifest.master.stickers.length
   ) {
-    throw new Error('Project ZIP V2 manifest 缺少或含有無效的必要欄位');
+    throw new Error('Project ZIP V3 manifest 缺少或含有無效的必要欄位');
   }
   const createdAt = Date.parse(requireString(manifest.createdAt, 'createdAt'));
   if (!Number.isFinite(createdAt)) throw new Error('createdAt 不是有效日期');
@@ -649,17 +677,24 @@ function assertV2Manifest(value: unknown): asserts value is VideoProjectManifest
     if (stickerIds.has(stickerId)) throw new Error(`重複 sticker id：${stickerId}`);
     stickerIds.add(stickerId);
     if (requireInteger(sticker.index, `master.stickers[${stickerIndex}].index`) !== stickerIndex) throw new Error(`sticker ${stickerId} index 不連續`);
-    requireInteger(sticker.width, `master.stickers[${stickerIndex}].width`, 1);
-    requireInteger(sticker.height, `master.stickers[${stickerIndex}].height`, 1);
+    const stickerWidth = requireInteger(sticker.width, `master.stickers[${stickerIndex}].width`, 1);
+    const stickerHeight = requireInteger(sticker.height, `master.stickers[${stickerIndex}].height`, 1);
+    const rect = manifest.grid!.rects[stickerIndex]!;
+    const expectedCanvas = planVideoOutputCanvas(manifest.target!, rect.width, rect.height);
+    if (stickerWidth !== expectedCanvas.width || stickerHeight !== expectedCanvas.height) {
+      throw new Error(
+        `sticker ${stickerId} canvas ${stickerWidth}×${stickerHeight} 與 ${manifest.target} 目標 ${expectedCanvas.width}×${expectedCanvas.height} 不一致`,
+      );
+    }
     if (!Array.isArray(sticker.chunks) || sticker.chunks.length < 1) throw new Error(`sticker ${stickerId} 沒有 chunk`);
-    assertSettings(manifest.settings![stickerIndex], `settings[${stickerIndex}]`, stickerId);
+    assertSettings(manifest.settings![stickerIndex], `settings[${stickerIndex}]`, stickerId, manifest.target!);
     const render = manifest.current![stickerIndex];
     if (render !== null) {
       const renderRecord = requireRecord(render, `current[${stickerIndex}]`);
       requireString(renderRecord.path, `current[${stickerIndex}].path`);
       requireString(renderRecord.sha256, `current[${stickerIndex}].sha256`, /^[0-9a-f]{64}$/);
       requireInteger(renderRecord.bytes, `current[${stickerIndex}].bytes`, 1);
-      assertSettings(renderRecord.settings, `current[${stickerIndex}].settings`, stickerId);
+      assertSettings(renderRecord.settings, `current[${stickerIndex}].settings`, stickerId, manifest.target!);
       assertMetrics(renderRecord.metrics, `current[${stickerIndex}].metrics`);
       assertSelection(renderRecord.selection, `current[${stickerIndex}].selection`);
       requireStringArray(renderRecord.notes, `current[${stickerIndex}].notes`);
@@ -673,8 +708,8 @@ function assertV2Manifest(value: unknown): asserts value is VideoProjectManifest
   requireRecord(versions.removers, 'versions.removers');
 }
 
-async function restoreV2(
-  manifest: VideoProjectManifestV2,
+async function restoreV3(
+  manifest: VideoProjectManifestV3,
   archive: ArchiveContents,
   store: VideoMasterStore,
 ): Promise<VideoProjectRuntime> {
@@ -820,6 +855,16 @@ function isV1(value: unknown): value is VideoProjectManifestV1 {
   return isVideoProjectManifestHeader(value) && value.version === 1;
 }
 
+/** V2 had one implicit product: regular Animated Sticker. */
+function upgradeV2(value: unknown): unknown {
+  if (!isVideoProjectManifestHeader(value) || value.version !== 2 || !isRecord(value)) return value;
+  return {
+    ...value,
+    version: VIDEO_PROJECT_VERSION,
+    target: 'animated-sticker' satisfies VideoOutputTarget,
+  };
+}
+
 async function restoreV1(
   legacy: VideoProjectManifestV1,
   retained: Map<string, Uint8Array>,
@@ -875,6 +920,7 @@ async function restoreV1(
     perLoopDurationMs: (setting.playbackSec * 1000) as 1000 | 2000 | 3000 | 4000,
     loops: setting.loops,
     background: { mode: 'none' },
+    preserveColors: false,
     maxColors: setting.maxColors,
   }));
   const current: Array<VideoRenderSnapshot | null> = [];
@@ -920,9 +966,10 @@ async function restoreV1(
     frameCount: legacy.master.masterFrameCount,
     averageFps: legacy.master.masterFrameCount / Math.max(0.001, legacy.source.durationMs / 1000),
   };
-  const manifest: VideoProjectManifestV2 = {
+  const manifest: VideoProjectManifestV3 = {
     schema: VIDEO_PROJECT_SCHEMA,
     version: VIDEO_PROJECT_VERSION,
+    target: 'animated-sticker',
     createdAt: legacy.createdAt,
     name: legacy.name,
     cover: legacy.cover,
@@ -982,8 +1029,9 @@ export async function importVideoProjectZip(zipBytes: Uint8Array): Promise<Video
     const archive = await streamArchive(zipBytes, store);
     const parsed = parseJson(requireRetained(archive.retained, MANIFEST_PATH), 'Project ZIP 的 sticker-project.json');
     if (isV1(parsed)) return restoreV1(parsed, archive.retained, store);
-    assertV2Manifest(parsed);
-    return restoreV2(parsed, archive, store);
+    const upgraded = upgradeV2(parsed);
+    assertV3Manifest(upgraded);
+    return restoreV3(upgraded, archive, store);
   } catch (error) {
     await store.clear();
     throw error;

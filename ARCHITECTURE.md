@@ -92,7 +92,7 @@ the tab-only helper; `tab.png` remains static and no Emoji main file is generate
 
 ### Browser application: `web/`
 
-`web/src/App.tsx` exposes five React tabs: build, sheet, animation, video-to-APNG, and prompt. Regular Emoji is a target inside Build, Sheet, both ordinary Animation modes, and Prompt rather than a sixth tab. The animation tab also contains a dedicated paired Pop-up Sticker mode. Every tab remains mounted while hidden so switching tabs preserves selected files and results. Video, Big Sticker, and Pop-up Sticker are browser-only; Video does not currently export Animated Emoji. `#/colab-birefnet` is an independent tutorial page; opening it hides but does not unmount the workflow tabs.
+`web/src/App.tsx` exposes five React tabs: build, sheet, animation, video-to-APNG, and prompt. Regular Emoji is a target inside Build, Sheet, both ordinary Animation modes, Video, and Prompt rather than a sixth tab. The animation tab also contains a dedicated paired Pop-up Sticker mode. Every tab remains mounted while hidden so switching tabs preserves selected files and results. Big Sticker, Video, and Pop-up Sticker are browser-only; Video exports Animated Sticker, Animated Regular Emoji, or a paired Pop-up package derived from user-selected static frames. `#/colab-birefnet` is an independent tutorial page; opening it hides but does not unmount the workflow tabs.
 
 `web/src/ui/` owns workflow state, logging, previews, downloads, validation display, and manual frame alignment. `SheetCutPreview.tsx` renders the Sheet tab's pre-process nominal grid without running background removal; the actual cutter may still snap its references to detected gutters. `PopupPackMode.tsx` owns the paired static/frame inputs and the browser-only Pop-up Sticker result. `ManualLayout.tsx` provides onion-skin alignment and applies user offsets before animation processing. `ColabBirefnetGuide.tsx` owns the tutorial and in-memory connection form; `colabBirefnetConnection.tsx` keeps the rotating endpoint and session key only for the current page lifetime and aborts active requests when the connection changes.
 
@@ -131,14 +131,14 @@ Vite aliases `@core` to the repository's `src/core/`, so the browser consumes th
 ```text
 Natural-sort input files
   -> select requested count
-  -> choose Regular Sticker or Regular Emoji product profile
+  -> choose Regular Sticker, browser Big Sticker, or Regular Emoji product profile
   -> choose no removal, color key, IMG.LY, local BiRefNet, or Colab BiRefNet
   -> apply the selected remover before fitting
   -> trim and fit with transparent margin
   -> optional stroke
   -> optional text
   -> original-color PNG encoding
-  -> Sticker: derive main + tab and package two-digit files
+  -> Sticker/Big Sticker: derive main + tab and package two-digit files
   -> Emoji: derive tab only and package three-digit files
   -> validate collected metadata and ZIP size
   -> browser: offer an explicit color-reduction retry only for a byte-limit failure
@@ -173,7 +173,7 @@ assigned to a cell by position and copied whole. This prevents a hand or prop cr
 being split or duplicated.
 
 Regular static output keeps the existing 10-pixel transparent-margin policy and a 370×320 maximum.
-Browser Big Sticker output uses no proactive display margin, proportional scaling, transparent padding
+Browser Big Sticker output from either individual images or sprite sheets uses no proactive display margin, proportional scaling, transparent padding
 to at least 80×524, and a 396×660 maximum. Numbered output is forced to PNG color type 6 even after an
 explicit color-reduction retry, and shared validation rejects missing or indexed final-byte evidence.
 Big Sticker constants and metadata validation live in shared core; the current CLI configuration
@@ -284,10 +284,11 @@ The browser-only video workflow remains separate from the existing frame-sheet a
 ```text
 Local browser-decodable video
   -> Mediabunny probe + decoded presentation-frame index in integer microseconds
+  -> choose one immutable project target: Animated Sticker, Animated Regular Emoji, or Pop-up Sticker
   -> explicit editable time window + start/middle/end/scrub grid previews
   -> choose any positive source-cell count and fixed grid
   -> sequentially decode every presentation sample intersecting the range
-  -> apply the same fixed row-major grid and LINE canvas plan to every sample
+  -> apply the same fixed row-major grid and target-specific, aspect-preserving canvas plan to every sample
   -> deduplicate visual payloads without dropping any source timestamp/duration
   -> stream bounded lossless raw-master APNG chunks to memory/IndexedDB
   -> dispose the source decoder
@@ -296,14 +297,17 @@ Local browser-decodable video
   -> lazily transform only candidates; cache model results in a bounded session LRU
   -> coalesce adjacent equal final visuals and transfer their source duration backward
   -> allocate positive integer delays with an exact legal total
-  -> search colors without silently reducing the requested frame count
+  -> use automatic color fitting by default, or explicitly preserve original colors / set a palette ceiling,
+     without silently reducing the requested frame count
   -> reopen final APNG bytes and validate frames/delays/loops/alpha/content/bytes
+  -> Popup: choose one final frame per item and fit it into the paired regular-static png/ track
   -> build a normal LINE ZIP only when every current render is valid and not dirty
   -> otherwise hard-stop missing bytes or explicitly label a confirmed invalid ZIP
-  -> save/reopen a strict, checksummed Project ZIP V2 at any time
+  -> build the Sticker manifest, the main-less Emoji manifest, or the paired Popup png/ + popup/ manifest
+  -> save/reopen a strict, checksummed Project ZIP V3 at any time
 ```
 
-V2 has no sampling-count control. `frameCoverage='all-presentation-frames'` means every decoded sample
+V3 has no sampling-count control. `frameCoverage='all-presentation-frames'` means every decoded sample
 intersecting the selected global range, not every compressed packet and not an FPS-derived estimate.
 The source index is authoritative for time. Raw visual APNG delays are container details only; each
 `sampleRef` carries its own clipped `timestampUs` and `durationUs` and points to a `visualFrameId`.
@@ -316,16 +320,21 @@ audio, or project archive. Internal raw-master APNG chunks use lossless non-pale
 deliverables, and may exceed LINE delivery limits. Preflight reports actual source/crop counts and rejects
 an estimated raw working set above the spike-backed 512 MiB beta budget.
 
-Project ZIP V2 includes only declared manifest/report, `master/`, and current-render entries. Export
+Project ZIP V3 adds the immutable output target (and Popup static-frame selections) and includes only declared manifest/report, `master/`,
+and current-render entries. Export
 streams chunks into `fflate.Zip`; import bounds entry count and expanded bytes, rejects unsafe, duplicate,
 missing, or undeclared paths, streams raw chunks directly into the project store, checks SHA-256 and
 decoded visual counts, and verifies timeline correspondence across stickers. It excludes source video,
-audio, secrets, and the optional model cache. V1 imports are explicitly tagged
+audio, secrets, and the optional model cache. V2 imports migrate to Animated Sticker. V1 imports are explicitly tagged
 `sampled-legacy`/`baked-legacy` and do not synthesize missing samples or raw RGB.
 
 The video source-cell count is deliberately separate from the LINE animated-pack count. Any positive
 count within the selected grid can produce master chunks, adjusted APNGs, and a Project ZIP. Only the
-LINE ZIP validation gate requires 8, 16, or 24 stickers. Solid-color keying is disabled by default
+LINE ZIP validation gate requires 8, 16, or 24 Animated Stickers or Pop-up Stickers, or 8 through 40 Animated Emoji.
+Popup creates its required second track deterministically from the final frame selected by the user for
+each item; the separate paired workflow remains for independently authored static artwork. Effect is
+excluded because it still has no implemented product, project, validation, or upload-package contract.
+Solid-color keying is disabled by default
 because it cannot distinguish a flat background from matching subject details.
 
 ### Prompt generation
@@ -337,14 +346,14 @@ Grid policy, style, identity constraints, background requirements, product targe
 The processing pipelines collect image metadata and pass it to shared pure validators. Validation covers
 allowed pack counts, bounds, even dimensions, alpha/content evidence, byte limits, APNG frame/loop/delay
 metadata, requested-target equality, adjacent decoded duplicates, main/tab evidence, and ZIP size when
-the adapter supplies those fields. Regular Emoji, Video V2, and Pop-up Sticker mode supply evidence
+the adapter supplies those fields. Regular Emoji, Video V3, and Pop-up Sticker mode supply evidence
 reopened from final delivery bytes. Emoji package validation also requires the exact three-digit
 manifest and rejects unexpected support files, including `main.png`.
 
 Validation operates on metadata returned by the current pipeline. Emoji builders first validate their
 expected manifest, while their item evidence is collected from each final encoded file before ZIP
 assembly; this is not an independent second decode of every completed ZIP entry. Popup, Emoji, and
-Video V2 adapters represent decoded duration in `ImageInfo`; older regular animation adapters may still
+Video V3 adapters represent decoded duration in `ImageInfo`; older regular animation adapters may still
 omit it.
 
 Other older adapters do not yet reopen and audit every completed ZIP entry or populate every optional
@@ -390,8 +399,8 @@ not evidence that reduced real artwork is visually acceptable or that browser by
 
 Regular Emoji V1 implements only the free-count Regular and Animated Regular contracts. Fixed
 Kana/letter/number/symbol sequences require an ordered semantic-slot model and are not implemented.
-Video-to-Animated-Emoji, Creators Market authentication, direct upload, and My Page automation are also
-outside V1. Locally inspected ZIPs and passing validators are diagnostic evidence; acceptance by the
+Creators Market authentication, direct upload, and My Page automation are outside V1. Locally inspected
+ZIPs and passing validators are diagnostic evidence; acceptance by the
 current authenticated My Page flow has not been verified. PNG density can remain unknown and is emitted
 as a warning rather than a passing claim. Artistic meaning, first-frame clarity, and marketplace review
 remain human checks.

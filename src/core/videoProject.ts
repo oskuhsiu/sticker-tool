@@ -1,7 +1,13 @@
 import type { SourceFrameTiming } from './videoTimeline.js';
 
 export const VIDEO_PROJECT_SCHEMA = 'sticker-tool/video-apng-project' as const;
-export const VIDEO_PROJECT_VERSION = 2 as const;
+export const VIDEO_PROJECT_VERSION = 3 as const;
+
+/**
+ * Product selected before raw-master ingest. Canvas geometry is baked into the
+ * master chunks, so a project cannot switch products without re-ingesting.
+ */
+export type VideoOutputTarget = 'animated-sticker' | 'animated-emoji' | 'popup';
 
 export type VideoFrameCoverage = 'all-presentation-frames' | 'sampled-legacy';
 export type VideoBackgroundStage = 'raw' | 'baked-legacy';
@@ -33,6 +39,10 @@ export interface VideoStickerDraftV2 {
   perLoopDurationMs: 1000 | 2000 | 3000 | 4000;
   loops: 1 | 2 | 3 | 4;
   background: VideoBackgroundSettings;
+  /** Popup only: zero-based final APNG frame used to derive the paired static sticker. */
+  staticFrameIndex?: number;
+  /** Keep truecolor RGBA even when the result exceeds the delivery byte limit. */
+  preserveColors?: boolean;
   maxColors: number;
 }
 

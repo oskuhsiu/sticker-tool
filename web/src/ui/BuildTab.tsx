@@ -1,7 +1,7 @@
-/** Local images to a Static Sticker or Regular Emoji upload pack. */
+/** Local images to a Regular Sticker, Big Sticker, or Regular Emoji upload pack. */
 
 import { useRef, useState } from 'react';
-import { EMOJI_SPEC, STATIC_SPEC, allowedCounts, maxBounds } from '@core/spec.js';
+import { BIG_STICKER_SPEC, EMOJI_SPEC, STATIC_SPEC, ZIP_MAX_BYTES, allowedCounts, maxBounds } from '@core/spec.js';
 import { emojiFileName, stickerFileName } from '@core/naming.js';
 import { parseColor } from '@core/color.js';
 import { validateCount, validateEmojiPack, validatePack } from '@core/validate.js';
@@ -21,7 +21,7 @@ import { makeStroke } from './defaults.js';
 import { BackgroundRemovalControl } from './BackgroundRemovalControl.jsx';
 import { useColabBirefnetConnection } from './colabBirefnetConnection.jsx';
 
-type BuildTarget = 'static' | 'emoji';
+type BuildTarget = 'static' | 'big' | 'emoji';
 const EMOJI_MARGIN_PX = 4;
 
 export function BuildTab() {
@@ -67,7 +67,11 @@ export function BuildTab() {
       if (files.length > count) logger.log('warn', `選了 ${files.length} 張，取前 ${count} 張（檔名排序）`);
 
       const bounds = maxBounds(target);
-      const spec = target === 'emoji' ? EMOJI_SPEC : STATIC_SPEC;
+      const spec = target === 'big'
+        ? BIG_STICKER_SPEC
+        : target === 'emoji'
+          ? EMOJI_SPEC
+          : STATIC_SPEC;
       const stroke = makeStroke(strokeOn, strokeWidth, strokeColor);
       const parsedColor = parseColor(backgroundColor);
       removalJob = await createBackgroundRemovalJob({
@@ -80,7 +84,8 @@ export function BuildTab() {
         onStatus: setModelStatus,
       });
 
-      logger.log('step', `處理 ${count} 張${target === 'emoji' ? ' Regular Emoji' : '靜態貼圖'}（${removalJob.label}）…`);
+      const productLabel = target === 'emoji' ? 'Regular Emoji' : target === 'big' ? '大貼圖' : '一般靜態貼圖';
+      logger.log('step', `處理 ${count} 張 ${productLabel}（${removalJob.label}）…`);
       const processed: ProcessedSticker[] = [];
       for (let i = 0; i < picked.length; i++) {
         const decoded = await decodeBlob(picked[i]!);
@@ -89,17 +94,23 @@ export function BuildTab() {
         const r = await processStatic(raster, {
           bounds,
           removeBackground: false,
-          ...(target === 'emoji'
+          ...(target === 'big'
             ? {
-                canvasMode: 'exact' as const,
-                trimInput: true,
-                marginPx: EMOJI_MARGIN_PX,
-                forbidPalette: true,
+                minCanvas: { width: BIG_STICKER_SPEC.minWidth, height: BIG_STICKER_SPEC.minHeight },
+                marginPx: 0,
               }
-            : {}),
+            : target === 'emoji'
+              ? {
+                  canvasMode: 'exact' as const,
+                  trimInput: true,
+                  marginPx: EMOJI_MARGIN_PX,
+                  forbidPalette: true,
+                }
+              : {}),
           stroke,
           maxBytes: spec.maxBytes,
           reduceColors: reduceColorsOverride,
+          forbidPalette: true,
         });
         const note = r.notes.length ? `（${r.notes.join('；')}）` : '';
         const filename = target === 'emoji' ? emojiFileName(i + 1) : stickerFileName(i + 1);
@@ -157,14 +168,14 @@ export function BuildTab() {
       logger.log('ok', `zip 打包完成（${kb(zipBytes)}）`);
 
       const validation = validatePack({
-        kind: 'static',
+        kind: target,
         count,
         stickers: processed.map((p) => p.info),
         main: mainInfo,
         tab: tabInfo,
         zipBytes,
       });
-      setResult({ name, stickers: processed, main, tab, zip, validation });
+      setResult({ kind: target === 'big' ? 'big' : 'sticker', name, stickers: processed, main, tab, zip, validation });
     } catch (e) {
       if (e instanceof DOMException && e.name === 'AbortError') logger.log('warn', '處理已取消');
       else logger.log('err', e instanceof Error ? e.message : String(e));
@@ -199,7 +210,7 @@ export function BuildTab() {
   return (
     <section>
       <p className="tab-desc">
-        把本機照片/圖片處理成 LINE 靜態貼圖或 Regular Emoji：去背 → 裁切置中 → 縮放 → 描邊 →
+        把本機照片/圖片處理成 LINE 一般靜態貼圖、大貼圖或 Regular Emoji：去背 → 裁切置中 → 縮放 → 描邊 →
         support image → zip。Emoji 固定輸出 180×180，只上傳 tab.png，不產生 main.png。預設保留原色；超過容量才提示是否降色重試。
         預設只在瀏覽器處理；只有選擇 Colab BiRefNet 時，處理用圖片才會送到你自己的臨時 session。
       </p>
@@ -214,6 +225,7 @@ export function BuildTab() {
             onChange={(event) => changeTarget(event.target.value as BuildTarget)}
           >
             <option value="static">一般靜態貼圖</option>
+            <option value="big">大貼圖</option>
             <option value="emoji">Regular Emoji</option>
           </select>
         </Field>
@@ -242,6 +254,11 @@ export function BuildTab() {
       {target === 'emoji' && (
         <p className="layout-hint" data-testid="build-emoji-limits">
           {`Regular Emoji：每張固定 ${EMOJI_SPEC.width}×${EMOJI_SPEC.height}px；可選 ${EMOJI_SPEC.minCount}–${EMOJI_SPEC.maxCount} 張；單張 ≤${EMOJI_SPEC.maxBytes / 1_000_000}MB；ZIP 必須小於 ${EMOJI_SPEC.zipMaxBytes / 1_000_000}MB；使用三位數檔名且不含 main.png。`}
+        </p>
+      )}
+      {target === 'big' && (
+        <p className="layout-hint" data-testid="build-big-limits">
+          {`大貼圖限制：${BIG_STICKER_SPEC.minWidth}×${BIG_STICKER_SPEC.minHeight}–${BIG_STICKER_SPEC.maxWidth}×${BIG_STICKER_SPEC.maxHeight} px；8／16／24／32／40 張；寬高皆須為偶數；透明 truecolor PNG；單張 ≤${BIG_STICKER_SPEC.maxBytes / 1_000_000}MB、整包 ≤${ZIP_MAX_BYTES / 1_000_000}MB；不需預留 margin。`}
         </p>
       )}
       <BackgroundRemovalControl

@@ -34,6 +34,7 @@ export function pngImageInfo(png: Uint8Array): ImageInfo {
     width: img.width,
     height: img.height,
     bytes: png.length,
+    format: 'png',
     hasAlpha,
     channels,
     colorType: img.ctype,

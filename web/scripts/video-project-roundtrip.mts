@@ -10,6 +10,7 @@ import type { MasterApngSet } from '../src/webpipe/masterApng.js';
 import {
   inspectAnimatedBytes,
   processMasterApngSticker,
+  validateVideoStickerSettings,
   type VideoRenderSnapshot,
   type VideoStickerSettings,
 } from '../src/webpipe/processMasterApngSticker.js';
@@ -94,6 +95,7 @@ const settings: VideoStickerSettings[] = grid.rects.map((rect) => ({
   perLoopDurationMs: 1000,
   loops: 1,
   background: { mode: 'none' },
+  preserveColors: rect.index === 0,
   maxColors: 0,
 }));
 const current: VideoRenderSnapshot[] = [];
@@ -138,6 +140,7 @@ for (let index = 0; index < stickers.length; index++) {
 }
 
 const built = await buildVideoProjectZip({
+  target: 'animated-sticker',
   name: 'roundtrip',
   createdAt: '2026-08-01T00:00:00.000Z',
   cover: 1,
@@ -167,12 +170,15 @@ const built = await buildVideoProjectZip({
   current,
 });
 const restored = await importVideoProjectZip(built.zip);
-assert.equal(restored.manifest.version, 2);
+assert.equal(restored.manifest.version, 3);
+assert.equal(restored.manifest.target, 'animated-sticker');
 assert.equal(restored.manifest.source.embedded, false);
 assert.equal(restored.manifest.frameCoverage, 'all-presentation-frames');
 assert.equal(restored.manifest.backgroundStage, 'raw');
 assert.equal(restored.manifest.master.stickers.length, 8);
 assert.equal(restored.current[0]!.settings.targetFrames, 5);
+assert.equal(restored.manifest.settings[0]!.preserveColors, true);
+assert.equal(restored.current[0]!.info.format, 'png');
 assert.deepEqual(restored.current[0]!.png, current[0]!.png);
 const restoredChunk = restored.master.stickers[0]!.chunks[0]!;
 const decoded = decodeApngFrames(await restored.master.store.get(restoredChunk.storeKey));
@@ -180,7 +186,46 @@ assert.equal(decoded.frames.length, 6);
 assert.deepEqual(decoded.delaysMs, delaysMs);
 assert.equal(restoredChunk.sampleRefs.length, 6);
 assert.equal(restoredChunk.visualRefs.length, 6);
-console.log(`video project V2 streaming round-trip OK (${built.zip.length} bytes)`);
+console.log(`video project V3 streaming round-trip OK (${built.zip.length} bytes)`);
+
+const v2Archive = unzipSync(built.zip);
+const v2Manifest = JSON.parse(new TextDecoder().decode(v2Archive['sticker-project.json'])) as Record<string, unknown>;
+v2Manifest.version = 2;
+delete v2Manifest.target;
+v2Archive['sticker-project.json'] = strToU8(JSON.stringify(v2Manifest));
+const restoredV2 = await importVideoProjectZip(zipSync(v2Archive));
+assert.equal(restoredV2.manifest.version, 3);
+assert.equal(restoredV2.manifest.target, 'animated-sticker');
+console.log('Project V2 migrates explicitly to the Animated Sticker V3 target');
+
+const popupSettings: VideoStickerSettings = {
+  ...settings[0]!,
+  perLoopDurationMs: 1000,
+  loops: 3,
+  staticFrameIndex: 4,
+};
+assert.deepEqual(validateVideoStickerSettings(popupSettings, 'popup'), []);
+assert.match(
+  validateVideoStickerSettings({ ...popupSettings, staticFrameIndex: 6 }, 'popup').join('；'),
+  /靜態圖 frame 必須是 1–6/,
+);
+assert.match(
+  validateVideoStickerSettings({ ...popupSettings, perLoopDurationMs: 2000, loops: 2 }, 'popup').join('；'),
+  /超過總播放 3 秒/,
+);
+console.log('Popup Video settings require a valid derived-static frame and the 3-second playback contract');
+
+const mismatchedTargetArchive = unzipSync(built.zip);
+const mismatchedTargetManifest = JSON.parse(
+  new TextDecoder().decode(mismatchedTargetArchive['sticker-project.json']),
+) as Record<string, unknown>;
+mismatchedTargetManifest.target = 'animated-emoji';
+mismatchedTargetArchive['sticker-project.json'] = strToU8(JSON.stringify(mismatchedTargetManifest));
+await assert.rejects(
+  importVideoProjectZip(zipSync(mismatchedTargetArchive)),
+  /canvas .*animated-emoji 目標 180×180 不一致/,
+  'V3 import must reject a target whose baked master canvas does not match',
+);
 
 const extraEntryArchive = unzipSync(built.zip);
 extraEntryArchive['source/undeclared.mp4'] = new Uint8Array([1, 2, 3]);
@@ -326,6 +371,7 @@ async function contractMaster(id: string, sourceSeeds: number[]): Promise<Master
 async function renderContract(sourceSeeds: number[], targetFrames: number) {
   const contract = await contractMaster(`contract-${sourceSeeds.join('-')}`, sourceSeeds);
   return processMasterApngSticker({
+    target: 'animated-sticker',
     master: contract.stickers[0]!,
     store: contract.store,
     settings: {
@@ -362,6 +408,7 @@ async function renderQuantizationContract(sourceFrames: Raster[]) {
     frameInChunk: index,
   }));
   return processMasterApngSticker({
+    target: 'animated-sticker',
     master: {
       id,
       index: 0,
@@ -448,6 +495,15 @@ assert.equal(quantizationReplacement.metrics.outputFrames, 5);
 assert.equal(quantizationReplacement.metrics.adjacentDuplicateFrames, 0);
 assert.ok(quantizationReplacement.selection.removedAdjacentSourceIndices.includes(1));
 assert.ok(quantizationReplacement.selection.replacementSourceIndices.includes(3));
+const originalColorFailure = encodeApngExactFrames(quantizationFrames.slice(0, 5), {
+  loops: 1,
+  delaysMs: [200, 200, 200, 200, 200],
+  maxBytes: 1,
+  minColors: 16,
+  preserveColors: true,
+});
+assert.equal(originalColorFailure.colors, 0, 'original-color mode must not try palette candidates');
+assert.equal(originalColorFailure.overBudget, true, 'original-color mode must report oversize instead of reducing colors');
 let randomState = 0x4a3c40c3;
 const oversizedFrames = Array.from({ length: 20 }, (): Raster => {
   const width = 512;

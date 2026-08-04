@@ -175,7 +175,7 @@ export function SheetTab() {
           text: makeText(texts[i] ?? '', style),
           maxBytes: spec.maxBytes,
           reduceColors: reduceColorsOverride,
-          forbidPalette: stickerKind === 'big' || stickerKind === 'emoji',
+          forbidPalette: true,
         });
         const note = r.notes.length ? `（${r.notes.join('；')}）` : '';
         const filename = stickerKind === 'emoji' ? emojiFileName(i + 1) : stickerFileName(i + 1);
@@ -237,7 +237,7 @@ export function SheetTab() {
         tab: tabInfo,
         zipBytes,
       });
-      setResult({ name, stickers: processed, main, tab, zip, validation });
+      setResult({ kind: stickerKind === 'big' ? 'big' : 'sticker', name, stickers: processed, main, tab, zip, validation });
     } catch (e) {
       if (e instanceof DOMException && e.name === 'AbortError') logger.log('warn', '處理已取消');
       else logger.log('err', e instanceof Error ? e.message : String(e));

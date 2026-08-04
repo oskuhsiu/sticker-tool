@@ -163,3 +163,17 @@ export function planAnimatedCanvas(cropWidth: number, cropHeight: number): { wid
   if (width < 270 && height < 270) height = 270;
   return { width, height };
 }
+
+/** Product-specific canvas baked into a Video raw master. */
+export function planVideoOutputCanvas(
+  target: import('./videoProject.js').VideoOutputTarget,
+  cropWidth: number,
+  cropHeight: number,
+): { width: number; height: number } {
+  positiveInt('cropWidth', cropWidth);
+  positiveInt('cropHeight', cropHeight);
+  if (target === 'animated-emoji') return { width: 180, height: 180 };
+  if (target === 'popup') return { width: 480, height: 480 };
+  if (target === 'animated-sticker') return planAnimatedCanvas(cropWidth, cropHeight);
+  throw new RangeError(`unsupported Video output target: ${String(target)}`);
+}

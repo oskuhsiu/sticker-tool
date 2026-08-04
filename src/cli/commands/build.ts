@@ -87,7 +87,7 @@ export async function runBuild(inputDir: string, opts: BuildOptions): Promise<vo
       marginPx: kind === 'emoji' ? 0 : undefined,
       canvasMode: kind === 'emoji' ? 'exact' : undefined,
       trimInput: kind === 'emoji' ? true : undefined,
-      forbidPalette: kind === 'emoji',
+      forbidPalette: true,
     });
     if (kind === 'emoji') r.info.filename = filename;
     const note = r.notes.length ? `（${r.notes.join('；')}）` : '';

@@ -203,7 +203,8 @@ export function subsampleFrames<T>(frames: T[], target: number): T[] {
 
 const COLOR_STEPS = [0, 256, 192, 128, 96, 64, 48, 32, 24, 16];
 
-export function exactFrameColorSteps(minColors: number, maxColors = 0): number[] {
+export function exactFrameColorSteps(minColors: number, maxColors = 0, preserveColors = false): number[] {
+  if (preserveColors) return [0];
   const steps = COLOR_STEPS.filter((colors) =>
     colors === 0
       ? maxColors === 0
@@ -232,18 +233,22 @@ export function encodeApngExactFrames(
     maxBytes: number;
     minColors: number;
     maxColors?: number;
+    /** Encode only the truecolor RGBA candidate; never fall back to palette reduction. */
+    preserveColors?: boolean;
+    /** Keep quantized candidates in RGBA color type 6 instead of indexed color. */
+    forbidPalette?: boolean;
     /** Optional final-byte contract. Rejected color candidates remain available as diagnostics only. */
     acceptCandidate?: (png: Uint8Array) => boolean;
   },
 ): ExactFrameEncodeResult {
   let best: ExactFrameEncodeResult | null = null;
   let bestAccepted: ExactFrameEncodeResult | null = null;
-  for (const colors of exactFrameColorSteps(opts.minColors, opts.maxColors ?? 0)) {
+  for (const colors of exactFrameColorSteps(opts.minColors, opts.maxColors ?? 0, opts.preserveColors ?? false)) {
     const png = encodeApng(frames, {
       loops: opts.loops,
       delaysMs: opts.delaysMs,
       colors,
-      forbidPalette: colors === 0,
+      forbidPalette: opts.forbidPalette ?? colors === 0,
     });
     const candidate: ExactFrameEncodeResult = {
       png,

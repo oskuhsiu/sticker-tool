@@ -1,12 +1,13 @@
-import { planAnimatedCanvas, type VideoGridPlan } from '@core/videoCrop.js';
-import type { RawVisualFrameRef, SourceFrameRef } from '@core/videoProject.js';
+import { planVideoOutputCanvas, type VideoGridPlan } from '@core/videoCrop.js';
+import type { RawVisualFrameRef, SourceFrameRef, VideoOutputTarget } from '@core/videoProject.js';
 import { encodeApng } from './apng.js';
+import { fitCanvas } from './fitCanvas.js';
 import {
   type MasterApngChunk,
   type MasterApngSet,
   type MasterApngSticker,
 } from './masterApng.js';
-import { cropRaster, resizeRaster, yieldToUI, type Raster } from './raster.js';
+import { cropRaster, yieldToUI, type Raster } from './raster.js';
 import type { BrowserVideoSource } from './videoSource.js';
 import type { VideoMasterStore } from './videoMasterStore.js';
 
@@ -36,10 +37,11 @@ interface PendingStickerChunk {
   samples: Array<Omit<SourceFrameRef, 'chunkId' | 'visualFrameId'> & { raster: Raster }>;
 }
 
-/** Build an unmodified, all-presentation-frame raw master and stream chunk bytes into the store. */
+/** Build an all-presentation-frame, target-fitted raw-color master and stream it into the store. */
 export async function buildRawVideoMaster(args: {
   source: BrowserVideoSource;
   grid: VideoGridPlan;
+  target: VideoOutputTarget;
   rangeStartUs: number;
   rangeEndUs: number;
   store: VideoMasterStore;
@@ -60,7 +62,7 @@ export async function buildRawVideoMaster(args: {
   });
   if (sourceTimings.length < 1) throw new Error('可編輯時間窗內沒有 presentation frame');
   const stickers: MasterApngSticker[] = args.grid.rects.map((rect) => {
-    const canvas = planAnimatedCanvas(rect.width, rect.height);
+    const canvas = planVideoOutputCanvas(args.target, rect.width, rect.height);
     return { id: rect.id, index: rect.index, width: canvas.width, height: canvas.height, chunks: [] };
   });
   const pending: PendingStickerChunk[] = stickers.map(() => ({ samples: [] }));
@@ -142,7 +144,12 @@ export async function buildRawVideoMaster(args: {
           sourceIndex: sourceFrame.sourceIndex,
           timestampUs: sourceFrame.timestampUs,
           durationUs: sourceFrame.durationUs,
-          raster: resizeRaster(crop, sticker.width, sticker.height),
+          raster: fitCanvas(crop, {
+            bounds: { width: sticker.width, height: sticker.height },
+            mode: 'exact',
+            trimInput: false,
+            marginPx: 0,
+          }),
         });
         processedCrops++;
       }

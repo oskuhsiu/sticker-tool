@@ -1,7 +1,7 @@
 /**
  * 端到端冒煙測試（headless Chrome × vite preview 的 dist 產物）：
  *   0. Colab + BiRefNet 獨立教學頁：可直接開啟與回主工具
- *   1. 本機圖片打包：8 張透明底圖 → 靜態包 → 驗證全過
+ *   1. 本機圖片打包：8 張透明底圖 → 一般／大貼圖包 → 驗證全過
  *   2. 組圖切格：4×2 綠幕組圖 → 色鍵去背切格 → 靜態包 → 驗證全過
  *   2c. Pop-up Sticker：8 靜態 + 8×5 影格 → 雙軌 ZIP → 精確路徑檢查
  *   3. 動態 APNG（單組圖）：4×4 透明底影格組圖 → APNG → 驗證全過
@@ -137,6 +137,14 @@ for (let sticker = 0; sticker < 8; sticker++) {
     const cy = row * cell + cell / 2;
     fillCircle(c, cx, cy + 30, 70, [200, 120, 60, 255]); // 身體
     fillCircle(c, cx, cy - 55, 40, [20, 20, 45, 255]); // 深色頭（stabilize 錨點）
+    // 保留相對於頭／身體的局部動作，避免穩定化把純平移素材正確對齊成靜態圖。
+    fillCircle(
+      c,
+      cx + Math.round(28 * Math.cos((k / 16) * 2 * Math.PI)),
+      cy + 30 + Math.round(18 * Math.sin((k / 16) * 2 * Math.PI)),
+      11,
+      [255, 45 + k * 8, 80, 255],
+    );
   }
   savePng(c, 'frames_4x4.png');
 }
@@ -225,8 +233,33 @@ try {
   if (imglyRequested) throw new Error('不去背模式不應請求 IMG.LY 資源');
   results.push('✓ 本機圖片 → 靜態包：驗證全過、預覽 10 張');
 
+  // --- 1a) 同一批本機圖片切換 Big Sticker 規格 ---
+  const buildTab = page.locator('[data-tab="build"]');
+  await buildTab.getByTestId('build-spec-select').selectOption('big');
+  await buildTab.getByTestId('build-big-limits').waitFor();
+  await buildTab.getByRole('button', { name: '開始打包', exact: true }).click();
+  await expectText('build', '全部符合 LINE 規格');
+  await page.waitForFunction(() => {
+    const images = document.querySelectorAll('[data-tab="build"] .sticker-grid .png-preview img');
+    const stickers = Array.from(images).slice(2);
+    return stickers.length === 8 && stickers.every((image) => {
+      if (!(image instanceof HTMLImageElement) || !image.complete) return false;
+      const { naturalWidth: width, naturalHeight: height } = image;
+      return width >= 80 && width <= 396 && height >= 524 && height <= 660 && width % 2 === 0 && height % 2 === 0;
+    });
+  });
+  const localBigImages = buildTab.locator('.sticker-grid .png-preview img');
+  const localBigColorTypes = await Promise.all(
+    Array.from({ length: 8 }, (_, index) => previewPngColorType(localBigImages.nth(index + 2))),
+  );
+  if (localBigColorTypes.some((colorType) => colorType !== 6)) {
+    throw new Error(`本機 Big Sticker 必須全部為 truecolor RGBA，實際 color types=${JSON.stringify(localBigColorTypes)}`);
+  }
+  results.push('✓ 本機圖片 → Big Sticker：尺寸、偶數邊、RGBA truecolor 與專屬驗證全過');
+
   // --- 1b) IMG.LY 真模型：白底 8 張 → 透明輸出 ---
   if (process.env.SMOKE_IMGLY === '1') {
+    await buildTab.getByTestId('build-spec-select').selectOption('static');
     await page.setInputFiles('[data-tab="build"] input[type=file][accept="image/*"]', opaqueSingles);
     await buildRemoval.selectOption('imgly');
     await expectText('build', '首次需下載約 84 MiB', 10_000);
@@ -435,8 +468,8 @@ try {
   // --- 4) 產圖 Prompt ---
   await page.click('.tabs >> text=產圖 Prompt');
   await expectText('prompt', 'sprite sheet', 10_000);
-  await page.click('text=動態影格組圖');
-  await expectText('prompt', 'CONSECUTIVE ANIMATION FRAMES', 10_000);
+  await page.click('text=動態貼圖影格組圖');
+  await expectText('prompt', 'CONSECUTIVE ANIMATED STICKER FRAMES', 10_000);
   results.push('✓ 產圖 Prompt：靜態/動態 prompt 內容正確');
 } catch (e) {
   results.push(`✗ 失敗：${e.message}`);

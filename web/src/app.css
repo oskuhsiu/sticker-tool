@@ -861,6 +861,14 @@ textarea {
   color: var(--muted);
   line-height: 1.5;
 }
+.video-scrub-value {
+  min-width: 5.5rem;
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+}
+.video-scrub-help {
+  margin: 0.15rem 0 0.55rem;
+}
 .video-range-previews {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));

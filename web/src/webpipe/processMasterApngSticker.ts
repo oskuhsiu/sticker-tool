@@ -1,5 +1,5 @@
 import { adjacentDuplicateIndices, coalesceAdjacentFrames, equalRgbaFrames } from '@core/frameSequence.js';
-import { ANIMATED_SPEC } from '@core/spec.js';
+import { ANIMATED_EMOJI_SPEC, ANIMATED_SPEC, POPUP_STICKER_SPEC } from '@core/spec.js';
 import {
   candidateExpansionOrder,
   allocateExactDelays,
@@ -10,10 +10,17 @@ import {
 import type {
   VideoSelectionPlanV2,
   VideoStickerDraftV2,
+  VideoOutputTarget,
 } from '@core/videoProject.js';
-import { validateAnimatedImage, type ImageInfo } from '@core/validate.js';
+import {
+  validateAnimatedEmojiImage,
+  validateAnimatedImage,
+  validatePopupImage,
+  type ImageInfo,
+} from '@core/validate.js';
 import { decodeApngFrames, encodeApngExactFrames } from './apng.js';
 import { decodeMasterSticker, type MasterApngSticker } from './masterApng.js';
+import { pngImageInfo } from './png.js';
 import type { Raster } from './raster.js';
 import { VideoFrameRenderCache } from './videoFrameRenderCache.js';
 import type { VideoMasterStore } from './videoMasterStore.js';
@@ -65,6 +72,7 @@ export function inspectAnimatedBytes(
   requestedFrames?: number,
 ): AnimatedByteEvidence {
   const decoded = decodeApngFrames(png);
+  const base = pngImageInfo(png);
   const unique: Raster[] = [];
   let transparentPixels = 0;
   let foregroundPixels = 0;
@@ -79,12 +87,7 @@ export function inspectAnimatedBytes(
   const adjacentDuplicateFrames = adjacentDuplicateIndices(decoded.frames, equalRgbaFrames).length;
   const durationMs = decoded.delaysMs.reduce((sum, delay) => sum + delay, 0);
   const info: ImageInfo = {
-    width: decoded.frames[0]?.width ?? 0,
-    height: decoded.frames[0]?.height ?? 0,
-    bytes: png.length,
-    hasAlpha: true,
-    channels: 4,
-    isApng: decoded.frames.length > 1,
+    ...base,
     frames: decoded.frames.length,
     requestedFrames,
     loops: decoded.loops,
@@ -106,7 +109,17 @@ export function inspectAnimatedBytes(
   };
 }
 
-export function validateVideoStickerSettings(settings: VideoStickerSettings): string[] {
+function targetContract(target: VideoOutputTarget) {
+  if (target === 'animated-emoji') return ANIMATED_EMOJI_SPEC;
+  if (target === 'popup') return POPUP_STICKER_SPEC;
+  return ANIMATED_SPEC;
+}
+
+export function validateVideoStickerSettings(
+  settings: VideoStickerSettings,
+  target: VideoOutputTarget,
+): string[] {
+  const contract = targetContract(target);
   const errors: string[] = [];
   if (
     !Number.isSafeInteger(settings.rangeStartUs) ||
@@ -117,17 +130,32 @@ export function validateVideoStickerSettings(settings: VideoStickerSettings): st
   }
   if (
     !Number.isInteger(settings.targetFrames) ||
-    settings.targetFrames < ANIMATED_SPEC.minFrames ||
-    settings.targetFrames > ANIMATED_SPEC.maxFrames
+    settings.targetFrames < contract.minFrames ||
+    settings.targetFrames > contract.maxFrames
   ) {
-    errors.push(`目標格數必須是 ${ANIMATED_SPEC.minFrames}–${ANIMATED_SPEC.maxFrames}`);
+    errors.push(`目標格數必須是 ${contract.minFrames}–${contract.maxFrames}`);
   }
-  if (![1000, 2000, 3000, 4000].includes(settings.perLoopDurationMs)) {
-    errors.push('單輪播放時間必須是 1000、2000、3000 或 4000ms');
+  if (
+    target === 'popup' &&
+    (!Number.isInteger(settings.staticFrameIndex) ||
+      settings.staticFrameIndex! < 0 ||
+      settings.staticFrameIndex! >= settings.targetFrames)
+  ) {
+    errors.push(`靜態圖 frame 必須是 1–${settings.targetFrames}`);
   }
-  if (![1, 2, 3, 4].includes(settings.loops)) errors.push('循環次數必須是 1–4');
-  if (settings.perLoopDurationMs * settings.loops > ANIMATED_SPEC.maxDurationSec * 1000) {
-    errors.push(`單輪 ${settings.perLoopDurationMs}ms × ${settings.loops} loops 超過總播放 4 秒`);
+  const allowedDurationMs = contract.playbackDurationsSec.map((seconds) => seconds * 1000);
+  if (!allowedDurationMs.includes(settings.perLoopDurationMs)) {
+    errors.push(`單輪播放時間必須是 ${allowedDurationMs.join('、')}ms`);
+  }
+  if (
+    !Number.isInteger(settings.loops) ||
+    settings.loops < contract.minLoops ||
+    settings.loops > contract.maxLoops
+  ) {
+    errors.push(`循環次數必須是 ${contract.minLoops}–${contract.maxLoops}`);
+  }
+  if (settings.perLoopDurationMs * settings.loops > contract.maxDurationSec * 1000) {
+    errors.push(`單輪 ${settings.perLoopDurationMs}ms × ${settings.loops} loops 超過總播放 ${contract.maxDurationSec} 秒`);
   }
   if (settings.background.mode === 'color-key' && settings.background.color !== undefined) {
     if (!/^#[0-9a-f]{6}$/i.test(settings.background.color)) errors.push('單色色鍵必須是 #RRGGBB');
@@ -141,6 +169,7 @@ function cloneSettings(settings: VideoStickerSettings): VideoStickerSettings {
 
 /** Render one draft from raw master frames without changing its requested target frame count. */
 export async function processMasterApngSticker(args: {
+  target: VideoOutputTarget;
   master: MasterApngSticker;
   store: VideoMasterStore;
   settings: VideoStickerSettings;
@@ -151,7 +180,8 @@ export async function processMasterApngSticker(args: {
   onProgress?: (stage: string) => void;
 }): Promise<VideoRenderSnapshot> {
   const { master, settings } = args;
-  const settingErrors = validateVideoStickerSettings(settings);
+  const contract = targetContract(args.target);
+  const settingErrors = validateVideoStickerSettings(settings, args.target);
   if (settingErrors.length > 0) throw new Error(settingErrors.join('；'));
   const decoded = await decodeMasterSticker(master, args.store, settings.rangeStartUs, settings.rangeEndUs);
   if (decoded.length === 0) throw new Error(`${master.id} 在目前 range 沒有 raw master frame`);
@@ -237,9 +267,11 @@ export async function processMasterApngSticker(args: {
       const encoded = encodeApngExactFrames(selectedFrames, {
         loops: settings.loops,
         delaysMs,
-        maxBytes: ANIMATED_SPEC.maxBytes,
+        maxBytes: contract.maxBytes,
         minColors: 16,
         maxColors: settings.maxColors,
+        preserveColors: settings.preserveColors,
+        forbidPalette: args.target === 'animated-emoji' || args.target === 'popup',
         acceptCandidate: (png) => {
           const candidateEvidence = inspectAnimatedBytes(png, settings.targetFrames);
           return (
@@ -289,15 +321,25 @@ export async function processMasterApngSticker(args: {
 
   if (!bestAttempt) throw new Error(`${master.id} 無法建立任何成品候選`);
   const { evidence } = bestAttempt;
-  const validation = validateAnimatedImage(evidence.info, `${master.index + 1}.png`);
+  const targetName = args.target === 'animated-emoji'
+    ? `${String(master.index + 1).padStart(3, '0')}.png`
+    : args.target === 'popup'
+      ? `popup/${String(master.index + 1).padStart(2, '0')}.png`
+      : `${String(master.index + 1).padStart(2, '0')}.png`;
+  const validation = args.target === 'animated-emoji'
+    ? validateAnimatedEmojiImage(evidence.info, targetName)
+    : args.target === 'popup'
+      ? validatePopupImage(evidence.info, targetName)
+      : validateAnimatedImage(evidence.info, targetName);
   const errors = validation.issues.filter((issue) => issue.level === 'error').map((issue) => issue.message);
   const notes: string[] = [];
-  if (bestAttempt.colors !== 0) notes.push(`減色至 ${bestAttempt.colors} 色`);
+  if (settings.preserveColors) notes.push('保留原色（未減色）');
+  else if (bestAttempt.colors !== 0) notes.push(`減色至 ${bestAttempt.colors} 色`);
   if (evidence.info.frames !== settings.targetFrames) {
     notes.push(`此範圍最多只有 ${evidence.info.frames} 個可區分成品畫格，目標為 ${settings.targetFrames}`);
   }
   if (bestAttempt.overBudget) {
-    notes.push(`exact-target 成品 ${(bestAttempt.png.length / 1024).toFixed(0)}KB 超過 1MB`);
+    notes.push(`exact-target 成品 ${(bestAttempt.png.length / 1024).toFixed(0)}KB 超過 ${(contract.maxBytes / 1000).toFixed(0)}KB`);
   }
   if (evidence.adjacentDuplicateFrames > 0) {
     notes.push(`量化後仍有 ${evidence.adjacentDuplicateFrames} 個相鄰重複畫格`);

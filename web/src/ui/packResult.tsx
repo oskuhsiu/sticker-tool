@@ -16,7 +16,7 @@ interface PackResultBase {
 
 /** Legacy callers can omit `kind` and remain on the Sticker archive shape. */
 export interface StickerPackResultData extends PackResultBase {
-  kind?: 'sticker';
+  kind?: 'sticker' | 'big';
   main: Uint8Array;
   /** 動態包 main 是 APNG */
   animated?: boolean;
