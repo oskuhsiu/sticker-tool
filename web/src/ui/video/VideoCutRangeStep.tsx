@@ -10,15 +10,17 @@ function GridImage(props: { png: Uint8Array; grid: VideoGridPlan; label: string 
   useEffect(() => () => URL.revokeObjectURL(url), [url]);
   return (
     <figure className="video-grid-preview">
-      <img src={url} alt={props.label} />
-      <svg viewBox={`0 0 ${props.grid.sourceWidth} ${props.grid.sourceHeight}`} aria-label="裁切格線">
-        {props.grid.rects.map((rect) => (
-          <g key={rect.id}>
-            <rect x={rect.left} y={rect.top} width={rect.width} height={rect.height} />
-            <text x={rect.left + 8} y={rect.top + 22}>{String(rect.index + 1).padStart(2, '0')}</text>
-          </g>
-        ))}
-      </svg>
+      <div className="video-grid-preview-media">
+        <img src={url} alt={props.label} />
+        <svg viewBox={`0 0 ${props.grid.sourceWidth} ${props.grid.sourceHeight}`} aria-label="裁切格線">
+          {props.grid.rects.map((rect) => (
+            <g key={rect.id}>
+              <rect x={rect.left} y={rect.top} width={rect.width} height={rect.height} />
+              <text x={rect.left + 8} y={rect.top + 22}>{String(rect.index + 1).padStart(2, '0')}</text>
+            </g>
+          ))}
+        </svg>
+      </div>
       <figcaption>{props.label}</figcaption>
     </figure>
   );

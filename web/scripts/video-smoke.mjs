@@ -82,6 +82,30 @@ async function configureSource(count, cols, rows) {
   await page.waitForSelector(`[data-tab="video"] >> text=實際來源 frames：${12}`);
 }
 
+async function assertGridPreviewsAligned() {
+  await page.waitForFunction(() => {
+    const previews = [...document.querySelectorAll('[data-tab="video"] .video-grid-preview')];
+    return previews.length === 4 && previews.every((preview) => preview.querySelector('img')?.complete);
+  });
+  const mismatches = await page.locator('[data-tab="video"] .video-grid-preview').evaluateAll((previews) =>
+    previews.flatMap((preview, index) => {
+      const image = preview.querySelector('img')?.getBoundingClientRect();
+      const overlay = preview.querySelector('svg')?.getBoundingClientRect();
+      if (!image || !overlay) return [`preview ${index + 1} 缺少 image 或 grid overlay`];
+      const delta = {
+        left: Math.abs(image.left - overlay.left),
+        top: Math.abs(image.top - overlay.top),
+        width: Math.abs(image.width - overlay.width),
+        height: Math.abs(image.height - overlay.height),
+      };
+      return Object.values(delta).some((value) => value > 0.5)
+        ? [`preview ${index + 1} grid/image bounds 不一致：${JSON.stringify(delta)}`]
+        : [];
+    }),
+  );
+  if (mismatches.length) throw new Error(mismatches.join('\n'));
+}
+
 async function buildRawMaster(expectedCount) {
   await page.getByRole('button', { name: '擷取範圍內所有 frames 並建立 raw master' }).click();
   await page.waitForSelector('[data-tab="video"] >> text=逐張 exact-target 編輯', { timeout: 180_000 });
@@ -106,6 +130,8 @@ try {
   if (!metadataText?.includes('12 個 presentation frames')) throw new Error('probe 未顯示實際 12 格');
   if (await page.locator('label', { hasText: 'master 取樣格數' }).count()) throw new Error('V2 不應再顯示 master 取樣格數');
   await configureSource(6, 3, 2);
+  await assertGridPreviewsAligned();
+  results.push('✓ 四個時間預覽的裁切格線與影像 bounds 完全對齊');
   await buildRawMaster(6);
   if (modelRequested) throw new Error('raw ingest 與 color-key 不應下載語意去背模型');
   results.push('✓ 12 個 presentation frames 全數進入 6 張 raw master，沒有固定 20 格取樣器');
