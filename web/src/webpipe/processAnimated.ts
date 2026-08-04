@@ -1,6 +1,6 @@
 /**
  * 動態貼圖單張流程（瀏覽器版）：連續影格 → 穩定化（殺漂移）→ 每格 fit 'exact' 到同一畫布
- * → [描邊][疊字] → APNG（loops 1–4）→ auto-fit 到 ≤1MB。
+ * → [描邊][疊字] → APNG（loops 1–4）→ 檔案大小檢查；只有明確開啟才 auto-fit。
  * 與 CLI 版相同的兩道防抖：先對齊主體（stabilize）、再對齊畫布（fit 'exact' 不逐格 trim）。
  */
 
@@ -28,6 +28,10 @@ export interface ProcessAnimatedOptions {
   animation: AnimationConfig;
   /** Explicit frame/duration limits for workflows with a different APNG contract. */
   limits?: AnimatedProcessingLimits;
+  /** Never reduce the fitted frame sequence while searching optional color candidates. */
+  preserveFrames?: boolean;
+  /** Keep final PNG/APNG candidates in truecolor RGBA even when colors are quantized. */
+  forbidPalette?: boolean;
   /** 影格率；給定則由它定每格延遲，否則用 animation.durationSec */
   fps?: number;
 }
@@ -126,17 +130,26 @@ export async function processAnimated(
   }
   const delayMs = (perLoopSec * 1000) / fitted.length;
 
-  // 4) 編碼 + auto-fit ≤ maxBytes
+  // 4) 編碼；autoFit=false 時只做無損編碼並回報超標，不暗中降色或減格。
   await yieldToUI();
+  const configuredLadder = opts.animation.autoFit
+    ? opts.animation.ladder
+    : [{ colors: 0, frames: fitted.length }];
+  const ladder = opts.preserveFrames && Array.isArray(configuredLadder)
+    ? configuredLadder.map((rung) => ({ ...rung, frames: fitted.length }))
+    : configuredLadder;
   const fit = encodeApngAutoFit(fitted, {
     loops: opts.animation.loops,
     delayMs,
     maxBytes: opts.animation.maxBytes,
     minColors: opts.animation.minColors,
     maxColors: opts.animation.maxColors,
-    minFrames: Math.max(limits.minFrames, opts.animation.minFrames),
+    minFrames: opts.preserveFrames
+      ? fitted.length
+      : Math.max(limits.minFrames, opts.animation.minFrames),
     priority: opts.animation.priority,
-    ladder: opts.animation.ladder,
+    ladder,
+    forbidPalette: opts.forbidPalette,
   });
   if (fit.colors !== 0) notes.push(`減色至 ${fit.colors} 色`);
   if (fit.frames !== fitted.length) notes.push(`減影格至 ${fit.frames} 格`);

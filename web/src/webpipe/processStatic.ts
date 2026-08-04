@@ -1,6 +1,7 @@
 /**
  * 靜態貼圖單張流程串接（瀏覽器版）：
- *   去背 → fitCanvas（trim+置中+規格 margin/min canvas，偶數）→ [描邊] → [疊字] → 壓到 ≤1MB。
+ *   去背 → fitCanvas（trim+置中+規格 margin/min canvas，偶數）→ [描邊] → [疊字]
+ *   → 無損編碼；使用者明確允許時才嘗試降色。
  */
 
 import { STATIC_SPEC } from '@core/spec.js';
@@ -24,6 +25,8 @@ export interface ProcessStaticOptions {
   stroke?: StrokeSpec;
   text?: TextSpec;
   maxBytes?: number;
+  /** Optional color reduction. Defaults to false; over-budget output is reported unchanged. */
+  reduceColors?: boolean;
   /** Keep the delivered PNG in truecolor RGBA mode even after color reduction. */
   forbidPalette?: boolean;
 }
@@ -71,8 +74,11 @@ export async function processStatic(
     notes.push(`疊字「${opts.text.content}」`);
   }
 
-  // 5) 壓到 ≤ maxBytes
-  const fit = fitPngUnderBytes(current, maxBytes, { forbidPalette: opts.forbidPalette });
+  // 5) 先以無損輸出；只有使用者明確選擇時才嘗試降色。
+  const fit = fitPngUnderBytes(current, maxBytes, {
+    forbidPalette: opts.forbidPalette,
+    reduceColors: opts.reduceColors,
+  });
   if (fit.colors !== null) notes.push(`減色至 ${fit.colors} 色以符合 ${(maxBytes / 1024).toFixed(0)}KB`);
   if (fit.overBudget) notes.push(`⚠ 仍超過 ${(maxBytes / 1024).toFixed(0)}KB（${(fit.bytes / 1024).toFixed(0)}KB）`);
 

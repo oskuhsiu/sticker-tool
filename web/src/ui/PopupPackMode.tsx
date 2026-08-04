@@ -1,8 +1,8 @@
 import { useRef, useState } from 'react';
-import { POPUP_STICKER_SPEC, STATIC_SPEC, maxBounds } from '@core/spec.js';
+import { POPUP_STICKER_SPEC, STATIC_SPEC, ZIP_MAX_BYTES, maxBounds } from '@core/spec.js';
 import { validatePopupPack } from '@core/validate.js';
 import { inspectAnimatedBytes } from '../webpipe/apng.js';
-import { processAnimated, type ProcessedAnimated } from '../webpipe/processAnimated.js';
+import { processAnimated } from '../webpipe/processAnimated.js';
 import { processStatic, type ProcessedSticker } from '../webpipe/processStatic.js';
 import { createBackgroundRemovalJob, type BackgroundRemovalJob, type WebBackgroundRemovalMode } from '../webpipe/backgroundRemovalJob.js';
 import { decodeBlob, yieldToUI } from '../webpipe/raster.js';
@@ -43,6 +43,7 @@ export function PopupPackMode() {
   const [loops, setLoops] = useState(1);
   const [cover, setCover] = useState(1);
   const [stabilize, setStabilize] = useState(true);
+  const [reduceColors, setReduceColors] = useState(false);
   const [removeBgMode, setRemoveBgMode] = useState<WebBackgroundRemovalMode>('none');
   const [backgroundColor, setBackgroundColor] = useState('#00ff00');
   const [busy, setBusy] = useState(false);
@@ -74,7 +75,7 @@ export function PopupPackMode() {
     setResult(null);
   }
 
-  async function run() {
+  async function run(reduceColorsOverride = reduceColors) {
     logger.clear();
     setResult(null);
     setBusy(true);
@@ -136,6 +137,7 @@ export function PopupPackMode() {
           removeBackground: false,
           marginPx: 0,
           maxBytes: STATIC_SPEC.maxBytes,
+          reduceColors: reduceColorsOverride,
           forbidPalette: true,
         });
         staticProcessed.push(processed);
@@ -144,10 +146,15 @@ export function PopupPackMode() {
       }
 
       const animation = {
-        ...makeAnimation({ loops, durationSec: duration, stabilize, maxColors: 0 }),
+        ...makeAnimation({
+          loops,
+          durationSec: duration,
+          stabilize,
+          maxColors: reduceColorsOverride ? 256 : 0,
+        }),
         maxBytes: POPUP_STICKER_SPEC.maxBytes,
       };
-      const popupProcessed: ProcessedAnimated[] = [];
+      const popupProcessed: PopupStickerResult[] = [];
       for (let index = 0; index < count; index++) {
         const files = sortFiles(frameSets[index]!);
         logger.log('step', `處理 Pop-up ${index + 1}/${count}（${files.length} 格）…`);
@@ -162,14 +169,21 @@ export function PopupPackMode() {
             `${removalJob!.label}：Pop-up ${index + 1}/${count}，影格 ${done}/${total}`,
           ),
           animation,
+          preserveFrames: true,
+          forbidPalette: true,
           limits: {
             minFrames: POPUP_STICKER_SPEC.minFrames,
             maxFrames: POPUP_STICKER_SPEC.maxFrames,
             maxDurationSec: POPUP_STICKER_SPEC.maxDurationSec,
           },
         });
-        popupProcessed.push(processed);
-        logger.log('info', `popup/${String(index + 1).padStart(2, '0')}.png ${processed.info.width}×${processed.info.height} ${kb(processed.info.bytes)}`);
+        const info = inspectAnimatedBytes(processed.png, files.length).info;
+        // Do not retain ProcessedAnimated.fittedFrames. At the legal pack maximum,
+        // keeping every decoded 480×480 RGBA frame would consume hundreds of MiB.
+        popupProcessed.push({ png: processed.png, info, notes: processed.notes });
+        processed.fittedFrames.length = 0;
+        frames.length = 0;
+        logger.log('info', `popup/${String(index + 1).padStart(2, '0')}.png ${info.width}×${info.height} ${kb(info.bytes)}`);
         await yieldToUI();
       }
 
@@ -179,7 +193,7 @@ export function PopupPackMode() {
       const { main, tab, mainInfo, tabInfo } = buildMainTab(staticCover.raster);
       const mainPopup = popupCover.png;
       const staticInfos = staticProcessed.map((item) => item.info);
-      const popupInfos = popupProcessed.map((item, index) => inspectAnimatedBytes(item.png, frameSets[index]!.length).info);
+      const popupInfos = popupProcessed.map((item) => item.info);
       const mainPopupInfo = popupInfos[coverIndex]!;
       const { zip, zipBytes } = buildPopupPackZip({
         main,
@@ -203,15 +217,18 @@ export function PopupPackMode() {
           ? `Pop-up ZIP 打包完成並通過技術規格檢查（${kb(zipBytes)}）`
           : `Pop-up ZIP 已產生，但技術規格檢查未通過；下載已停用（${kb(zipBytes)}）`,
       );
+      if (!validation.ok && !reduceColorsOverride && hasByteLimitIssue(validation)) {
+        logger.log('warn', '成品超過檔案或整包容量上限；未自動降色，可在結果區選擇「嘗試降色並重新打包」。');
+      }
       setResult({
         name,
         main,
         mainPopup,
         tab,
         staticStickers: staticProcessed.map((item) => ({ png: item.png, info: item.info, notes: item.notes })),
-        popupStickers: popupProcessed.map((item, index) => ({
+        popupStickers: popupProcessed.map((item) => ({
           png: item.png,
-          info: popupInfos[index]!,
+          info: item.info,
           notes: item.notes,
         })),
         zip,
@@ -239,7 +256,7 @@ export function PopupPackMode() {
         同時準備獨立的靜態貼圖與 Pop-up APNG 影格：兩組檔案會分別處理、驗證並放入同一個 ZIP。Pop-up 畫布固定 480×480；上／中／下顯示位置請稍後在 LINE My Page 選擇，不會寫入影像。
       </p>
       <p className="popup-limit-note" data-testid="popup-limits">
-        Pop-up 限制：張數 8／16／24；影格 5–20；每輪 1／2／3 秒；循環 1–3 次且總長 ≤3 秒；單張 ≤1MB；透明 RGB PNG/APNG（不接受索引色）。
+        Pop-up 限制：張數 8／16／24；影格 5–20；每輪 1／2／3 秒；循環 1–3 次且總長 ≤3 秒；單張 ≤{POPUP_STICKER_SPEC.maxBytes / 1_000_000}MB；整包 ≤{ZIP_MAX_BYTES / 1_000_000}MB；透明 RGB PNG/APNG（不接受索引色）。預設不降色，超標後才提供選用重試。
       </p>
       <Row>
         <Field label="張數">
@@ -313,15 +330,38 @@ export function PopupPackMode() {
         {modelStatus && <span className="model-status">{modelStatus}</span>}
       </div>
       <LogPane lines={logger.lines} />
-      {result && <PopupResult data={result} />}
+      {result && (
+        <PopupResult
+          data={result}
+          colorReductionUsed={reduceColors}
+          onReduceColors={() => {
+            setReduceColors(true);
+            void run(true);
+          }}
+        />
+      )}
     </section>
   );
 }
 
-function PopupResult({ data }: { data: PopupPackResult }) {
+function PopupResult(props: {
+  data: PopupPackResult;
+  colorReductionUsed: boolean;
+  onReduceColors: () => void;
+}) {
+  const { data, colorReductionUsed, onReduceColors } = props;
   const valid = data.validation.ok;
+  const canOfferColorReduction = !valid && !colorReductionUsed && hasByteLimitIssue(data.validation);
   return (
     <div className="popup-pack-result" data-testid="popup-result">
+      {canOfferColorReduction && (
+        <div className="validation warn" data-testid="popup-color-reduction-prompt">
+          成品超過單檔或整包容量上限。系統沒有自動降色；你可以保留原圖修改素材，或明確選擇降色後重試。
+          <button className="btn" data-testid="popup-reduce-colors-retry" onClick={onReduceColors}>
+            嘗試降色並重新打包
+          </button>
+        </div>
+      )}
       <div className="pack-actions">
         <button
           data-testid="popup-download-zip"
@@ -361,6 +401,12 @@ function PopupResult({ data }: { data: PopupPackResult }) {
         </div>
       </div>
     </div>
+  );
+}
+
+function hasByteLimitIssue(validation: ValidationResult): boolean {
+  return validation.issues.some(
+    (issue) => issue.level === 'error' && (issue.code === 'zip.bytes' || issue.code.endsWith('.bytes')),
   );
 }
 

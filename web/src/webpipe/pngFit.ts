@@ -1,6 +1,6 @@
 /**
- * 靜態 PNG 檔案大小 auto-fit（瀏覽器版）：超過 maxBytes 時逐步減色（upng palette 量化）。
- * 保留 alpha 與尺寸不變，只動色數。
+ * 靜態 PNG 檔案大小檢查與選用降色（瀏覽器版）。
+ * 預設只回報超標；使用者明確允許時才沿色階量化。
  */
 
 import { encodePng } from './png.js';
@@ -22,7 +22,7 @@ export interface PngFitResult {
 export function fitPngUnderBytes(
   input: Raster,
   maxBytes: number,
-  options: { forbidPalette?: boolean } = {},
+  options: { forbidPalette?: boolean; reduceColors?: boolean } = {},
 ): PngFitResult {
   const lossless = encodePng(input, 0, options.forbidPalette);
   if (lossless.length <= maxBytes) {
@@ -35,6 +35,8 @@ export function fitPngUnderBytes(
     colors: null,
     overBudget: true,
   };
+
+  if (!options.reduceColors) return best;
 
   for (const colors of COLOR_LADDER) {
     const png = encodePng(input, colors, options.forbidPalette);

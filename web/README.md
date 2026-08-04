@@ -28,8 +28,14 @@ The Sprite sheet tab can produce either a regular static pack or a
 RGBA PNG dimensions from 80×524 through 396×660, at most 1 MB each, and no proactively added display
 margin; LINE adds the appropriate margin. Content is scaled proportionally and transparent-padded to
 the minimum canvas instead of being stretched. Counts remain 8, 16, 24, 32, or 40, and the final ZIP
-remains limited to 60 MB. Main and tab images remain 240×240 and 96×74. This Big Sticker mode is Web-only;
-the CLI `gen` command continues to produce regular static stickers.
+remains limited to 60 MB. Numbered output is truecolor RGBA, not indexed PNG. The first package keeps
+the original colors; after a byte-limit failure, the result offers an explicit color-reduction retry
+that still emits truecolor RGBA. Main and tab images remain 240×240 and 96×74. This Big Sticker mode is
+Web-only; the CLI `gen` command continues to produce regular static stickers.
+
+Custom sheet grids are bounded before the SVG cut guide or cutter allocates cells. Values above 64 on
+either axis or above 400 total cells are rejected; LINE's largest supported static/Big pack needs only
+40 cells.
 
 ## Pop-up Sticker packages
 
@@ -63,6 +69,12 @@ seconds across all loops, transparent visible content, truecolor RGBA output (in
 rejected), and at most 1 MB per image. The ZIP remains
 limited to 60 MB. The Top, Center, or Bottom display position is selected later in LINE My Page and is
 not encoded into the package. This workflow is Web-only.
+
+Color reduction is opt-in rather than an automatic packaging step. The browser first encodes and
+validates original-color truecolor assets. Only an over-budget result offers a retry with color
+reduction; quantized candidates remain truecolor RGBA and preserve the selected frame count. After each
+APNG is encoded and inspected, its fitted 480×480 RGBA frame buffers are discarded instead of being
+retained for the rest of the pack.
 
 ## Video → APNG V2
 
@@ -146,6 +158,7 @@ npm run build
 npm run test:colab
 npm run test:local-birefnet
 npm run test:background-removal
+npm run test:output-safety # truecolor Big/Pop-up and opt-in reduction contracts
 npm run test:video          # V2 round-trip, strict rejection, V1 mapping, render contracts
 npm run test:video-spike    # requires ffmpeg/ffprobe
 npm run preview -- --port 4179
@@ -157,8 +170,9 @@ The video browser smoke asserts that a 12-frame fixture persists all 12 sample r
 exact-target editing and controlled playback, round-trips Project V2 without a source decoder, verifies
 invalid-package confirmation, and builds a valid eight-sticker LINE package.
 
-The main browser smoke also builds an eight-item Pop-up Sticker pack, downloads it, and inspects all
-19 expected ZIP entries in addition to exercising the existing static, Big Sticker, animated, and prompt paths.
+The main browser smoke also rejects an extreme custom preview grid, checks truecolor Big output, builds
+an eight-item Pop-up Sticker pack, and verifies the color type and all 19 expected ZIP entries in
+addition to exercising the existing static, animated, and prompt paths.
 
 ## Deployment
 

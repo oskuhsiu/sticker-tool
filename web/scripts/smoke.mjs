@@ -189,6 +189,16 @@ async function visibleAlphaBounds(locator) {
   });
 }
 
+/** Read the final PNG IHDR color type byte from a preview object URL. */
+async function previewPngColorType(locator) {
+  return locator.evaluate(async (image) => {
+    if (!(image instanceof HTMLImageElement)) throw new Error('PNG color-type 目標不是圖片');
+    const bytes = new Uint8Array(await (await fetch(image.src)).arrayBuffer());
+    if (bytes.length < 26) throw new Error('PNG 太短，無法讀取 IHDR color type');
+    return bytes[25];
+  });
+}
+
 try {
   await page.goto(`${BASE.replace(/#.*/, '')}#/colab-birefnet`, { waitUntil: 'load' });
   await page.waitForTimeout(800); // 容 COI service worker 註冊/可能的一次重載
@@ -252,6 +262,13 @@ try {
   await page.click('.tabs >> text=組圖切格');
   await page.setInputFiles('[data-tab="sheet"] input[type=file][accept="image/*"]', path.join(fixDir, 'sheet_green_4x2.png'));
   const sheetTab = page.locator('[data-tab="sheet"]');
+  const sheetGridInput = sheetTab.getByLabel('網格（auto 或 4x2）');
+  await sheetGridInput.fill('100000x100000');
+  await sheetTab.getByTestId('sheet-grid-error').waitFor();
+  if (await sheetTab.locator('[data-sheet-cut-cell]').count() !== 0) {
+    throw new Error('極端自訂網格不得建立 SVG cell');
+  }
+  await sheetGridInput.fill('auto');
   const sheetPreview = sheetTab.locator('[data-testid="sheet-cut-preview"]');
   await sheetPreview.waitFor();
   await page.waitForFunction(() => {
@@ -293,7 +310,7 @@ try {
   if (labelMetrics.some(({ visible, contained }) => !visible || !contained)) {
     throw new Error(`切割示意編號不可見或溢出格子：${JSON.stringify(labelMetrics)}`);
   }
-  results.push('✓ 4×2 組圖上傳後立即顯示 8 格 nominal 切割示意，img/svg bounds 對齊');
+  results.push('✓ 極端自訂網格先被拒絕；4×2 組圖顯示 8 格 nominal 切割示意且 img/svg bounds 對齊');
   await page.click('text=切格並打包');
   await expectText('sheet', '全部符合 LINE 規格');
   await expectText('sheet', '綠幕');
@@ -325,6 +342,12 @@ try {
     throw new Error(`Big Sticker 8 張自然尺寸不符：${JSON.stringify(bigSizes)}`);
   }
   const bigContentBounds = await visibleAlphaBounds(bigStickerImages.nth(2));
+  const bigColorTypes = await Promise.all(
+    Array.from({ length: 8 }, (_, index) => previewPngColorType(bigStickerImages.nth(index + 2))),
+  );
+  if (bigColorTypes.some((colorType) => colorType !== 6)) {
+    throw new Error(`Big Sticker 必須全部為 truecolor RGBA，實際 color types=${JSON.stringify(bigColorTypes)}`);
+  }
   const regularAspect = regularContentBounds.width / regularContentBounds.height;
   const bigAspect = bigContentBounds.width / bigContentBounds.height;
   if (Math.abs(bigAspect / regularAspect - 1) > 0.03) {
@@ -332,7 +355,7 @@ try {
       `Big Sticker 內容疑似被非等比拉伸：regular=${JSON.stringify(regularContentBounds)} big=${JSON.stringify(bigContentBounds)}`,
     );
   }
-  results.push(`✓ Big Sticker 組圖 → 驗證全過、8 張自然尺寸合規且內容維持等比（${bigSizes.map(({ width, height }) => `${width}×${height}`).join(', ')}）`);
+  results.push(`✓ Big Sticker 組圖 → 驗證全過、8 張皆為 RGBA truecolor、自然尺寸合規且內容維持等比（${bigSizes.map(({ width, height }) => `${width}×${height}`).join(', ')}）`);
 
   // --- 2b) 組圖語意去背：overlap crops → alpha mask 拼回 → component-aware 切格 ---
   if (process.env.SMOKE_IMGLY === '1') {
@@ -379,7 +402,8 @@ try {
   const download = await popupDownload;
   const downloadPath = await download.path();
   if (!downloadPath) throw new Error('Pop-up ZIP 下載沒有可讀取的暫存路徑');
-  const zipEntries = Object.keys(unzipSync(new Uint8Array(readFileSync(downloadPath)))).sort();
+  const popupZip = unzipSync(new Uint8Array(readFileSync(downloadPath)));
+  const zipEntries = Object.keys(popupZip).sort();
   const expectedPopupEntries = [
     'png/main.png',
     'popup/main_popup.png',
@@ -390,7 +414,14 @@ try {
   if (JSON.stringify(zipEntries) !== JSON.stringify(expectedPopupEntries)) {
     throw new Error(`Pop-up ZIP 路徑不符：${JSON.stringify(zipEntries)}`);
   }
-  results.push('✓ Pop-up Sticker 雙軌整包：驗證全過、480×480 APNG 8+8、ZIP 精確 19 路徑');
+  const popupColorTypes = expectedPopupEntries.map((entry) => ({
+    entry,
+    colorType: UPNG.decode(popupZip[entry]).ctype,
+  }));
+  if (popupColorTypes.some(({ colorType }) => colorType !== 6)) {
+    throw new Error(`Pop-up ZIP 含非 truecolor RGBA：${JSON.stringify(popupColorTypes)}`);
+  }
+  results.push('✓ Pop-up Sticker 雙軌整包：驗證全過、全部 RGBA truecolor、480×480 APNG 8+8、ZIP 精確 19 路徑');
   await animTab.locator('[data-testid="anim-mode-sheet"]').click();
 
   // --- 3) 動態 APNG：單組圖模式 ---

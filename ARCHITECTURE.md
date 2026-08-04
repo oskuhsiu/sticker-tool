@@ -131,13 +131,16 @@ Natural-sort input files
   -> trim and fit with transparent margin
   -> optional stroke
   -> optional text
-  -> PNG byte-budget fitting
+  -> original-color PNG encoding
   -> derive main and tab from the selected cover
   -> package numbered files
   -> validate collected metadata and ZIP size
+  -> browser: offer an explicit color-reduction retry only for a byte-limit failure
 ```
 
-The browser performs the same logical sequence, but returns ZIP bytes for download instead of writing files.
+The browser returns ZIP bytes for download instead of writing files. Its first pass does not silently
+quantize pixels; optional reduction is a user decision after the package has been measured. The CLI's
+older static pipeline retains its existing automatic byte-fitting behavior.
 
 ### Static pack from sprite sheets
 
@@ -156,12 +159,19 @@ Count + character policy
   -> kind-specific validation
 ```
 
-The browser guide shows equal nominal cells and row-major numbering; it does not run a model or promise the final pixel cut. Nominal cut lines are references rather than destructive boundaries. During processing, projection-derived gutters may move those references, and components are assigned to a cell by position and copied whole. This prevents a hand or prop crossing a grid line from being split or duplicated.
+The browser guide shows equal nominal cells and row-major numbering; it does not run a model or promise
+the final pixel cut. Nominal cut lines are references rather than destructive boundaries. Custom grids
+are rejected above 64 cells on either axis or 400 cells total before SVG cells or cutter work are
+allocated. During processing, projection-derived gutters may move those references, and components are
+assigned to a cell by position and copied whole. This prevents a hand or prop crossing a grid line from
+being split or duplicated.
 
 Regular static output keeps the existing 10-pixel transparent-margin policy and a 370×320 maximum.
 Browser Big Sticker output uses no proactive display margin, proportional scaling, transparent padding
-to at least 80×524, and a 396×660 maximum. Big Sticker constants and metadata validation live in shared
-core; the current CLI configuration adapter does not expose a Big Sticker workflow.
+to at least 80×524, and a 396×660 maximum. Numbered output is forced to PNG color type 6 even after an
+explicit color-reduction retry, and shared validation rejects missing or indexed final-byte evidence.
+Big Sticker constants and metadata validation live in shared core; the current CLI configuration
+adapter does not expose a Big Sticker workflow.
 
 The background-removal implementation differs by runtime:
 
@@ -180,7 +190,8 @@ Load at least 5 frames and subsample above 20
   -> independently exact-fit each frame to the same fixed canvas dimensions
   -> optional stroke and text
   -> encode APNG
-  -> reduce colors and, if necessary, frames along a quality ladder
+  -> browser UI: preserve frames and reduce colors only when explicitly selected
+  -> CLI legacy adapter: retain its configured quality ladder
   -> read APNG metadata back
 ```
 
@@ -203,11 +214,13 @@ The browser-only third animation mode keeps LINE's static and full-screen assets
 8/16/24 static source images + one 5–20-frame sequence per item
   -> one shared, sequential background-removal job
   -> static sources: trim/fit without proactive margin -> numbered PNGs
-  -> frame sequences: optional stabilization -> exact 480×480 fit -> APNG
+  -> frame sequences: optional stabilization -> exact 480×480 fit -> truecolor APNG
   -> reopen every APNG and collect decoded timing/content evidence
+  -> release that item's decoded/fitted RGBA frames before processing the next item
   -> derive main.png/tab.png from the selected static cover
   -> reuse the selected 480×480 cover APNG as main_popup.png
   -> strict paired-pack validation
+  -> when over budget, offer an explicit truecolor color-reduction retry without reducing frames
   -> png/main.png + png/tab.png + png/NN.png
   -> popup/main_popup.png + popup/NN.png ZIP
 ```
@@ -217,8 +230,9 @@ them preserves the regular Animated Sticker defaults. Pop-up Sticker mode passes
 1–3 loop, 1/2/3-second per-loop, and three-second total contract. A fixed 480×480 canvas is a deliberate
 V1 subset of LINE's wider 480-sided geometry, not a claim that a square fills every phone screen. The
 final-byte gate also rejects indexed PNG/APNG output and requires decoded transparency and visible
-content. Top/Center/Bottom display choice remains submission metadata on LINE My Page and is not
-represented in the archive.
+content. The initial package preserves source colors and merely reports 1 MB/60 MB failures; it never
+uses palette or frame reduction as an automatic packaging side effect. Top/Center/Bottom display choice
+remains submission metadata on LINE My Page and is not represented in the archive.
 
 ### Video sheet to editable APNG pack
 

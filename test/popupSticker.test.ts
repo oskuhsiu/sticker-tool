@@ -338,6 +338,7 @@ test('existing static, Big Sticker, and animated validators remain compatible', 
     bytes: 100_000,
     hasAlpha: true,
     channels: BIG_STICKER_SPEC.channels,
+    colorType: 6,
   }).ok);
   assert.ok(validateAnimatedImage({
     width: ANIMATED_SPEC.maxWidth,

@@ -129,9 +129,11 @@ export function buildAnimatedMain(
     maxBytes: animation.maxBytes,
     minColors: animation.minColors,
     maxColors: animation.maxColors,
-    minFrames: animation.minFrames,
+    minFrames: framesMain.length,
     priority: animation.priority,
-    ladder: animation.ladder,
+    ladder: animation.autoFit
+      ? animation.ladder
+      : [{ colors: 0, frames: framesMain.length }],
   });
   const apngInfo = readApngInfo(fit.png);
   const mainInfo: ImageInfo = {

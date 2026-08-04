@@ -24,6 +24,7 @@ import {
   validateTab,
   type ImageInfo,
 } from '../src/core/validate.js';
+import { customGridIssue } from '../web/src/ui/defaults.js';
 
 const bigImage = (overrides: Partial<ImageInfo> = {}): ImageInfo => ({
   width: BIG_STICKER_SPEC.minWidth,
@@ -31,6 +32,7 @@ const bigImage = (overrides: Partial<ImageInfo> = {}): ImageInfo => ({
   bytes: 100_000,
   hasAlpha: true,
   channels: BIG_STICKER_SPEC.channels,
+  colorType: 6,
   ...overrides,
 });
 
@@ -88,7 +90,7 @@ test('big image: minimum and maximum bounds are accepted', () => {
   assert.ok(validateBigStickerImage(bigImage({ width: 396, height: 660 })).ok);
 });
 
-test('big image: dimensions, alpha, and bytes are enforced', () => {
+test('big image: dimensions, truecolor alpha, and bytes are enforced', () => {
   const rejected: Array<[string, Partial<ImageInfo>, string]> = [
     ['below minimum width', { width: 78, height: 524 }, 'big.size'],
     ['below minimum height', { width: 80, height: 522 }, 'big.size'],
@@ -96,6 +98,8 @@ test('big image: dimensions, alpha, and bytes are enforced', () => {
     ['above maximum height', { width: 396, height: 662 }, 'big.size'],
     ['odd dimensions', { width: 81, height: 525 }, 'big.even'],
     ['missing alpha', { hasAlpha: false }, 'big.alpha'],
+    ['missing color-type evidence', { colorType: undefined }, 'big.rgb'],
+    ['indexed color', { colorType: 3 }, 'big.rgb'],
     ['fully opaque pixels', { transparentPixels: 0 }, 'big.transparentPixels'],
     ['blank pixels', { foregroundPixels: 0 }, 'big.empty'],
     ['over one megabyte', { bytes: 1_000_001 }, 'big.bytes'],
@@ -108,6 +112,13 @@ test('big image: dimensions, alpha, and bytes are enforced', () => {
   }
 
   assert.ok(validateBigStickerImage(bigImage({ bytes: BIG_STICKER_SPEC.maxBytes })).ok);
+});
+
+test('custom sheet grids are bounded before preview allocation', () => {
+  assert.equal(customGridIssue({ cols: 4, rows: 2 }), null);
+  assert.equal(customGridIssue({ cols: 20, rows: 20 }), null);
+  assert.match(customGridIssue({ cols: 100_000, rows: 100_000 }) ?? '', /最多/);
+  assert.match(customGridIssue({ cols: 0, rows: 8 }) ?? '', /正整數/);
 });
 
 test('validatePack: big routes sticker validation and reuses main/tab/zip rules', () => {

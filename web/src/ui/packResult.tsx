@@ -18,12 +18,27 @@ export interface PackResultData {
   animated?: boolean;
 }
 
-export function PackResult({ data }: { data: PackResultData }) {
+export function PackResult(props: { data: PackResultData; onReduceColors?: () => void }) {
+  const { data, onReduceColors } = props;
+  const valid = data.validation.ok;
+  const canOfferColorReduction = !valid && !!onReduceColors && hasByteLimitIssue(data.validation);
   return (
     <div className="pack-result">
+      {canOfferColorReduction && (
+        <div className="validation warn" data-testid="color-reduction-prompt">
+          成品超過單檔或整包容量上限。系統沒有自動降色；你可以修改素材，或明確選擇降色後重試。
+          <button className="btn" data-testid="reduce-colors-retry" onClick={onReduceColors}>
+            嘗試降色並重新打包
+          </button>
+        </div>
+      )}
       <div className="pack-actions">
-        <button className="btn primary" onClick={() => downloadBytes(`${safeName(data.name)}.zip`, data.zip, 'application/zip')}>
-          下載上架包 zip（{kb(data.zip.length)}）
+        <button
+          className="btn primary"
+          disabled={!valid}
+          onClick={() => downloadBytes(`${safeName(data.name)}.zip`, data.zip, 'application/zip')}
+        >
+          {valid ? `下載上架包 zip（${kb(data.zip.length)}）` : '驗證未通過，不能下載上架包'}
         </button>
         <button className="btn" onClick={() => downloadBytes('main.png', data.main, 'image/png')}>
           main.png
@@ -45,5 +60,11 @@ export function PackResult({ data }: { data: PackResultData }) {
         ))}
       </div>
     </div>
+  );
+}
+
+function hasByteLimitIssue(validation: ValidationResult): boolean {
+  return validation.issues.some(
+    (issue) => issue.level === 'error' && (issue.code === 'zip.bytes' || issue.code.endsWith('.bytes')),
   );
 }

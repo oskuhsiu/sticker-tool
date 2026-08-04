@@ -1,6 +1,7 @@
 /**
  * 本機圖片 → 靜態貼圖上架包（對應 CLI `build`）。
- * 去背 → trim+置中+10px 邊 → [描邊] → ≤1MB → main/tab → zip。
+ * 去背 → trim+置中+10px 邊 → [描邊] → 原色編碼 → main/tab → zip。
+ * 超過容量時才提示使用者選擇是否降色重試。
  */
 
 import { useRef, useState } from 'react';
@@ -32,6 +33,7 @@ export function BuildTab() {
   const [strokeWidth, setStrokeWidth] = useState(8);
   const [strokeColor, setStrokeColor] = useState('#ffffff');
   const [cover, setCover] = useState(1);
+  const [reduceColors, setReduceColors] = useState(false);
   const [busy, setBusy] = useState(false);
   const [modelStatus, setModelStatus] = useState<string | null>(null);
   const [result, setResult] = useState<PackResultData | null>(null);
@@ -39,7 +41,7 @@ export function BuildTab() {
   const logger = useLogger();
   const { connection: colabConnection, registerActiveRemoval } = useColabBirefnetConnection();
 
-  async function run() {
+  async function run(reduceColorsOverride = reduceColors) {
     logger.clear();
     setResult(null);
     setBusy(true);
@@ -84,6 +86,7 @@ export function BuildTab() {
           removeBackground: false,
           stroke,
           maxBytes: STATIC_SPEC.maxBytes,
+          reduceColors: reduceColorsOverride,
         });
         const note = r.notes.length ? `（${r.notes.join('；')}）` : '';
         logger.log('info', `${String(i + 1).padStart(2, '0')}.png  ${r.info.width}×${r.info.height}  ${kb(r.info.bytes)} ${note}`);
@@ -126,8 +129,8 @@ export function BuildTab() {
   return (
     <section>
       <p className="tab-desc">
-        把本機照片/圖片處理成符合 LINE 規格的靜態貼圖包：去背 → 裁切置中 → 縮放 → 描邊 → 壓到 ≤1MB →
-        main/tab → zip。預設只在瀏覽器處理；只有選擇 Colab BiRefNet 時，處理用圖片才會送到你自己的臨時 session。
+        把本機照片/圖片處理成符合 LINE 規格的靜態貼圖包：去背 → 裁切置中 → 縮放 → 描邊 →
+        main/tab → zip。預設保留原色；打包後若超過容量才會提示是否降色重試。預設只在瀏覽器處理；只有選擇 Colab BiRefNet 時，處理用圖片才會送到你自己的臨時 session。
       </p>
       <FilePick label={`輸入圖片（需 ≥ ${count} 張）`} multiple files={files} onChange={setFiles} />
       <Row>
@@ -190,7 +193,15 @@ export function BuildTab() {
         {modelStatus && <span className="model-status">{modelStatus}</span>}
       </div>
       <LogPane lines={logger.lines} />
-      {result && <PackResult data={result} />}
+      {result && (
+        <PackResult
+          data={result}
+          onReduceColors={reduceColors ? undefined : () => {
+            setReduceColors(true);
+            void run(true);
+          }}
+        />
+      )}
     </section>
   );
 }

@@ -19,7 +19,7 @@ AI image generation is intentionally outside the application. Use any image gene
 - Transparent, green-screen, and opaque-background handling.
 - Content-aware sheet cutting that finds gutters and preserves components crossing nominal grid lines.
 - Canvas fitting, even dimensions, transparent margins, optional outlines, and text overlays.
-- Static PNG quantization and animated color/frame reduction to fit the 1 MB limit.
+- Opt-in color reduction for the browser image, sheet, regular-animation, and Pop-up workflows; their first pass preserves original colors.
 - `main.png`, `main_popup.png` where required, `tab.png`, numbered sticker files, ZIP packaging, and shared metadata-based LINE checks.
 - Browser-side previews, pre-process sprite-sheet cut guides, downloads, grid mismatch warnings, and manual animation alignment.
 - Prompt generation for static sticker sheets and animation frame sheets.
@@ -193,7 +193,9 @@ pre-process overlay shows the nominal equal grid and row-major sticker numbers; 
 may move those references to nearby transparent gutters. Big Sticker output is padded, without
 stretching, to at least 80×524 and capped at 396×660 pixels. It uses even RGBA PNG dimensions, no
 extra recommended margin, the same 8/16/24/32/40 pack counts, a 1 MB per-image limit, and the common
-60 MB ZIP limit. LINE adds display margins for Big Stickers. This mode is not currently exposed by the CLI.
+60 MB ZIP limit. Numbered Big Sticker files are truecolor RGBA rather than indexed PNG. The browser
+validates the original-color package first and offers an explicit reduction retry only after a byte-limit
+failure. LINE adds display margins for Big Stickers. This mode is not currently exposed by the CLI.
 
 The **Animated APNG** tab also contains a browser-only **Pop-up Sticker pack** mode. A Pop-up Sticker
 pack has two explicit, independently supplied sets: 8, 16, or 24 static sticker images and the same
@@ -207,6 +209,12 @@ encoding to validate its decoded frame count,
 visible content, truecolor RGBA output (indexed PNG/APNG is rejected), and 1 MB byte limit. The fixed square canvas is a valid subset of LINE's allowed
 480-sided geometry; it is not claimed to fill every device aspect ratio. Top, Center, or Bottom display
 position is selected later in LINE My Page and is not embedded in this ZIP. This workflow is not exposed by the CLI.
+
+The Pop-up workflow also keeps original colors on its first pass. If final validation finds a numbered
+asset over its type-specific 1 MB limit or the ZIP over 60 MB, download is blocked and the result offers
+an explicit truecolor color-reduction retry. That retry preserves the selected frame count. Each
+animation's fitted RGBA frames are released immediately after its APNG and final-byte evidence are
+produced instead of being retained for the rest of the pack.
 
 The web app processes image and video pixels locally by default. Build, Sheet, Anim, and Video each expose the same five background choices: preserve the source, solid-color keying, browser-local IMG.LY, browser-local BiRefNet, or BiRefNet through the user's temporary Colab endpoint. IMG.LY has no Colab branch. All model choices are opt-in and never silently fall back to color keying.
 

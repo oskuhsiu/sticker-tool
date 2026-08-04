@@ -1,6 +1,21 @@
 # Popup Sticker Support Plan
 
-Status: completed and verified on 2026-08-04
+Status: completed and post-review safety corrections verified on 2026-08-04
+
+## Post-review safety corrections
+
+The follow-up review and product clarification changed these implementation details without changing
+LINE's type-specific count allowlists:
+
+- Static and Big Sticker packs accept 8/16/24/32/40; Animated and Pop-up Sticker packs accept
+  8/16/24 according to their separate current Creators Market pages.
+- Browser color reduction is opt-in. The first package preserves original colors, validates real bytes,
+  and only an over-budget result offers a reduction retry.
+- Big and Pop-up reduction candidates remain PNG color type 6; indexed output is never used to satisfy
+  the byte limit.
+- Pop-up color reduction preserves the selected frame count, and each item's fitted RGBA frames are
+  cleared immediately after final APNG inspection instead of accumulating across the pack.
+- Custom sheet grids are bounded before SVG cell allocation and before cutting.
 
 ## Goal
 
@@ -78,7 +93,9 @@ The current CLI remains unchanged. The browser workflow is the requested product
 
 1. Shared specification and validation stay in `src/core/` and remain platform-neutral.
 2. `StickerKind` gains `popup` only for shared count/bounds routing. Two-track package validation uses a dedicated typed function.
-3. Browser APNG processing receives explicit limits for frame count and maximum total duration. Existing Animated Sticker callers use the unchanged default.
+3. Browser APNG processing receives explicit limits for frame count and maximum total duration. Its UI
+   honors `autoFit`: original-color output is the default, while an explicit reduction selection searches
+   color candidates without reducing the chosen frame sequence.
 4. Final PNG/APNG bytes expose their PNG color type, and final pop-up APNG bytes are reopened to collect frame count, loop count, exact duration, alpha/foreground evidence, and distinct-frame evidence before validation. Popup validation requires truecolor RGBA (PNG color type 6), not indexed palette output.
 5. ZIP structure is explicit and tested:
 
@@ -229,3 +246,15 @@ Tasks:
 - Production preview + `node scripts/video-smoke.mjs http://localhost:4179/`: passed the complete Video
   V2 regression flow and final LINE ZIP validation.
 - `git diff --check`: passed.
+
+## Post-review verification evidence
+
+- `npm run typecheck`, `npm test`, and `npm run build`: passed; 75 tests passed.
+- `cd web && npm run typecheck` and `npm run build`: passed with only the existing service-worker and
+  ONNX `eval` warnings.
+- `cd web && npm run test:output-safety`: passed truecolor Big/Pop-up and opt-in reduction contracts,
+  including an over-budget original-color pass and a frame-preserving quantized APNG candidate.
+- Production browser smoke rejected `100000×100000` before allocating preview cells, observed eight Big
+  Sticker outputs at PNG color type 6, and inspected all 19 Pop-up ZIP entries as PNG color type 6.
+- The Pop-up loop explicitly clears each item's fitted frame array after final-byte inspection; only
+  encoded bytes, compact metadata, and notes remain in the package result collection.

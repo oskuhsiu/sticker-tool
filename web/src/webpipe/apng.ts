@@ -320,6 +320,8 @@ export interface AutoFitOptions {
   minFrames: number;
   priority: AnimPriority;
   ladder: 'auto' | LadderRung[];
+  /** Keep all encoded candidates as truecolor RGBA, including quantized candidates. */
+  forbidPalette?: boolean;
 }
 
 export interface AutoFitResult {
@@ -348,7 +350,7 @@ export function encodeApngAutoFit(frames: Raster[], opts: AutoFitOptions): AutoF
       loops: opts.loops,
       delaysMs,
       colors: step.colors,
-      forbidPalette: step.colors === 0,
+      forbidPalette: opts.forbidPalette ?? step.colors === 0,
     });
     const r: AutoFitResult = {
       png,

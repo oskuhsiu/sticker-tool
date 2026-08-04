@@ -97,11 +97,12 @@ function SheetMode() {
       bounds: maxBounds('animated'),
       removeBackground: false, // cutSheet 已去背
       animation: makeAnimation({ loops, durationSec: duration, stabilize: false, maxColors }),
+      preserveFrames: true,
     });
     for (const n of proc.notes) logger.log('info', n);
     const validation = validateAnimatedImage(proc.info);
     logger.log(
-      'ok',
+      validation.ok ? 'ok' : 'err',
       `${label}：${proc.info.width}×${proc.info.height}  ${proc.info.frames}格×${proc.info.loops}loop  ${kb(proc.info.bytes)}`,
     );
     setResult({
@@ -267,7 +268,7 @@ function SheetMode() {
         </Field>
         <Field label="減色（檔案較小）">
           <select value={maxColors} onChange={(e) => setMaxColors(Number(e.target.value))}>
-            <option value={0}>自動（超過 1MB 才減）</option>
+            <option value={0}>不降色（超過 1MB 時提示）</option>
             <option value={256}>最多 256 色</option>
             <option value={128}>最多 128 色</option>
             <option value={64}>最多 64 色</option>
@@ -295,8 +296,12 @@ function SheetMode() {
       {result && previewPng && (
         <div className="pack-result">
           <div className="pack-actions">
-            <button className="btn primary" onClick={() => downloadBytes(`${safeName(name)}.png`, result.png, 'image/png')}>
-              下載 APNG（{kb(result.png.length)}）
+            <button
+              className="btn primary"
+              disabled={!result.validation.ok}
+              onClick={() => downloadBytes(`${safeName(name)}.png`, result.png, 'image/png')}
+            >
+              {result.validation.ok ? `下載 APNG（${kb(result.png.length)}）` : '驗證未通過，不能下載 APNG'}
             </button>
             <button className="btn" onClick={() => setReplayKey((k) => k + 1)}>
               ↻ 重播
@@ -461,6 +466,7 @@ function PackMode() {
           stroke,
           text: makeText(texts[i] ?? '', textStyle),
           animation,
+          preserveFrames: true,
         });
         const note = proc.notes.length ? `（${proc.notes.join('；')}）` : '';
         logger.log('info', `${String(i + 1).padStart(2, '0')}.png  ${proc.info.width}×${proc.info.height}  ${proc.info.frames}格×${proc.info.loops}loop  ${kb(proc.info.bytes)} ${note}`);
@@ -558,7 +564,7 @@ function PackMode() {
         </Field>
         <Field label="減色（檔案較小）">
           <select value={maxColorsPack} onChange={(e) => setMaxColorsPack(Number(e.target.value))}>
-            <option value={0}>自動（超過 1MB 才減）</option>
+            <option value={0}>不降色（超過 1MB 時提示）</option>
             <option value={256}>最多 256 色</option>
             <option value={128}>最多 128 色</option>
             <option value={64}>最多 64 色</option>

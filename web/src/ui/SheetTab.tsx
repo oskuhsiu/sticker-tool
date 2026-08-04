@@ -4,7 +4,7 @@
  */
 
 import { useMemo, useRef, useState } from 'react';
-import { BIG_STICKER_SPEC, STATIC_SPEC, allowedCounts, maxBounds } from '@core/spec.js';
+import { BIG_STICKER_SPEC, STATIC_SPEC, ZIP_MAX_BYTES, allowedCounts, maxBounds } from '@core/spec.js';
 import { planGrid } from '@core/grid.js';
 import type { GridLayout } from '@core/types.js';
 import { validatePack } from '@core/validate.js';
@@ -22,7 +22,14 @@ import { buildPackZip } from '../webpipe/zip.js';
 import { registerUploadedFont } from '../webpipe/text.js';
 import { Field, FilePick, LogPane, Row, kb, sortFiles, useLogger } from './common.jsx';
 import { PackResult, type PackResultData } from './packResult.jsx';
-import { DEFAULT_TEXT_STYLE, makeStroke, makeText, parseGridText, type SharedTextStyle } from './defaults.js';
+import {
+  DEFAULT_TEXT_STYLE,
+  customGridIssue,
+  makeStroke,
+  makeText,
+  parseGridText,
+  type SharedTextStyle,
+} from './defaults.js';
 import { reportCut } from './cutReport.js';
 import { BackgroundRemovalControl } from './BackgroundRemovalControl.jsx';
 import { useColabBirefnetConnection } from './colabBirefnetConnection.jsx';
@@ -40,6 +47,7 @@ export function SheetTab() {
   const [strokeWidth, setStrokeWidth] = useState(8);
   const [strokeColor, setStrokeColor] = useState('#ffffff');
   const [cover, setCover] = useState(1);
+  const [reduceColors, setReduceColors] = useState(false);
   // 逐格疊字：每行一格（空行＝不疊字）；位置/大小/顏色共用
   const [textsRaw, setTextsRaw] = useState('');
   const [textStyle, setTextStyle] = useState<SharedTextStyle>(DEFAULT_TEXT_STYLE);
@@ -51,7 +59,7 @@ export function SheetTab() {
   const logger = useLogger();
   const { connection: colabConnection, registerActiveRemoval } = useColabBirefnetConnection();
 
-  async function run() {
+  async function run(reduceColorsOverride = reduceColors) {
     logger.clear();
     setResult(null);
     setBusy(true);
@@ -73,6 +81,11 @@ export function SheetTab() {
       }
       let layout = decision.layout;
       const override = parseGridText(gridText);
+      const overrideIssue = override ? customGridIssue(override) : null;
+      if (overrideIssue) {
+        logger.log('err', overrideIssue);
+        return;
+      }
       if (override && layout.sheets === 1) {
         if (override.cols * override.rows < layout.count) {
           logger.log('warn', `設定的網格 ${override.cols}×${override.rows} 容不下 ${layout.count} 張，改用自動版面`);
@@ -147,6 +160,8 @@ export function SheetTab() {
           stroke,
           text: makeText(texts[i] ?? '', style),
           maxBytes: spec.maxBytes,
+          reduceColors: reduceColorsOverride,
+          forbidPalette: stickerKind === 'big',
         });
         const note = r.notes.length ? `（${r.notes.join('；')}）` : '';
         logger.log('info', `${String(i + 1).padStart(2, '0')}.png  ${r.info.width}×${r.info.height}  ${kb(r.info.bytes)} ${note}`);
@@ -185,20 +200,26 @@ export function SheetTab() {
     }
   }
 
-  const previewLayout = useMemo(() => {
+  const previewState = useMemo((): { layout: GridLayout | null; issue: string | null } => {
     try {
       const d = planGrid(count, { isCharacter, forceOversizeSet: false });
       const g = parseGridText(gridText);
-      return g && d.layout.sheets === 1 && g.cols * g.rows >= count
-        ? ({ ...d.layout, ...g } satisfies GridLayout)
-        : d.layout;
-    } catch {
-      return null;
+      const issue = g ? customGridIssue(g) : null;
+      if (issue) return { layout: null, issue };
+      return {
+        layout: g && d.layout.sheets === 1 && g.cols * g.rows >= count
+          ? ({ ...d.layout, ...g } satisfies GridLayout)
+          : d.layout,
+        issue: null,
+      };
+    } catch (error) {
+      return { layout: null, issue: error instanceof Error ? error.message : String(error) };
     }
   }, [count, gridText, isCharacter]);
+  const previewLayout = previewState.layout;
   const layoutHint = previewLayout
     ? `版面：${previewLayout.cols}×${previewLayout.rows}${previewLayout.sheets > 1 ? ` × ${previewLayout.sheets} 張組圖` : ''}`
-    : '';
+    : previewState.issue ?? '';
 
   return (
     <section>
@@ -245,11 +266,11 @@ export function SheetTab() {
         <Field label="網格（auto 或 4x2）">
           <input value={gridText} onChange={(e) => setGridText(e.target.value)} style={{ width: '6em' }} />
         </Field>
-        <span className="layout-hint">{layoutHint}</span>
+        <span className="layout-hint" data-testid={previewState.issue ? 'sheet-grid-error' : undefined}>{layoutHint}</span>
       </Row>
       {stickerKind === 'big' && (
         <p className="layout-hint" data-testid="sheet-big-limits">
-          {`大貼圖限制：${BIG_STICKER_SPEC.minWidth}×${BIG_STICKER_SPEC.minHeight}–${BIG_STICKER_SPEC.maxWidth}×${BIG_STICKER_SPEC.maxHeight} px；寬高皆須為偶數；透明 PNG；單張 ≤${BIG_STICKER_SPEC.maxBytes / 1_000_000}MB；不需預留 margin。`}
+          {`大貼圖限制：${BIG_STICKER_SPEC.minWidth}×${BIG_STICKER_SPEC.minHeight}–${BIG_STICKER_SPEC.maxWidth}×${BIG_STICKER_SPEC.maxHeight} px；8／16／24／32／40 張；寬高皆須為偶數；透明 truecolor PNG；單張 ≤${BIG_STICKER_SPEC.maxBytes / 1_000_000}MB、整包 ≤${ZIP_MAX_BYTES / 1_000_000}MB；不需預留 margin。預設不降色，超標後才提供選用重試。`}
         </p>
       )}
       <Row>
@@ -319,7 +340,15 @@ export function SheetTab() {
         {modelStatus && <span className="model-status">{modelStatus}</span>}
       </div>
       <LogPane lines={logger.lines} />
-      {result && <PackResult data={result} />}
+      {result && (
+        <PackResult
+          data={result}
+          onReduceColors={reduceColors ? undefined : () => {
+            setReduceColors(true);
+            void run(true);
+          }}
+        />
+      )}
     </section>
   );
 }

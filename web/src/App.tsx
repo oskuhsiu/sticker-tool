@@ -70,7 +70,8 @@ export function App() {
             <p>
               規格：一般靜態 ≤370×320、大貼圖 80×524–396×660、動態 ≤320×270（一邊 ≥270）、
               全螢幕 APNG ≤480×480（一邊須為 480）；單檔 ≤1MB、偶數長寬、透明 PNG/APNG。
-              全螢幕包另檢查 RGB 真彩色並拒絕索引色。
+              一般／大貼圖張數為 8／16／24／32／40；動態／全螢幕包為 8／16／24。
+              大貼圖與全螢幕包另檢查 RGB 真彩色並拒絕索引色。
               詳見 <a href="https://creator.line.me/zh-hant/guideline/sticker" target="_blank" rel="noreferrer">一般貼圖規範</a>
               {' '}、<a href="https://creator.line.me/zh-hant/guideline/bigsticker/" target="_blank" rel="noreferrer">大貼圖規範</a>
               {' '}與 <a href="https://creator.line.me/zh-hant/guideline/popupsticker/" target="_blank" rel="noreferrer">全螢幕貼圖規範</a>。

@@ -9,14 +9,14 @@ export function makeAnimation(opts: {
   loops: number;
   durationSec: number;
   stabilize: boolean;
-  /** 減色上限：0=自動（超標才減）；256/128/64＝一開始就減（檔案小） */
+  /** 減色上限：0=不降色；256/128/64＝使用者明確要求降色 */
   maxColors?: number;
 }): AnimationConfig {
   return {
     maxBytes: 1_000_000,
     loops: opts.loops,
     durationSec: opts.durationSec,
-    autoFit: true,
+    autoFit: (opts.maxColors ?? 0) > 0,
     priority: 'balanced',
     minColors: 16,
     maxColors: opts.maxColors ?? 0,
@@ -52,6 +52,24 @@ export const DEFAULT_TEXT_STYLE: SharedTextStyle = {
   color: '#000000',
   font: '',
 };
+
+/** UI safety bound: LINE packs need at most 40 cells, while this still permits generous custom layouts. */
+export const MAX_CUSTOM_GRID_AXIS = 64;
+export const MAX_CUSTOM_GRID_CELLS = 400;
+
+export function customGridIssue(grid: { cols: number; rows: number }): string | null {
+  const { cols, rows } = grid;
+  if (!Number.isSafeInteger(cols) || !Number.isSafeInteger(rows) || cols < 1 || rows < 1) {
+    return `網格欄列必須是正整數，收到 ${cols}×${rows}`;
+  }
+  if (cols > MAX_CUSTOM_GRID_AXIS || rows > MAX_CUSTOM_GRID_AXIS) {
+    return `自訂網格單邊最多 ${MAX_CUSTOM_GRID_AXIS} 格，收到 ${cols}×${rows}`;
+  }
+  if (cols > Math.floor(MAX_CUSTOM_GRID_CELLS / rows)) {
+    return `自訂網格最多 ${MAX_CUSTOM_GRID_CELLS} 格，收到 ${cols}×${rows}`;
+  }
+  return null;
+}
 
 export function makeText(content: string, style: SharedTextStyle): TextSpec | undefined {
   const c = content.trim();

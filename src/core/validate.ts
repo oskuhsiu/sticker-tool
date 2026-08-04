@@ -138,6 +138,15 @@ export function validateBigStickerImage(info: ImageInfo, target?: string): Valid
   if (!info.hasAlpha) {
     issues.push(err('big.alpha', '大貼圖須為透明 RGBA PNG（缺 alpha 通道）', target));
   }
+  if (info.colorType !== 6) {
+    issues.push(
+      err(
+        'big.rgb',
+        `大貼圖必須是 RGBA PNG（PNG color type 6），收到 ${info.colorType ?? '缺少證據'}`,
+        target,
+      ),
+    );
+  }
   if (info.transparentPixels !== undefined && info.transparentPixels < 1) {
     issues.push(err('big.transparentPixels', '大貼圖沒有任何透明像素，背景可能尚未去除', target));
   }

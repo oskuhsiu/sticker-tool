@@ -10,6 +10,7 @@
     "build": "tsc --noEmit && vite build",
     "test:colab": "tsx --tsconfig tsconfig.json scripts/colab-birefnet-contract.mts",
     "test:background-removal": "tsx --tsconfig tsconfig.json scripts/background-removal-contract.mts",
+    "test:output-safety": "tsx --tsconfig tsconfig.json scripts/output-safety-contract.mts",
     "test:local-birefnet": "tsx --tsconfig tsconfig.json scripts/local-birefnet-contract.mts",
     "test:video": "tsx --tsconfig tsconfig.json scripts/video-project-roundtrip.mts",
     "test:video-spike": "tsx --tsconfig tsconfig.json scripts/video-all-frames-spike.mts",

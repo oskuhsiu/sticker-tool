@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { GridLayout } from '@core/types.js';
+import { customGridIssue } from './defaults.js';
 
 type NaturalSize = { url: string; width: number; height: number };
 
@@ -25,6 +26,15 @@ export function SheetCutPreview(props: { sheets: File[]; layout: GridLayout | nu
   if (!props.layout || props.sheets.length === 0 || !urlsReady) return null;
 
   const { cols, rows, cellsPerSheet, count, sheets: expectedSheets } = props.layout;
+  const gridIssue = customGridIssue({ cols, rows });
+  if (gridIssue) {
+    return (
+      <section className="sheet-cut-preview" data-testid="sheet-cut-preview-rejected">
+        <h3>切割示意無法顯示</h3>
+        <p className="sheet-cut-preview-note">{gridIssue}</p>
+      </section>
+    );
+  }
   const cellsInGrid = cols * rows;
 
   return (
