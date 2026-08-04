@@ -26,8 +26,21 @@ export interface ProcessAnimatedOptions {
   stroke?: StrokeSpec;
   text?: TextSpec;
   animation: AnimationConfig;
+  /** Explicit frame/duration limits for workflows with a different APNG contract. */
+  limits?: AnimatedProcessingLimits;
   /** 影格率；給定則由它定每格延遲，否則用 animation.durationSec */
   fps?: number;
+}
+
+export interface AnimatedProcessingLimits {
+  /** Minimum number of frames accepted before encoding. */
+  minFrames: number;
+  /** Maximum number of frames retained before fitting/encoding. */
+  maxFrames: number;
+  /** Maximum total playback duration across all loops, in seconds. */
+  maxDurationSec: number;
+  /** Optional label used in processing notes. */
+  label?: string;
 }
 
 export interface ProcessedAnimated {
@@ -43,6 +56,11 @@ export interface ProcessedAnimated {
 }
 
 const DEFAULT_BOUNDS: Bounds = { width: ANIMATED_SPEC.maxWidth, height: ANIMATED_SPEC.maxHeight };
+const DEFAULT_LIMITS: AnimatedProcessingLimits = {
+  minFrames: ANIMATED_SPEC.minFrames,
+  maxFrames: ANIMATED_SPEC.maxFrames,
+  maxDurationSec: ANIMATED_SPEC.maxDurationSec,
+};
 
 export async function processAnimated(
   frameInputs: Raster[],
@@ -50,15 +68,17 @@ export async function processAnimated(
 ): Promise<ProcessedAnimated> {
   const notes: string[] = [];
   const bounds = opts.bounds ?? DEFAULT_BOUNDS;
+  const limits = resolveLimits(opts.limits);
 
-  // 1) 影格數夾在 [minFrames, 20]
-  if (frameInputs.length < ANIMATED_SPEC.minFrames) {
-    throw new Error(`動態貼圖至少需 ${ANIMATED_SPEC.minFrames} 格，只有 ${frameInputs.length}`);
+  // 1) 影格數夾在工作流指定的上下限（預設為一般動態貼圖規格）
+  if (frameInputs.length < limits.minFrames) {
+    throw new Error(`動態貼圖至少需 ${limits.minFrames} 格，只有 ${frameInputs.length}`);
   }
   let frames = frameInputs;
-  if (frames.length > ANIMATED_SPEC.maxFrames) {
-    frames = subsampleFrames(frames, ANIMATED_SPEC.maxFrames);
-    notes.push(`影格 ${frameInputs.length}→${ANIMATED_SPEC.maxFrames}（LINE 上限）`);
+  if (frames.length > limits.maxFrames) {
+    frames = subsampleFrames(frames, limits.maxFrames);
+    const suffix = limits.label ? `（${limits.label} 上限）` : '（LINE 上限）';
+    notes.push(`影格 ${frameInputs.length}→${limits.maxFrames}${suffix}`);
   }
 
   // 2) 統一尺寸 + 去背（全部影格先到手；穩定化要跨格一起算錨點中位數）
@@ -97,12 +117,12 @@ export async function processAnimated(
     fitted.push(r);
   }
 
-  // 3) 每格延遲（維持 loops × 單輪時長 ≤ 4s）
+  // 3) 每格延遲（維持 loops × 單輪時長不超過目前工作流上限）
   let perLoopSec = opts.fps ? fitted.length / opts.fps : opts.animation.durationSec;
   const total = opts.animation.loops * perLoopSec;
-  if (total > ANIMATED_SPEC.maxDurationSec) {
-    perLoopSec = ANIMATED_SPEC.maxDurationSec / opts.animation.loops;
-    notes.push(`總時長 ${total.toFixed(1)}s>${ANIMATED_SPEC.maxDurationSec}s，單輪壓到 ${perLoopSec.toFixed(2)}s`);
+  if (total > limits.maxDurationSec) {
+    perLoopSec = limits.maxDurationSec / opts.animation.loops;
+    notes.push(`總時長 ${total.toFixed(1)}s>${limits.maxDurationSec}s，單輪壓到 ${perLoopSec.toFixed(2)}s`);
   }
   const delayMs = (perLoopSec * 1000) / fitted.length;
 
@@ -114,7 +134,7 @@ export async function processAnimated(
     maxBytes: opts.animation.maxBytes,
     minColors: opts.animation.minColors,
     maxColors: opts.animation.maxColors,
-    minFrames: opts.animation.minFrames,
+    minFrames: Math.max(limits.minFrames, opts.animation.minFrames),
     priority: opts.animation.priority,
     ladder: opts.animation.ladder,
   });
@@ -142,4 +162,20 @@ export async function processAnimated(
     usedFrameIndices: fit.usedFrameIndices,
     frameDelaysMs: fit.delaysMs,
   };
+}
+
+function resolveLimits(limits?: AnimatedProcessingLimits): AnimatedProcessingLimits {
+  if (!limits) return DEFAULT_LIMITS;
+  if (!Number.isInteger(limits.minFrames) || limits.minFrames < 1) {
+    throw new RangeError(`動畫 minFrames 必須是正整數，收到 ${limits.minFrames}`);
+  }
+  if (!Number.isInteger(limits.maxFrames) || limits.maxFrames < limits.minFrames) {
+    throw new RangeError(
+      `動畫 maxFrames 必須是不小於 minFrames（${limits.minFrames}）的整數，收到 ${limits.maxFrames}`,
+    );
+  }
+  if (!Number.isFinite(limits.maxDurationSec) || limits.maxDurationSec <= 0) {
+    throw new RangeError(`動畫 maxDurationSec 必須是正數，收到 ${limits.maxDurationSec}`);
+  }
+  return limits;
 }

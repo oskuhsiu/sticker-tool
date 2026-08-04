@@ -3,16 +3,18 @@
  *   0. Colab + BiRefNet 獨立教學頁：可直接開啟與回主工具
  *   1. 本機圖片打包：8 張透明底圖 → 靜態包 → 驗證全過
  *   2. 組圖切格：4×2 綠幕組圖 → 色鍵去背切格 → 靜態包 → 驗證全過
+ *   2c. Pop-up Sticker：8 靜態 + 8×5 影格 → 雙軌 ZIP → 精確路徑檢查
  *   3. 動態 APNG（單組圖）：4×4 透明底影格組圖 → APNG → 驗證全過
  *   4. 產圖 Prompt：靜態/動態 prompt 內容檢查
  * 用法：node scripts/smoke.mjs <previewURL>
  * 產出 fixtures 到 _smoke/，結果印到 stdout（CI/終端可讀）。
  */
 
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import UPNG from 'upng-js';
+import { unzipSync } from 'fflate';
 import { chromium } from 'playwright';
 
 const here = path.dirname(fileURLToPath(new URL(import.meta.url)));
@@ -71,6 +73,25 @@ for (let i = 0; i < 8; i++) {
   fillCircle(c, 160 + i - 4, 205, 76, [225, 112 + i * 5, 65, 255]);
   fillCircle(c, 160 + i - 4, 105, 58, [45, 52, 70, 255]);
   opaqueSingles.push(savePng(c, `opaque_${String(i + 1).padStart(2, '0')}.png`));
+}
+
+// 1c) Popup Sticker fixture：8 個獨立靜態來源 + 每張 5 格透明動畫影格
+const popupStatics = [];
+const popupFrameSets = [];
+for (let sticker = 0; sticker < 8; sticker++) {
+  const staticCanvas = makeCanvas(420, 380);
+  fillCircle(staticCanvas, 210, 230, 112, [80 + sticker * 15, 90, 210 - sticker * 12, 255]);
+  fillCircle(staticCanvas, 210, 108, 68, [25 + sticker * 4, 30, 55, 255]);
+  popupStatics.push(savePng(staticCanvas, `popup_static_${String(sticker + 1).padStart(2, '0')}.png`));
+  const frames = [];
+  for (let frame = 0; frame < 5; frame++) {
+    const animatedCanvas = makeCanvas(240, 240);
+    const dx = frame * 7;
+    fillCircle(animatedCanvas, 120 + dx, 145, 58, [80 + sticker * 15, 90 + frame * 12, 210 - sticker * 12, 255]);
+    fillCircle(animatedCanvas, 120 + dx, 78, 34, [25 + sticker * 4, 30 + frame * 4, 55, 255]);
+    frames.push(savePng(animatedCanvas, `popup_${String(sticker + 1).padStart(2, '0')}_frame_${frame + 1}.png`));
+  }
+  popupFrameSets.push(frames);
 }
 
 // 2) 4×2 綠幕組圖（純綠底，主體置中留縫：走 chroma key 路徑，不需 onnx 模型）
@@ -326,6 +347,51 @@ try {
     await expectText('sheet', '全部符合 LINE 規格', 300_000);
     results.push('✓ IMG.LY 組圖 crops → mask 拼回 → component-aware 切格：驗證全過');
   }
+
+  // --- 2c) Pop-up Sticker 雙軌整包：8 靜態 + 8×5 APNG → 精確 ZIP 路徑 ---
+  await page.click('.tabs >> text=動態 APNG');
+  const animTab = page.locator('[data-tab="anim"]');
+  await animTab.locator('[data-testid="anim-mode-popup"]').click();
+  await animTab.locator('[data-testid="popup-count"]').selectOption('8');
+  await animTab.locator('[data-testid="popup-duration"]').selectOption('1');
+  await animTab.locator('[data-testid="popup-loops"]').selectOption('3');
+  await animTab.locator('[data-testid="popup-static-picker"] input[type=file]').setInputFiles(popupStatics);
+  for (let index = 0; index < popupFrameSets.length; index++) {
+    await animTab.locator(`[data-testid="popup-frame-picker-${index + 1}"] input[type=file]`).setInputFiles(popupFrameSets[index]);
+  }
+  await animTab.locator('[data-testid="popup-run"]').click();
+  await expectText('anim', '全部符合 LINE 規格', 180_000);
+  const popupResult = animTab.locator('[data-testid="popup-result"]');
+  await popupResult.waitFor();
+  const staticAssetCount = await popupResult.locator('[data-testid="popup-static-assets"] .png-preview img').count();
+  const popupAssetCount = await popupResult.locator('[data-testid="popup-animated-assets"] .png-preview img').count();
+  if (staticAssetCount !== 8 || popupAssetCount !== 8) {
+    throw new Error(`Pop-up 結果資產數量應為 8/8，實際 ${staticAssetCount}/${popupAssetCount}`);
+  }
+  await page.waitForFunction(() => {
+    const root = document.querySelector('[data-testid="popup-main-popup-preview"] img');
+    const popups = document.querySelectorAll('[data-testid="popup-animated-assets"] .png-preview img');
+    return root instanceof HTMLImageElement && root.complete && root.naturalWidth === 480 && root.naturalHeight === 480
+      && popups.length === 8 && Array.from(popups).every((image) => image instanceof HTMLImageElement && image.complete && image.naturalWidth === 480 && image.naturalHeight === 480);
+  }, undefined, { timeout: 180_000 });
+  const popupDownload = page.waitForEvent('download');
+  await popupResult.locator('[data-testid="popup-download-zip"]').click();
+  const download = await popupDownload;
+  const downloadPath = await download.path();
+  if (!downloadPath) throw new Error('Pop-up ZIP 下載沒有可讀取的暫存路徑');
+  const zipEntries = Object.keys(unzipSync(new Uint8Array(readFileSync(downloadPath)))).sort();
+  const expectedPopupEntries = [
+    'png/main.png',
+    'popup/main_popup.png',
+    'png/tab.png',
+    ...Array.from({ length: 8 }, (_, index) => `png/${String(index + 1).padStart(2, '0')}.png`),
+    ...Array.from({ length: 8 }, (_, index) => `popup/${String(index + 1).padStart(2, '0')}.png`),
+  ].sort();
+  if (JSON.stringify(zipEntries) !== JSON.stringify(expectedPopupEntries)) {
+    throw new Error(`Pop-up ZIP 路徑不符：${JSON.stringify(zipEntries)}`);
+  }
+  results.push('✓ Pop-up Sticker 雙軌整包：驗證全過、480×480 APNG 8+8、ZIP 精確 19 路徑');
+  await animTab.locator('[data-testid="anim-mode-sheet"]').click();
 
   // --- 3) 動態 APNG：單組圖模式 ---
   await page.click('.tabs >> text=動態 APNG');

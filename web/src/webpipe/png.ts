@@ -8,9 +8,9 @@ import type { ImageInfo } from '@core/validate.js';
 import type { Raster } from './raster.js';
 
 /** Raster → PNG bytes。colors=0 無損，>0 量化到該色數。 */
-export function encodePng(r: Raster, colors = 0): Uint8Array {
+export function encodePng(r: Raster, colors = 0, forbidPalette = false): Uint8Array {
   const ab = r.data.buffer.slice(r.data.byteOffset, r.data.byteOffset + r.data.byteLength);
-  return new Uint8Array(UPNG.encode([ab as ArrayBuffer], r.width, r.height, colors));
+  return new Uint8Array(UPNG.encode([ab as ArrayBuffer], r.width, r.height, colors, undefined, forbidPalette));
 }
 
 /** PNG bytes → Raster（APNG 取首格） */
@@ -36,6 +36,7 @@ export function pngImageInfo(png: Uint8Array): ImageInfo {
     bytes: png.length,
     hasAlpha,
     channels,
+    colorType: img.ctype,
     isApng: !!actl,
     frames: actl?.num_frames ?? 1,
     loops: actl?.num_plays ?? 0,

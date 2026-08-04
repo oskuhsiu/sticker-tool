@@ -22,4 +22,26 @@ export function stickerFileNames(count: number): string[] {
 }
 
 export const MAIN_FILE = 'main.png';
+export const POPUP_MAIN_FILE = 'main_popup.png';
 export const TAB_FILE = 'tab.png';
+
+/** Popup Sticker 靜態貼圖的 archive 資料夾。 */
+export const POPUP_STATIC_DIR = 'png';
+/** Popup Sticker 動畫貼圖的 archive 資料夾。 */
+export const POPUP_ANIMATION_DIR = 'popup';
+/** Popup Sticker 靜態封面的 archive 路徑。 */
+export const POPUP_STATIC_MAIN_PATH = `${POPUP_STATIC_DIR}/${MAIN_FILE}`;
+/** Popup Sticker 聊天室縮圖的 archive 路徑。 */
+export const POPUP_STATIC_TAB_PATH = `${POPUP_STATIC_DIR}/${TAB_FILE}`;
+/** Popup Sticker 動畫封面的 archive 路徑。 */
+export const POPUP_ANIMATION_MAIN_PATH = `${POPUP_ANIMATION_DIR}/${POPUP_MAIN_FILE}`;
+
+/** Popup Sticker 靜態貼圖的 archive 路徑（例如 `png/01.png`）。 */
+export function popupStaticFilePath(oneBasedIndex: number): string {
+  return `${POPUP_STATIC_DIR}/${stickerFileName(oneBasedIndex)}`;
+}
+
+/** Popup Sticker 動畫貼圖的 archive 路徑（例如 `popup/01.png`）。 */
+export function popupAnimationFilePath(oneBasedIndex: number): string {
+  return `${POPUP_ANIMATION_DIR}/${stickerFileName(oneBasedIndex)}`;
+}

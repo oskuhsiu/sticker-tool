@@ -31,9 +31,14 @@ export function buildMainTab(coverStatic: Raster): MainTabResult {
     mode: 'exact',
     marginPx: 4,
   });
-  const main = encodePng(mainFit);
-  const tab = encodePng(tabFit);
-  return { main, tab, mainInfo: pngImageInfo(main), tabInfo: pngImageInfo(tab) };
+  const main = encodePng(mainFit, 0, true);
+  const tab = encodePng(tabFit, 0, true);
+  return {
+    main,
+    tab,
+    mainInfo: { ...pngImageInfo(main), ...contentEvidence(mainFit) },
+    tabInfo: { ...pngImageInfo(tab), ...contentEvidence(tabFit) },
+  };
 }
 
 /** tab.png 單獨產（動態包用：tab 仍是靜態，取封面首格） */
@@ -43,15 +48,19 @@ export function buildTab(coverFrame: Raster): { tab: Uint8Array; tabInfo: ImageI
     mode: 'exact',
     marginPx: 4,
   });
-  const tab = encodePng(tabFit);
+  const tab = encodePng(tabFit, 0, true);
   const tabInfo = pngImageInfo(tab);
+  return { tab, tabInfo: { ...tabInfo, ...contentEvidence(tabFit) } };
+}
+
+function contentEvidence(raster: Raster): Pick<ImageInfo, 'transparentPixels' | 'foregroundPixels'> {
   let transparentPixels = 0;
   let foregroundPixels = 0;
-  for (let index = 3; index < tabFit.data.length; index += 4) {
-    if (tabFit.data[index]! < 255) transparentPixels++;
-    if (tabFit.data[index]! > 10) foregroundPixels++;
+  for (let index = 3; index < raster.data.length; index += 4) {
+    if (raster.data[index]! < 255) transparentPixels++;
+    if (raster.data[index]! > 10) foregroundPixels++;
   }
-  return { tab, tabInfo: { ...tabInfo, transparentPixels, foregroundPixels } };
+  return { transparentPixels, foregroundPixels };
 }
 
 /** Video v2 main: preserve the cover sticker's actual frames, delays, and loop count. */

@@ -19,8 +19,12 @@ export interface PngFitResult {
 }
 
 /** 把 Raster 編成 ≤ maxBytes 的 PNG。先試無損；超標才沿色階減色，第一個達標即停。 */
-export function fitPngUnderBytes(input: Raster, maxBytes: number): PngFitResult {
-  const lossless = encodePng(input, 0);
+export function fitPngUnderBytes(
+  input: Raster,
+  maxBytes: number,
+  options: { forbidPalette?: boolean } = {},
+): PngFitResult {
+  const lossless = encodePng(input, 0, options.forbidPalette);
   if (lossless.length <= maxBytes) {
     return { png: lossless, bytes: lossless.length, colors: null, overBudget: false };
   }
@@ -33,7 +37,7 @@ export function fitPngUnderBytes(input: Raster, maxBytes: number): PngFitResult 
   };
 
   for (const colors of COLOR_LADDER) {
-    const png = encodePng(input, colors);
+    const png = encodePng(input, colors, options.forbidPalette);
     if (png.length < best.bytes) {
       best = { png, bytes: png.length, colors, overBudget: png.length > maxBytes };
     }

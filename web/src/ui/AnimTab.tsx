@@ -1,7 +1,8 @@
 /**
- * 動態貼圖（APNG）——對應 CLI `anim` 的兩種模式：
+ * 動態貼圖（APNG）——同一分頁內的三種模式：
  *   單組圖：一張 frames-sheet 切格 → 穩定化 → fit → 一段動畫 APNG。
  *   整包：每張貼圖一組連續影格 → 8/16/24 張動態貼圖上架包（main 為 APNG）。
+ *   全螢幕貼圖整包：獨立靜態貼圖 + 每張 Pop-up APNG 影格 → 雙軌 ZIP。
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -28,24 +29,34 @@ import { reportCut } from './cutReport.js';
 import { BackgroundRemovalControl } from './BackgroundRemovalControl.jsx';
 import { useColabBirefnetConnection } from './colabBirefnetConnection.jsx';
 import type { ValidationResult } from '@core/types.js';
+import { PopupPackMode } from './PopupPackMode.jsx';
 
-type Mode = 'sheet' | 'pack';
+type Mode = 'sheet' | 'pack' | 'popup';
 
 export function AnimTab() {
   const [mode, setMode] = useState<Mode>('sheet');
   return (
     <section>
       <div className="mode-switch">
-        <label>
+        <label data-testid="anim-mode-sheet">
           <input type="radio" checked={mode === 'sheet'} onChange={() => setMode('sheet')} />
           單張組圖 → 一段動畫
         </label>
-        <label>
+        <label data-testid="anim-mode-pack">
           <input type="radio" checked={mode === 'pack'} onChange={() => setMode('pack')} />
           整包（每張貼圖一組影格）
         </label>
+        <label data-testid="anim-mode-popup">
+          <input
+            type="radio"
+            aria-label="全螢幕貼圖整包"
+            checked={mode === 'popup'}
+            onChange={() => setMode('popup')}
+          />
+          全螢幕貼圖整包
+        </label>
       </div>
-      {mode === 'sheet' ? <SheetMode /> : <PackMode />}
+      {mode === 'sheet' ? <SheetMode /> : mode === 'pack' ? <PackMode /> : <PopupPackMode />}
     </section>
   );
 }

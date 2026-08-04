@@ -4,7 +4,7 @@ Last verified against the source tree on 2026-08-04.
 
 ## Purpose and boundaries
 
-`sticker-tool` is a deterministic post-processing and packaging system for LINE sticker assets. It accepts local images, sprite sheets, or animation frames and produces regular static PNG, browser Big Sticker PNG, or animated APNG packages plus metadata-based validation results.
+`sticker-tool` is a deterministic post-processing and packaging system for LINE sticker assets. It accepts local images, sprite sheets, or animation frames and produces regular static PNG, browser Big Sticker PNG, regular animated APNG, or paired browser Pop-up Sticker packages plus metadata-based validation results.
 
 The system deliberately does not call an AI image-generation API. Artwork can come from any external tool. The prompt builder and project-local skills help create suitable inputs, while the application owns repeatable image processing, packaging, and LINE-spec checks.
 
@@ -32,7 +32,7 @@ Both surfaces import `src/core/` directly. They intentionally have separate imag
 
 The shared core contains no Node filesystem or browser DOM dependencies.
 
-- `spec.ts` defines LINE regular-static, Big Sticker, animated, count, byte, frame, loop, main, tab, and ZIP limits.
+- `spec.ts` defines LINE regular-static, Big Sticker, animated, Pop-up Sticker, count, byte, frame, loop, main, tab, and ZIP limits.
 - `types.ts` defines normalized configuration and pipeline contracts.
 - `validate.ts` validates image metadata and complete package metadata.
 - `grid.ts` plans sprite-sheet dimensions and enforces character-sheet quality thresholds.
@@ -87,9 +87,9 @@ The Node pipeline uses `sharp`, `@imgly/background-removal-node`, and `upng-js`.
 
 ### Browser application: `web/`
 
-`web/src/App.tsx` exposes five React tabs: build, sheet, animation, video-to-APNG, and prompt. Every tab remains mounted while hidden so switching tabs preserves selected files and results. The video tab is a browser-only workflow and does not add a CLI command. `#/colab-birefnet` is an independent tutorial page; opening it hides but does not unmount the workflow tabs.
+`web/src/App.tsx` exposes five React tabs: build, sheet, animation, video-to-APNG, and prompt. The animation tab contains frame-sheet, regular animated-pack, and paired Pop-up Sticker modes. Every tab remains mounted while hidden so switching tabs preserves selected files and results. The video and Pop-up Sticker modes are browser-only and do not add CLI commands. `#/colab-birefnet` is an independent tutorial page; opening it hides but does not unmount the workflow tabs.
 
-`web/src/ui/` owns workflow state, logging, previews, downloads, validation display, and manual frame alignment. `SheetCutPreview.tsx` renders the Sheet tab's pre-process nominal grid without running background removal; the actual cutter may still snap its references to detected gutters. `ManualLayout.tsx` provides onion-skin alignment and applies user offsets before animation processing. `ColabBirefnetGuide.tsx` owns the tutorial and in-memory connection form; `colabBirefnetConnection.tsx` keeps the rotating endpoint and session key only for the current page lifetime and aborts active requests when the connection changes.
+`web/src/ui/` owns workflow state, logging, previews, downloads, validation display, and manual frame alignment. `SheetCutPreview.tsx` renders the Sheet tab's pre-process nominal grid without running background removal; the actual cutter may still snap its references to detected gutters. `PopupPackMode.tsx` owns the paired static/frame inputs and the browser-only Pop-up Sticker result. `ManualLayout.tsx` provides onion-skin alignment and applies user offsets before animation processing. `ColabBirefnetGuide.tsx` owns the tutorial and in-memory connection form; `colabBirefnetConnection.tsx` keeps the rotating endpoint and session key only for the current page lifetime and aborts active requests when the connection changes.
 
 `web/src/webpipe/` mirrors the Node pipeline using browser primitives:
 
@@ -98,7 +98,8 @@ The Node pipeline uses `sharp`, `@imgly/background-removal-node`, and `upng-js`.
 - `backgroundRemovalJob.ts` turns the five UI modes into one sequential, cancellable job contract. IMG.LY and local BiRefNet are dynamically loaded only for their respective modes; Colab is available only for BiRefNet.
 - `@imgly/background-removal` provides the self-hosted browser-local IMG.LY adapter. Its per-job progress callback avoids cross-talk between the always-mounted tabs.
 - `sheetBackgroundRemoval.ts` applies semantic removal to overlapping nominal-cell crops, merges their alpha masks over the original RGB sheet, and then hands the full sheet to component-aware extraction.
-- `upng-js` remains the APNG encoder.
+- `upng-js` remains the APNG encoder. Final-byte APNG inspection supplies the strict timing, loop, frame, alpha, and distinct-visual evidence used by Popup Sticker validation.
+- `zip.ts` emits the usual flat packs or the explicit Pop-up Sticker hierarchy: static cover/tab and numbered files under `png/`, with the animated cover and numbered files under `popup/`.
 - `fflate` creates ZIP bytes for download.
 - `videoSource.ts` uses Mediabunny plus WebCodecs to enumerate decoded presentation samples, normalize
   integer-microsecond intervals, apply display rotation/aspect metadata, and decode local frames.
@@ -183,11 +184,41 @@ Load at least 5 frames and subsample above 20
   -> read APNG metadata back
 ```
 
-The implementation treats `durationSec` as per-loop duration. It reduces that value if `loops × duration` would exceed four seconds, including to fractional values, and encodes one rounded millisecond delay for every frame. APNG loop count is explicitly rewritten to a finite value from 1 through 4. LINE only allows 1, 2, 3, or 4 seconds per playback, so the current clamp and rounding behavior is a known compliance gap.
+The regular animation implementation treats `durationSec` as per-loop duration. It reduces that value
+if `loops × duration` would exceed four seconds, including to fractional values, and encodes distributed
+integer-millisecond delays. APNG loop count is explicitly rewritten to a finite value from 1 through 4.
+LINE only allows 1, 2, 3, or 4 seconds per playback, so the regular adapter's fractional clamp remains a
+known compliance gap. Popup mode avoids that path by exposing only legal duration/loop combinations and
+checking exact decoded duration from final bytes.
 
 A frame sheet first applies the selected sheet background mode, then goes through component-aware extraction with `align: "grid"`. Semantic modes use the same overlapping-crop alpha merge as static sheets. The current implementation performs scene alignment and then lower-body X/Y anchoring while constructing the common grid-relative cells. Subject-anchor stabilization in `processAnimated` is disabled afterward because applying another alignment system could move scene elements out of the canvas. Independent frame groups apply their selected remover after frame-count normalization and before stabilization and fitting, reusing one model job for the group. The browser offers manual onion-skin adjustment as an additional path. The lower-body anchoring can erase intentional whole-body movement such as jumping; see the implementation audit.
 
 For complete animated packs, the selected cover's fitted frames also generate animated `main.png`; the first fitted cover frame generates static `tab.png`.
+
+### Pop-up Sticker processing
+
+The browser-only third animation mode keeps LINE's static and full-screen assets explicit:
+
+```text
+8/16/24 static source images + one 5–20-frame sequence per item
+  -> one shared, sequential background-removal job
+  -> static sources: trim/fit without proactive margin -> numbered PNGs
+  -> frame sequences: optional stabilization -> exact 480×480 fit -> APNG
+  -> reopen every APNG and collect decoded timing/content evidence
+  -> derive main.png/tab.png from the selected static cover
+  -> reuse the selected 480×480 cover APNG as main_popup.png
+  -> strict paired-pack validation
+  -> png/main.png + png/tab.png + png/NN.png
+  -> popup/main_popup.png + popup/NN.png ZIP
+```
+
+The existing browser animated processor accepts explicit frame-count and total-duration limits; omitting
+them preserves the regular Animated Sticker defaults. Pop-up Sticker mode passes the separate 5–20 frame,
+1–3 loop, 1/2/3-second per-loop, and three-second total contract. A fixed 480×480 canvas is a deliberate
+V1 subset of LINE's wider 480-sided geometry, not a claim that a square fills every phone screen. The
+final-byte gate also rejects indexed PNG/APNG output and requires decoded transparency and visible
+content. Top/Center/Bottom display choice remains submission metadata on LINE My Page and is not
+represented in the archive.
 
 ### Video sheet to editable APNG pack
 
@@ -249,9 +280,12 @@ Grid policy, style, identity constraints, background requirements, and per-cell 
 The processing pipelines collect image metadata and pass it to shared pure validators. Validation covers
 allowed pack counts, bounds, even dimensions, alpha/content evidence, byte limits, APNG frame/loop/delay
 metadata, requested-target equality, adjacent decoded duplicates, main/tab evidence, and ZIP size when
-the adapter supplies those fields. Video V2 always supplies evidence reopened from final delivery bytes.
+the adapter supplies those fields. Video V2 and Pop-up Sticker mode supply evidence reopened from final
+delivery bytes.
 
-Validation operates on metadata returned by the current pipeline; it does not reopen and audit every file from the completed ZIP. Animation duration is constrained while processing rather than represented in `ImageInfo`.
+Validation operates on metadata returned by the current pipeline; it does not reopen and audit every file
+from the completed ZIP. Popup and Video V2 adapters represent decoded duration in `ImageInfo`; older
+regular animation adapters may still omit it.
 
 Other older adapters do not yet reopen and audit every completed ZIP entry or populate every optional
 pixel/timing field, so a successful report remains a diagnostic rather than proof of marketplace

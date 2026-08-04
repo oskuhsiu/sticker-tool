@@ -24,6 +24,8 @@ export interface ProcessStaticOptions {
   stroke?: StrokeSpec;
   text?: TextSpec;
   maxBytes?: number;
+  /** Keep the delivered PNG in truecolor RGBA mode even after color reduction. */
+  forbidPalette?: boolean;
 }
 
 export interface ProcessedSticker {
@@ -70,7 +72,7 @@ export async function processStatic(
   }
 
   // 5) 壓到 ≤ maxBytes
-  const fit = fitPngUnderBytes(current, maxBytes);
+  const fit = fitPngUnderBytes(current, maxBytes, { forbidPalette: opts.forbidPalette });
   if (fit.colors !== null) notes.push(`減色至 ${fit.colors} 色以符合 ${(maxBytes / 1024).toFixed(0)}KB`);
   if (fit.overBudget) notes.push(`⚠ 仍超過 ${(maxBytes / 1024).toFixed(0)}KB（${(fit.bytes / 1024).toFixed(0)}KB）`);
 

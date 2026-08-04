@@ -7,9 +7,12 @@
  */
 
 import UPNG from 'upng-js';
+import { adjacentDuplicateIndices, equalRgbaFrames } from '@core/frameSequence.js';
 import type { AnimPriority, LadderRung } from '@core/types.js';
+import type { ImageInfo } from '@core/validate.js';
 import { distributeFrameDelays } from '@core/videoCrop.js';
 import type { Raster } from './raster.js';
+import { pngImageInfo } from './png.js';
 
 /** 驗證影格等尺寸並轉成 RGBA8 ArrayBuffer 陣列 */
 function framesToRgba(frames: Raster[]): { bufs: ArrayBuffer[]; width: number; height: number } {
@@ -116,6 +119,64 @@ export function decodeApngFrames(png: Uint8Array): {
     })),
     delaysMs,
     loops: img.tabs.acTL?.num_plays ?? 0,
+  };
+}
+
+/**
+ * Reopen final PNG/APNG bytes and collect evidence from the decoded visuals.
+ * This deliberately does not inspect pre-encode frames, since palette fitting,
+ * APNG compositing, and delay rounding can all change the delivered bytes.
+ */
+export interface AnimatedByteEvidence {
+  frames: Raster[];
+  delaysMs: number[];
+  loops: number;
+  info: ImageInfo;
+  distinctFrames: number;
+  adjacentDuplicateFrames: number;
+  transparentPixels: number;
+  foregroundPixels: number;
+}
+
+export function inspectAnimatedBytes(
+  png: Uint8Array,
+  requestedFrames?: number,
+): AnimatedByteEvidence {
+  const decoded = decodeApngFrames(png);
+  const base = pngImageInfo(png);
+  const unique: Raster[] = [];
+  let transparentPixels = 0;
+  let foregroundPixels = 0;
+  for (const frame of decoded.frames) {
+    if (!unique.some((candidate) => equalRgbaFrames(candidate, frame))) unique.push(frame);
+    for (let index = 3; index < frame.data.length; index += 4) {
+      const alpha = frame.data[index]!;
+      if (alpha < 255) transparentPixels++;
+      if (alpha > 10) foregroundPixels++;
+    }
+  }
+  const adjacentDuplicateFrames = adjacentDuplicateIndices(decoded.frames, equalRgbaFrames).length;
+  const durationMs = decoded.delaysMs.reduce((sum, delay) => sum + delay, 0);
+  const info: ImageInfo = {
+    ...base,
+    frames: decoded.frames.length,
+    requestedFrames,
+    loops: decoded.loops,
+    durationMs,
+    distinctFrames: unique.length,
+    adjacentDuplicateFrames,
+    transparentPixels,
+    foregroundPixels,
+  };
+  return {
+    frames: decoded.frames,
+    delaysMs: decoded.delaysMs,
+    loops: decoded.loops,
+    info,
+    distinctFrames: unique.length,
+    adjacentDuplicateFrames,
+    transparentPixels,
+    foregroundPixels,
   };
 }
 

@@ -7,6 +7,8 @@ import {
   ANIMATED_SPEC,
   BIG_STICKER_SPEC,
   MAIN,
+  POPUP_MAIN,
+  POPUP_STICKER_SPEC,
   STATIC_SPEC,
   TAB,
   ZIP_MAX_BYTES,
@@ -14,6 +16,13 @@ import {
   isAllowedCount,
   type StickerKind,
 } from './spec.js';
+import {
+  POPUP_ANIMATION_MAIN_PATH,
+  POPUP_STATIC_MAIN_PATH,
+  POPUP_STATIC_TAB_PATH,
+  popupAnimationFilePath,
+  popupStaticFilePath,
+} from './naming.js';
 import type { ValidationIssue, ValidationResult } from './types.js';
 
 /** 平台無關的影像中繼資料（pipeline 蒐集後餵入驗證） */
@@ -24,6 +33,8 @@ export interface ImageInfo {
   bytes: number;
   hasAlpha: boolean;
   channels: number;
+  /** PNG color type from final bytes (6 = RGBA; optional for legacy validators). */
+  colorType?: number;
   /** 動態：是否為 APNG（含 acTL） */
   isApng?: boolean;
   /** 動態：影格數 */
@@ -138,6 +149,159 @@ export function validateBigStickerImage(info: ImageInfo, target?: string): Valid
       err(
         'big.bytes',
         `檔案 ${(info.bytes / 1024).toFixed(0)}KB 超過單張上限 ${BIG_STICKER_SPEC.maxBytes / 1024}KB`,
+        target,
+      ),
+    );
+  }
+  return result(issues);
+}
+
+/**
+ * 驗 Popup Sticker 的靜態 png/ 貼圖。
+ * 這條軌道仍使用一般靜態尺寸上限，但最終 PNG 必須提供 RGBA 與內容證據。
+ */
+export function validatePopupStaticImage(info: ImageInfo, target?: string): ValidationResult {
+  const issues = validateStaticImage(info, target).issues;
+  if (info.colorType !== 6) {
+    issues.push(
+      err(
+        'popupStatic.rgb',
+        `Popup 靜態貼圖必須是 RGBA PNG（PNG color type 6），收到 ${info.colorType ?? '缺少證據'}`,
+        target,
+      ),
+    );
+  }
+  if (info.transparentPixels === undefined) {
+    issues.push(err('popupStatic.transparentEvidence', 'Popup 靜態貼圖缺少透明像素證據', target));
+  } else if (info.transparentPixels < 1) {
+    issues.push(err('popupStatic.transparentPixels', 'Popup 靜態貼圖沒有任何透明像素', target));
+  }
+  if (info.foregroundPixels === undefined) {
+    issues.push(err('popupStatic.foregroundEvidence', 'Popup 靜態貼圖缺少前景像素證據', target));
+  } else if (info.foregroundPixels < 1) {
+    issues.push(err('popupStatic.empty', 'Popup 靜態貼圖沒有可見前景', target));
+  }
+  return result(issues);
+}
+
+/**
+ * 驗單張 LINE Popup Sticker APNG。
+ * Popup 的最終 APNG metadata 必須完整提供，不能把缺失證據當作通過。
+ */
+export function validatePopupImage(info: ImageInfo, target?: string): ValidationResult {
+  const issues: ValidationIssue[] = [];
+  const popup = POPUP_STICKER_SPEC;
+
+  if (info.isApng !== true) {
+    issues.push(err('popup.apng', 'Popup Sticker 必須是 APNG（缺少有效 APNG 證據）', target));
+  }
+
+  const withinMax = info.width <= popup.maxWidth && info.height <= popup.maxHeight;
+  const hasLegalSide = info.width === popup.maxWidth || info.height === popup.maxHeight;
+  const legalWidthSide = info.width !== popup.maxWidth || info.height >= popup.minHeightAtMaxWidth;
+  const legalHeightSide = info.height !== popup.maxHeight || info.width >= popup.minWidthAtMaxHeight;
+  if (!withinMax || !hasLegalSide || !legalWidthSide || !legalHeightSide) {
+    issues.push(
+      err(
+        'popup.size',
+        `Popup 尺寸須不超過 ${popup.maxWidth}×${popup.maxHeight}，且寬 480 時高至少 ${popup.minHeightAtMaxWidth}px、或高 480 時寬至少 ${popup.minWidthAtMaxHeight}px；收到 ${info.width}×${info.height}`,
+        target,
+      ),
+    );
+  }
+  if (!isEven(info.width) || !isEven(info.height)) {
+    issues.push(err('popup.even', `Popup 長寬須為偶數，收到 ${info.width}×${info.height}`, target));
+  }
+  if (!info.hasAlpha) {
+    issues.push(err('popup.alpha', 'Popup Sticker 必須含透明 alpha 通道', target));
+  }
+  if (info.colorType !== 6) {
+    issues.push(
+      err(
+        'popup.rgb',
+        `Popup Sticker 必須是 RGBA PNG/APNG（PNG color type 6），收到 ${info.colorType ?? '缺少證據'}`,
+        target,
+      ),
+    );
+  }
+  if (info.transparentPixels === undefined) {
+    issues.push(err('popup.transparentEvidence', 'Popup Sticker 缺少透明像素證據', target));
+  } else if (info.transparentPixels < 1) {
+    issues.push(err('popup.transparentPixels', 'Popup Sticker 沒有任何透明像素', target));
+  }
+  if (info.foregroundPixels === undefined) {
+    issues.push(err('popup.foregroundEvidence', 'Popup Sticker 缺少前景像素證據', target));
+  } else if (info.foregroundPixels < 1) {
+    issues.push(err('popup.empty', 'Popup Sticker 沒有可見前景', target));
+  }
+
+  if (info.frames === undefined) {
+    issues.push(err('popup.framesEvidence', 'Popup Sticker 缺少最終影格數證據', target));
+  } else if (
+    !Number.isInteger(info.frames) ||
+    info.frames < popup.minFrames ||
+    info.frames > popup.maxFrames
+  ) {
+    issues.push(
+      err(
+        'popup.frames',
+        `Popup 影格數須為 ${popup.minFrames}–${popup.maxFrames}，收到 ${info.frames}`,
+        target,
+      ),
+    );
+  }
+
+  if (info.loops === undefined) {
+    issues.push(err('popup.loopsEvidence', 'Popup Sticker 缺少循環次數證據', target));
+  } else if (
+    !Number.isInteger(info.loops) ||
+    info.loops < popup.minLoops ||
+    info.loops > popup.maxLoops
+  ) {
+    issues.push(
+      err(
+        'popup.loops',
+        `Popup 循環次數須為 ${popup.minLoops}–${popup.maxLoops}，收到 ${info.loops}`,
+        target,
+      ),
+    );
+  }
+
+  if (info.durationMs === undefined) {
+    issues.push(err('popup.durationEvidence', 'Popup Sticker 缺少單輪播放時間證據', target));
+  } else {
+    const allowedMs = popup.playbackDurationsSec.map((seconds) => seconds * 1000);
+    if (!allowedMs.includes(info.durationMs)) {
+      issues.push(
+        err(
+          'popup.duration',
+          `Popup 單輪播放時間須為 1000/2000/3000ms，收到 ${info.durationMs}ms`,
+          target,
+        ),
+      );
+    } else if (info.loops !== undefined && Number.isInteger(info.loops)) {
+      if (info.durationMs * info.loops > popup.maxDurationSec * 1000) {
+        issues.push(
+          err(
+            'popup.totalDuration',
+            `Popup 單輪 ${info.durationMs}ms × ${info.loops} loops 超過總播放 ${popup.maxDurationSec} 秒`,
+            target,
+          ),
+        );
+      }
+    }
+  }
+
+  if (info.distinctFrames === undefined) {
+    issues.push(err('popup.distinctEvidence', 'Popup Sticker 缺少不同畫格證據', target));
+  } else if (!Number.isInteger(info.distinctFrames) || info.distinctFrames < 2) {
+    issues.push(err('popup.identical', 'Popup Sticker 至少需要兩個不同的視覺畫格', target));
+  }
+  if (info.bytes > popup.maxBytes) {
+    issues.push(
+      err(
+        'popup.bytes',
+        `檔案 ${(info.bytes / 1024).toFixed(0)}KB 超過單張上限 ${popup.maxBytes / 1024}KB`,
         target,
       ),
     );
@@ -296,6 +460,46 @@ export function validateMain(info: ImageInfo, kind: StickerKind): ValidationResu
   return result(issues);
 }
 
+/** 驗 Popup Sticker 的 main_popup.png（必須是完整 480×480 APNG）。 */
+export function validatePopupMain(info: ImageInfo, target?: string): ValidationResult {
+  const issues = validatePopupImage(info, target).issues;
+  if (info.width !== POPUP_MAIN.width || info.height !== POPUP_MAIN.height) {
+    issues.push(
+      err(
+        'popupMain.size',
+        `main_popup.png 須為 ${POPUP_MAIN.width}×${POPUP_MAIN.height}，收到 ${info.width}×${info.height}`,
+        target,
+      ),
+    );
+  }
+  return result(issues);
+}
+
+/** Require final-byte RGB/alpha/content evidence for Popup pack static support assets. */
+function validatePopupStaticSupportImage(info: ImageInfo, target: string): ValidationResult {
+  const issues: ValidationIssue[] = [];
+  if (info.colorType !== 6) {
+    issues.push(
+      err(
+        'popupSupport.rgb',
+        `Popup 封面／縮圖必須是 RGBA PNG（PNG color type 6），收到 ${info.colorType ?? '缺少證據'}`,
+        target,
+      ),
+    );
+  }
+  if (info.transparentPixels === undefined) {
+    issues.push(err('popupSupport.transparentEvidence', 'Popup 封面／縮圖缺少透明像素證據', target));
+  } else if (info.transparentPixels < 1) {
+    issues.push(err('popupSupport.transparentPixels', 'Popup 封面／縮圖沒有任何透明像素', target));
+  }
+  if (info.foregroundPixels === undefined) {
+    issues.push(err('popupSupport.foregroundEvidence', 'Popup 封面／縮圖缺少前景像素證據', target));
+  } else if (info.foregroundPixels < 1) {
+    issues.push(err('popupSupport.empty', 'Popup 封面／縮圖沒有可見前景', target));
+  }
+  return result(issues);
+}
+
 /** 驗 tab.png */
 export function validateTab(info: ImageInfo): ValidationResult {
   const issues: ValidationIssue[] = [];
@@ -317,6 +521,71 @@ export function validateTab(info: ImageInfo): ValidationResult {
   return result(issues);
 }
 
+/**
+ * 驗 Popup Sticker 雙軌整包：靜態 png/ 與動畫 popup/ 必須各有 count 張。
+ * Popup 單軌呼叫請使用 validatePack 以外的專用 API，避免誤把一組檔案當完整包。
+ */
+export function validatePopupPack(args: {
+  count: number;
+  stickers: ImageInfo[];
+  popupStickers: ImageInfo[];
+  main: ImageInfo;
+  popupMain: ImageInfo;
+  tab: ImageInfo;
+  zipBytes?: number;
+}): ValidationResult {
+  const { count, stickers, popupStickers, main, popupMain, tab, zipBytes } = args;
+  const results: ValidationResult[] = [validateCount('popup', count)];
+
+  if (stickers.length !== count) {
+    results.push(
+      result([
+        err(
+          'popup.staticCount',
+          `靜態 Popup 貼圖張數 ${stickers.length} 與宣告 ${count} 不符`,
+        ),
+      ]),
+    );
+  }
+  if (popupStickers.length !== count) {
+    results.push(
+      result([
+        err(
+          'popup.animationCount',
+          `動畫 Popup 貼圖張數 ${popupStickers.length} 與宣告 ${count} 不符`,
+        ),
+      ]),
+    );
+  }
+
+  stickers.forEach((sticker, index) => {
+    results.push(validatePopupStaticImage(sticker, popupStaticFilePath(index + 1)));
+  });
+  popupStickers.forEach((sticker, index) => {
+    results.push(validatePopupImage(sticker, popupAnimationFilePath(index + 1)));
+  });
+
+  // Static cover/tab retain shared size/byte rules and add strict final-byte Popup evidence.
+  results.push(validateMain(main, 'static'));
+  results.push(validatePopupStaticSupportImage(main, POPUP_STATIC_MAIN_PATH));
+  results.push(validatePopupMain(popupMain, POPUP_ANIMATION_MAIN_PATH));
+  results.push(validateTab(tab));
+  results.push(validatePopupStaticSupportImage(tab, POPUP_STATIC_TAB_PATH));
+
+  if (zipBytes !== undefined && zipBytes > ZIP_MAX_BYTES) {
+    results.push(
+      result([
+        err(
+          'zip.bytes',
+          `整包 ${(zipBytes / 1_000_000).toFixed(1)}MB 超過上限 ${ZIP_MAX_BYTES / 1_000_000}MB`,
+        ),
+      ]),
+    );
+  }
+
+  return mergeResults(...results);
+}
+
 /** 驗整包：張數 + 每張 + main/tab + 不可混包 + zip 大小 */
 export function validatePack(args: {
   kind: StickerKind;
@@ -327,6 +596,14 @@ export function validatePack(args: {
   zipBytes?: number;
 }): ValidationResult {
   const { kind, count, stickers, main, tab, zipBytes } = args;
+  if (kind === 'popup') {
+    return result([
+      err(
+        'pack.popupPairRequired',
+        'Popup Sticker 必須同時提供靜態 png/ 與動畫 popup/ 貼圖，請使用 validatePopupPack()',
+      ),
+    ]);
+  }
   const results: ValidationResult[] = [validateCount(kind, count)];
 
   if (stickers.length !== count) {

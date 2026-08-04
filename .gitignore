@@ -14,6 +14,7 @@ test/*
 !test/frameSequence.test.ts
 !test/videoTimeline.test.ts
 !test/bigSticker.test.ts
+!test/popupSticker.test.ts
 spike/
 fixtures/
 eval/

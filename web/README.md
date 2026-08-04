@@ -9,7 +9,7 @@ with Canvas, WebAssembly, and Web Workers, and the built site can be hosted on G
 |---|---|---|
 | Local images | `build` | Individual images to a fitted static LINE pack |
 | Sprite sheet | `gen` for regular static packs | Pre-process cut guide, gutter-aware extraction, and regular static or Big Sticker packaging |
-| Animated APNG | `anim` | One frame sheet to APNG, or frame groups to an animated pack |
+| Animated APNG | `anim` for regular animation | One frame sheet to APNG, frame groups to an animated pack, or paired static/frame inputs to a browser-only Pop-up Sticker pack |
 | Video → APNG | Web only | Fixed-grid video to an editable all-frame raw master and animated pack |
 | Prompt | `prompt` | Static-sheet or animation-frame prompts for external image tools |
 
@@ -30,6 +30,39 @@ margin; LINE adds the appropriate margin. Content is scaled proportionally and t
 the minimum canvas instead of being stretched. Counts remain 8, 16, 24, 32, or 40, and the final ZIP
 remains limited to 60 MB. Main and tab images remain 240×240 and 96×74. This Big Sticker mode is Web-only;
 the CLI `gen` command continues to produce regular static stickers.
+
+## Pop-up Sticker packages
+
+The third mode inside the Animated APNG tab targets
+[LINE Pop-up Stickers](https://creator.line.me/en/guideline/popupsticker/). It requires two deliberate
+input sets: 8, 16, or 24 static source images, plus one natural-sorted 5–20-frame sequence for each
+corresponding pop-up animation. The browser never assumes that animation frame 1 is the static sticker.
+
+V1 emits each pop-up APNG on a fixed 480×480 transparent canvas. LINE also allows other canvases with
+one side exactly 480, subject to a minimum 320-pixel height when width is 480 and a minimum 200-pixel
+width when height is 480; the fixed square is a valid subset and can also serve as the required
+480×480 `main_popup.png`. Static numbered files are fitted to at most 370×320 without proactively added
+margin. The selected static cover produces `main.png` and `tab.png`.
+
+The downloaded ZIP has this exact structure:
+
+```text
+png/main.png
+png/tab.png
+png/01.png …
+popup/main_popup.png
+popup/01.png …
+```
+
+The folder names and cover/tab placement follow LINE's official production-guide diagram; the current
+Creators Market pages remain the authority for the 1 MB asset limit and 8/16/24 pack counts.
+
+Every final APNG is decoded again before package validation. The checks require 5–20 frames, at least
+two distinct visuals, 1–3 finite loops, an exact 1/2/3-second per-loop duration, no more than three
+seconds across all loops, transparent visible content, truecolor RGBA output (indexed PNG/APNG is
+rejected), and at most 1 MB per image. The ZIP remains
+limited to 60 MB. The Top, Center, or Bottom display position is selected later in LINE My Page and is
+not encoded into the package. This workflow is Web-only.
 
 ## Video → APNG V2
 
@@ -93,6 +126,7 @@ subject crossing a grid line is not clipped at a mask boundary.
 
 - `../src/core/` contains platform-neutral specification, validation, timeline, grid, and prompt rules.
 - `src/webpipe/` implements browser raster, background removal, APNG, video, storage, and ZIP adapters.
+- `src/ui/PopupPackMode.tsx` owns paired static/pop-up inputs, processing progress, previews, and package download.
 - `videoSource.ts` uses Mediabunny/WebCodecs and closes every decoded `VideoSample` promptly.
 - `rawVideoMaster.ts`, `masterApng.ts`, and `videoMasterStore.ts` own all-frame raw storage.
 - `processMasterApngSticker.ts` owns exact-target selection, lazy transforms, encoding, and final-byte
@@ -122,6 +156,9 @@ node scripts/video-smoke.mjs http://127.0.0.1:4179/ # requires ffmpeg and Chrome
 The video browser smoke asserts that a 12-frame fixture persists all 12 sample references, exercises
 exact-target editing and controlled playback, round-trips Project V2 without a source decoder, verifies
 invalid-package confirmation, and builds a valid eight-sticker LINE package.
+
+The main browser smoke also builds an eight-item Pop-up Sticker pack, downloads it, and inspects all
+19 expected ZIP entries in addition to exercising the existing static, Big Sticker, animated, and prompt paths.
 
 ## Deployment
 

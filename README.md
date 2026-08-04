@@ -1,6 +1,6 @@
 # sticker-tool
 
-`sticker-tool` turns local images or externally generated sprite sheets into deterministic packages that target the [LINE Creators Market](https://creator.line.me/en/guideline/sticker) formats, including [Big Stickers](https://creator.line.me/en/guideline/bigsticker/) in the browser sprite-sheet workflow.
+`sticker-tool` turns local images, externally generated sprite sheets, or animation frames into deterministic packages that target the [LINE Creators Market](https://creator.line.me/en/guideline/sticker) formats, including browser workflows for [Big Stickers](https://creator.line.me/en/guideline/bigsticker/) and [Pop-up Stickers](https://creator.line.me/en/guideline/popupsticker/).
 
 It provides two execution surfaces:
 
@@ -14,12 +14,13 @@ AI image generation is intentionally outside the application. Use any image gene
 - Static sticker packs from individual PNG, JPEG, or WebP files.
 - Static packs from one or more sprite sheets; the browser can emit regular static or Big Sticker packs.
 - Animated APNG stickers from frame files or a frame sheet.
+- Browser Pop-up Sticker packs from explicit static artwork plus one 5–20-frame animation set per sticker.
 - Animated APNG packs cropped from a fixed-grid video sheet in the browser.
 - Transparent, green-screen, and opaque-background handling.
 - Content-aware sheet cutting that finds gutters and preserves components crossing nominal grid lines.
 - Canvas fitting, even dimensions, transparent margins, optional outlines, and text overlays.
 - Static PNG quantization and animated color/frame reduction to fit the 1 MB limit.
-- `main.png`, `tab.png`, numbered sticker files, ZIP packaging, and shared metadata-based LINE checks.
+- `main.png`, `main_popup.png` where required, `tab.png`, numbered sticker files, ZIP packaging, and shared metadata-based LINE checks.
 - Browser-side previews, pre-process sprite-sheet cut guides, downloads, grid mismatch warnings, and manual animation alignment.
 - Prompt generation for static sticker sheets and animation frame sheets.
 - A standalone Colab + BiRefNet tutorial with a downloadable Notebook, an astronaut benchmark, and CPU/GPU/model choices.
@@ -166,7 +167,7 @@ video workflow is browser-only:
 
 - Local images → static pack.
 - Sprite sheet → regular static or Big Sticker pack, with a cut guide before processing.
-- Frame sheet or frame groups → APNG or animated pack.
+- Frame sheet or frame groups → APNG, animated pack, or a paired static/Pop-up Sticker pack.
 - Fixed-grid video → all-presentation-frame raw master → exact-target animated pack.
 - Static or animated image prompt generation.
 
@@ -193,6 +194,19 @@ may move those references to nearby transparent gutters. Big Sticker output is p
 stretching, to at least 80×524 and capped at 396×660 pixels. It uses even RGBA PNG dimensions, no
 extra recommended margin, the same 8/16/24/32/40 pack counts, a 1 MB per-image limit, and the common
 60 MB ZIP limit. LINE adds display margins for Big Stickers. This mode is not currently exposed by the CLI.
+
+The **Animated APNG** tab also contains a browser-only **Pop-up Sticker pack** mode. A Pop-up Sticker
+pack has two explicit, independently supplied sets: 8, 16, or 24 static sticker images and the same
+number of 5–20-frame animation sequences. The workflow does not silently use an APNG's first frame as
+the static sticker, because LINE treats those assets separately. It emits each pop-up image as a
+480×480 APNG, plus a static 240×240 `png/main.png`, a 480×480 APNG
+`popup/main_popup.png`, and a static 96×74 `png/tab.png`. Numbered static files are stored under
+`png/`, while their corresponding APNGs are stored under `popup/`. Every pop-up APNG is reopened after
+encoding to validate its decoded frame count,
+1–3 loops, exact 1/2/3-second per-loop duration, total playback of at most three seconds, transparency,
+visible content, truecolor RGBA output (indexed PNG/APNG is rejected), and 1 MB byte limit. The fixed square canvas is a valid subset of LINE's allowed
+480-sided geometry; it is not claimed to fill every device aspect ratio. Top, Center, or Bottom display
+position is selected later in LINE My Page and is not embedded in this ZIP. This workflow is not exposed by the CLI.
 
 The web app processes image and video pixels locally by default. Build, Sheet, Anim, and Video each expose the same five background choices: preserve the source, solid-color keying, browser-local IMG.LY, browser-local BiRefNet, or BiRefNet through the user's temporary Colab endpoint. IMG.LY has no Colab branch. All model choices are opt-in and never silently fall back to color keying.
 
@@ -243,19 +257,22 @@ IMG.LY, local BiRefNet, and Colab BiRefNet are mutually exclusive. None silently
 
 ## LINE constraints targeted by the project
 
-| Constraint | Static | Big Sticker | Animated |
-|---|---:|---:|---:|
-| Sticker canvas | Up to 370×320 | 80×524 to 396×660 | Up to 320×270, with one side at least 270 px |
-| Dimensions | Even, transparent RGBA | Even, transparent RGBA | Even, transparent RGBA |
-| File size | At most 1 MB | At most 1 MB | At most 1 MB |
-| Pack counts | 8, 16, 24, 32, or 40 | 8, 16, 24, 32, or 40 | 8, 16, or 24 |
-| Animation | — | — | APNG, 5–20 frames, 1–4 loops |
-| Main image | 240×240 PNG | 240×240 PNG | 240×240 APNG |
-| Tab image | 96×74 PNG | 96×74 PNG | 96×74 PNG |
+| Constraint | Static | Big Sticker | Animated | Pop-up Sticker |
+|---|---:|---:|---:|---:|
+| Sticker canvas | Up to 370×320 | 80×524 to 396×660 | Up to 320×270, with one side at least 270 px | Static up to 370×320; APNG up to 480×480 with one side exactly 480 |
+| Dimensions | Even, transparent RGBA | Even, transparent RGBA | Even, transparent RGBA | Even, transparent RGBA; width 480 requires height ≥320, height 480 requires width ≥200 |
+| File size | At most 1 MB | At most 1 MB | At most 1 MB | At most 1 MB per static/APNG asset |
+| Pack counts | 8, 16, 24, 32, or 40 | 8, 16, 24, 32, or 40 | 8, 16, or 24 | 8, 16, or 24 paired assets |
+| Animation | — | — | APNG, 5–20 frames, 1–4 loops | APNG, 5–20 frames, 1–3 loops, 1/2/3 seconds per loop, total ≤3 seconds |
+| Main image | 240×240 PNG | 240×240 PNG | 240×240 APNG | `png/main.png` at 240×240 plus `popup/main_popup.png` at 480×480 APNG |
+| Tab image | 96×74 PNG | 96×74 PNG | 96×74 PNG | 96×74 PNG |
 
-The final ZIP is limited to 60 MB. Regular static, Big Sticker, and animated sticker files cannot be mixed in one pack.
+The final ZIP is limited to 60 MB. Regular static, Big Sticker, animated, and paired Pop-up Sticker package contracts are validated separately.
 
-The current validator checks much of this metadata, but validation success is not proof that a package is uploadable. It does not yet fully verify decoded visual transparency/content, exact animation timing, distinct animation frames, or all main/tab constraints. The source-grounded list of known functional and compliance gaps is [plan/implementation-audit.md](plan/implementation-audit.md).
+Validation success is diagnostic, not proof that LINE will accept a package. The Popup Sticker and
+Video V2 browser paths reopen final APNG bytes for timing, loop, frame, alpha, and visible-content
+evidence; some older CLI and browser adapters still provide less complete metadata. The source-grounded
+list of known functional and compliance gaps is [plan/implementation-audit.md](plan/implementation-audit.md).
 
 ## Project layout
 
