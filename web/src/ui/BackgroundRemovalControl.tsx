@@ -1,7 +1,8 @@
+import { useEffect, useState } from 'react';
 import {
-  hasLocalBirefnetWebgpu,
   LOCAL_BIREFNET_MODEL_BYTES,
   LOCAL_BIREFNET_PARAMETER_COUNT,
+  probeLocalBirefnetWebgpu,
 } from '../webpipe/localBirefnetContract.js';
 import { IMGLY_MEDIUM_MODEL_BYTES } from '../webpipe/removeBackground.js';
 import type { WebBackgroundRemovalMode } from '../webpipe/backgroundRemovalJob.js';
@@ -25,11 +26,31 @@ const birefnetMib = Math.round(LOCAL_BIREFNET_MODEL_BYTES / 1024 / 1024);
 const birefnetParamsM = LOCAL_BIREFNET_PARAMETER_COUNT / 1_000_000;
 
 export function LocalBirefnetRuntimeWarning(props: { active: boolean }) {
-  const webgpuAvailable = typeof navigator !== 'undefined' && hasLocalBirefnetWebgpu(navigator);
+  const [webgpuAvailable, setWebgpuAvailable] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (!props.active) {
+      setWebgpuAvailable(null);
+      return;
+    }
+    let cancelled = false;
+    setWebgpuAvailable(null);
+    void probeLocalBirefnetWebgpu(typeof navigator === 'undefined' ? null : navigator).then((available) => {
+      if (!cancelled) setWebgpuAvailable(available);
+    });
+    return () => { cancelled = true; };
+  }, [props.active]);
+
   if (!props.active || webgpuAvailable) return null;
+  if (webgpuAvailable === null) {
+    return (
+      <div className="ai-local-notice" role="status" data-testid="local-birefnet-webgpu-check">
+        正在確認是否能取得 WebGPU adapter…
+      </div>
+    );
+  }
   return (
     <div className="ai-local-notice" role="alert" data-testid="local-birefnet-wasm-warning">
-      <strong>⚠ 未偵測到 WebGPU：</strong>本機 BiRefNet 將改用 WASM。首次建立模型與每張推論都可能需要數分鐘，
+      <strong>⚠ 無法取得可用的 WebGPU adapter：</strong>本機 BiRefNet 將改用 WASM。首次建立模型與每張推論都可能需要數分鐘，
       多張處理會非常慢；建議改用支援 WebGPU 的 Chrome／Edge，或改選 Colab BiRefNet。
     </div>
   );

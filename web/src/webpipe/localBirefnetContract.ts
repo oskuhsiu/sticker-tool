@@ -13,9 +13,17 @@ export type LocalBirefnetProgress =
   | { stage: 'fallback'; reason: string }
   | { stage: 'ready'; backend: LocalBirefnetBackend };
 
-export function hasLocalBirefnetWebgpu(value: object | null | undefined): boolean {
-  return value !== null && value !== undefined && 'gpu' in value
-    && (value as { gpu?: unknown }).gpu !== undefined;
+export async function probeLocalBirefnetWebgpu(value: object | null | undefined): Promise<boolean> {
+  if (value === null || value === undefined || !('gpu' in value)) return false;
+  const gpu = (value as { gpu?: unknown }).gpu;
+  if ((typeof gpu !== 'object' && typeof gpu !== 'function') || gpu === null) return false;
+  const requestAdapter = (gpu as { requestAdapter?: () => Promise<unknown | null | undefined> }).requestAdapter;
+  if (typeof requestAdapter !== 'function') return false;
+  try {
+    return await requestAdapter.call(gpu) != null;
+  } catch {
+    return false;
+  }
 }
 
 export function combineLocalBirefnetAlpha(

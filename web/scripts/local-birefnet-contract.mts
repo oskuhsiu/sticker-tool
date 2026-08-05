@@ -3,12 +3,12 @@ import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import {
   combineLocalBirefnetAlpha,
-  hasLocalBirefnetWebgpu,
   LOCAL_BIREFNET_MODEL_BYTES,
   LOCAL_BIREFNET_MODEL_FILE,
   LOCAL_BIREFNET_MODEL_ID,
   LOCAL_BIREFNET_MODEL_REVISION,
   LOCAL_BIREFNET_PARAMETER_COUNT,
+  probeLocalBirefnetWebgpu,
 } from '../src/webpipe/localBirefnetContract.js';
 import { localBirefnetProgressText } from '../src/webpipe/localBirefnet.js';
 
@@ -17,9 +17,18 @@ assert.equal(LOCAL_BIREFNET_MODEL_REVISION.length, 40);
 assert.equal(LOCAL_BIREFNET_MODEL_FILE, 'onnx/model_fp16.onnx');
 assert.equal(LOCAL_BIREFNET_PARAMETER_COUNT, 44_400_000);
 assert.equal(LOCAL_BIREFNET_MODEL_BYTES, 98_484_532);
-assert.equal(hasLocalBirefnetWebgpu({}), false);
-assert.equal(hasLocalBirefnetWebgpu({ gpu: undefined }), false);
-assert.equal(hasLocalBirefnetWebgpu({ gpu: {} }), true);
+assert.equal(await probeLocalBirefnetWebgpu({}), false);
+assert.equal(await probeLocalBirefnetWebgpu({ gpu: undefined }), false);
+assert.equal(await probeLocalBirefnetWebgpu({ gpu: {} }), false);
+assert.equal(await probeLocalBirefnetWebgpu({
+  gpu: { requestAdapter: async () => null },
+}), false, 'navigator.gpu without a usable adapter must warn about WASM');
+assert.equal(await probeLocalBirefnetWebgpu({
+  gpu: { requestAdapter: async () => ({ name: 'adapter' }) },
+}), true);
+assert.equal(await probeLocalBirefnetWebgpu({
+  gpu: { requestAdapter: async () => { throw new Error('blocked by policy'); } },
+}), false, 'a rejected adapter request must warn about WASM');
 
 const source = new Uint8ClampedArray([
   10, 20, 30, 128,

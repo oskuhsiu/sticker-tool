@@ -3,7 +3,7 @@ import type {
   LocalBirefnetBackend,
   LocalBirefnetProgress,
 } from './localBirefnetContract.js';
-import { hasLocalBirefnetWebgpu } from './localBirefnetContract.js';
+import { probeLocalBirefnetWebgpu } from './localBirefnetContract.js';
 
 interface LocalBirefnetRemoverOptions {
   signal?: AbortSignal;
@@ -82,7 +82,7 @@ export async function createLocalBirefnetRemover(
   try {
     const initialized = await request<{ backend: LocalBirefnetBackend }>({
       type: 'init',
-      preferWebgpu: hasLocalBirefnetWebgpu(navigator),
+      preferWebgpu: await probeLocalBirefnetWebgpu(navigator),
       wasmPath: new URL('transformers/', document.baseURI).href,
     }, [], options.signal);
 
