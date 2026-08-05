@@ -9,8 +9,14 @@ export type LocalBirefnetBackend = 'webgpu' | 'wasm';
 export type LocalBirefnetProgress =
   | { stage: 'initializing'; backend: LocalBirefnetBackend }
   | { stage: 'download'; file: string; loaded?: number; total?: number; percent?: number }
+  | { stage: 'compiling'; backend: LocalBirefnetBackend }
   | { stage: 'fallback'; reason: string }
   | { stage: 'ready'; backend: LocalBirefnetBackend };
+
+export function hasLocalBirefnetWebgpu(value: object | null | undefined): boolean {
+  return value !== null && value !== undefined && 'gpu' in value
+    && (value as { gpu?: unknown }).gpu !== undefined;
+}
 
 export function combineLocalBirefnetAlpha(
   sourceRgba: Uint8ClampedArray,

@@ -3,6 +3,7 @@ import type {
   LocalBirefnetBackend,
   LocalBirefnetProgress,
 } from './localBirefnetContract.js';
+import { hasLocalBirefnetWebgpu } from './localBirefnetContract.js';
 
 interface LocalBirefnetRemoverOptions {
   signal?: AbortSignal;
@@ -81,7 +82,7 @@ export async function createLocalBirefnetRemover(
   try {
     const initialized = await request<{ backend: LocalBirefnetBackend }>({
       type: 'init',
-      preferWebgpu: 'gpu' in navigator,
+      preferWebgpu: hasLocalBirefnetWebgpu(navigator),
       wasmPath: new URL('transformers/', document.baseURI).href,
     }, [], options.signal);
 
@@ -123,6 +124,9 @@ export async function createLocalBirefnetRemover(
 export function localBirefnetProgressText(progress: LocalBirefnetProgress): string {
   if (progress.stage === 'fallback') return 'WebGPU 無法啟動，改用較慢的 WASM 本機推論…';
   if (progress.stage === 'ready') return `本機 BiRefNet 已就緒（${progress.backend.toUpperCase()}）`;
+  if (progress.stage === 'compiling') {
+    return `本機 BiRefNet 下載完成，正在建立 ${progress.backend.toUpperCase()} 推論環境…`;
+  }
   if (progress.stage === 'initializing') {
     return `初始化本機 BiRefNet（${progress.backend.toUpperCase()}）…`;
   }

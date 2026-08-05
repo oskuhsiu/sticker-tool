@@ -29,6 +29,7 @@ import { buildEmojiPackZip } from '../webpipe/emojiZip.js';
 import { processStatic, type ProcessedSticker } from '../webpipe/processStatic.js';
 import { buildPackZip, buildPopupPackZip, downloadBytes, safeName } from '../webpipe/zip.js';
 import { LogPane, ValidationView, kb, useLogger } from './common.jsx';
+import { LocalBirefnetRuntimeWarning } from './BackgroundRemovalControl.jsx';
 import { useColabBirefnetConnection } from './colabBirefnetConnection.jsx';
 import { VideoIngestProgress, type VideoIngestProgressValue } from './video/VideoIngestProgress.jsx';
 import { VideoSourceStep } from './video/VideoSourceStep.jsx';
@@ -834,6 +835,10 @@ export function VideoTab() {
               {commonBackground === 'color-key' && <label>共同背景色<input type="color" value={backgroundColor} onChange={(event) => setBackgroundColor(event.target.value)} /></label>}
               <button className="btn small" disabled={busy} onClick={applyCommonSettings}>套用共同設定到所有貼圖</button>
             </div>
+            <LocalBirefnetRuntimeWarning
+              active={commonBackground === 'local-birefnet'
+                || project.settings.some((settings) => settings.background.mode === 'local-birefnet')}
+            />
           </div>
           <div className="video-editor-layout">
             <VideoStickerList target={project.target} settings={project.settings} current={project.current} posters={posters} activeIndex={activeIndex} onSelect={setActiveIndex} isDirty={isDirty} />

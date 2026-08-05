@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { runInNewContext } from 'node:vm';
 import {
   combineLocalBirefnetAlpha,
+  hasLocalBirefnetWebgpu,
   LOCAL_BIREFNET_MODEL_BYTES,
   LOCAL_BIREFNET_MODEL_FILE,
   LOCAL_BIREFNET_MODEL_ID,
@@ -14,6 +17,9 @@ assert.equal(LOCAL_BIREFNET_MODEL_REVISION.length, 40);
 assert.equal(LOCAL_BIREFNET_MODEL_FILE, 'onnx/model_fp16.onnx');
 assert.equal(LOCAL_BIREFNET_PARAMETER_COUNT, 44_400_000);
 assert.equal(LOCAL_BIREFNET_MODEL_BYTES, 98_484_532);
+assert.equal(hasLocalBirefnetWebgpu({}), false);
+assert.equal(hasLocalBirefnetWebgpu({ gpu: undefined }), false);
+assert.equal(hasLocalBirefnetWebgpu({ gpu: {} }), true);
 
 const source = new Uint8ClampedArray([
   10, 20, 30, 128,
@@ -38,5 +44,39 @@ assert.match(localBirefnetProgressText({
   percent: 50,
 }), /50%.*47\.0 \/ 93\.9 MiB/);
 assert.match(localBirefnetProgressText({ stage: 'fallback', reason: 'no adapter' }), /WASM/);
+assert.match(localBirefnetProgressText({ stage: 'compiling', backend: 'wasm' }), /下載完成.*WASM/);
 
-console.log('local BiRefNet contract OK (pinned fp16 model metadata, alpha composition, progress copy)');
+const serviceWorkerSource = readFileSync(new URL('../public/coi-serviceworker.js', import.meta.url), 'utf8');
+let fetchHandler: ((event: {
+  request: { mode: string; url: string; cache: string };
+  respondWith: (response: Promise<Response>) => void;
+}) => void) | undefined;
+const workerSelf = {
+  location: { origin: 'https://example.test' },
+  skipWaiting: () => undefined,
+  clients: { claim: () => Promise.resolve() },
+  addEventListener: (type: string, handler: typeof fetchHandler) => {
+    if (type === 'fetch') fetchHandler = handler;
+  },
+};
+runInNewContext(serviceWorkerSource, {
+  self: workerSelf,
+  URL,
+  Headers,
+  Response,
+  console,
+  fetch: async () => new Response('ok'),
+});
+assert.ok(fetchHandler, 'COI service worker registers a fetch handler');
+let corsWasProxied = false;
+fetchHandler({
+  request: {
+    mode: 'cors',
+    url: 'https://huggingface.co/studioludens/birefnet-lite-512/resolve/revision/onnx/model_fp16.onnx',
+    cache: 'default',
+  },
+  respondWith: () => { corsWasProxied = true; },
+});
+assert.equal(corsWasProxied, false, 'large CORS model downloads bypass the COI response proxy');
+
+console.log('local BiRefNet contract OK (pinned model, alpha, progress, Firefox-safe CORS download)');

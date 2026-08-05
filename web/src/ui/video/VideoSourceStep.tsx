@@ -2,6 +2,7 @@ import type { VideoGridPlan } from '@core/videoCrop.js';
 import type { VideoBackgroundMode, VideoOutputTarget } from '@core/videoProject.js';
 import type { VideoMetadata } from '../../webpipe/videoSource.js';
 import { Field, Row } from '../common.jsx';
+import { LocalBirefnetRuntimeWarning } from '../BackgroundRemovalControl.jsx';
 import { VideoCutRangeStep } from './VideoCutRangeStep.jsx';
 
 export function VideoSourceStep(props: {
@@ -63,6 +64,7 @@ export function VideoSourceStep(props: {
         </Field>
         {props.defaultBackground === 'color-key' && <Field label="背景色"><input type="color" value={props.color} onChange={(event) => props.onColor(event.target.value)} /></Field>}
       </Row>
+      <LocalBirefnetRuntimeWarning active={props.defaultBackground === 'local-birefnet'} />
       <p className="tab-desc">
         產品會決定 raw master 與最終輸出尺寸，建立後不可切換。Effect Sticker 尚未實作，不會假裝輸出可上傳包。
         {props.target === 'animated-emoji'

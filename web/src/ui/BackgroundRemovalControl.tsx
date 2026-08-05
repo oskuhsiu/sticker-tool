@@ -1,4 +1,5 @@
 import {
+  hasLocalBirefnetWebgpu,
   LOCAL_BIREFNET_MODEL_BYTES,
   LOCAL_BIREFNET_PARAMETER_COUNT,
 } from '../webpipe/localBirefnetContract.js';
@@ -22,6 +23,17 @@ export interface BackgroundRemovalControlProps {
 const imglyMib = Math.round(IMGLY_MEDIUM_MODEL_BYTES / 1024 / 1024);
 const birefnetMib = Math.round(LOCAL_BIREFNET_MODEL_BYTES / 1024 / 1024);
 const birefnetParamsM = LOCAL_BIREFNET_PARAMETER_COUNT / 1_000_000;
+
+export function LocalBirefnetRuntimeWarning(props: { active: boolean }) {
+  const webgpuAvailable = typeof navigator !== 'undefined' && hasLocalBirefnetWebgpu(navigator);
+  if (!props.active || webgpuAvailable) return null;
+  return (
+    <div className="ai-local-notice" role="alert" data-testid="local-birefnet-wasm-warning">
+      <strong>⚠ 未偵測到 WebGPU：</strong>本機 BiRefNet 將改用 WASM。首次建立模型與每張推論都可能需要數分鐘，
+      多張處理會非常慢；建議改用支援 WebGPU 的 Chrome／Edge，或改選 Colab BiRefNet。
+    </div>
+  );
+}
 
 export function BackgroundRemovalControl(props: BackgroundRemovalControlProps) {
   const { connection } = useColabBirefnetConnection();
@@ -82,6 +94,7 @@ export function BackgroundRemovalControl(props: BackgroundRemovalControlProps) {
           手機或平板可能耗電、記憶體不足或跑不完。{mobileOrTablet && ' 目前裝置看起來是行動裝置，建議改用桌面 Chrome／Edge。'}
         </div>
       )}
+      <LocalBirefnetRuntimeWarning active={props.value === 'local-birefnet'} />
       {props.value === 'colab-birefnet' && (
         <div className="ai-local-notice" role="status">
           <strong>Colab BiRefNet：</strong>{countText}每張處理用 crop 會透過 HTTPS 傳到你自己啟動的臨時 Colab session；

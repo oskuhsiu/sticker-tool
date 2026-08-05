@@ -8,6 +8,7 @@ import {
 } from '@huggingface/transformers';
 import {
   combineLocalBirefnetAlpha,
+  LOCAL_BIREFNET_MODEL_FILE,
   LOCAL_BIREFNET_MODEL_ID,
   LOCAL_BIREFNET_MODEL_REVISION,
   type LocalBirefnetBackend,
@@ -47,7 +48,7 @@ function postProgress(progress: LocalBirefnetProgress) {
   self.postMessage({ type: 'progress', progress });
 }
 
-function transformerProgress(info: ProgressInfo) {
+function transformerProgress(info: ProgressInfo, target: LocalBirefnetBackend) {
   if (info.status === 'initiate' || info.status === 'download') {
     postProgress({ stage: 'download', file: info.file });
   } else if (info.status === 'progress') {
@@ -58,6 +59,8 @@ function transformerProgress(info: ProgressInfo) {
       total: info.total,
       percent: info.progress,
     });
+  } else if (info.status === 'done' && info.file === LOCAL_BIREFNET_MODEL_FILE) {
+    postProgress({ stage: 'compiling', backend: target });
   }
 }
 
@@ -77,7 +80,7 @@ async function loadPipeline(target: LocalBirefnetBackend): Promise<BirefnetPipel
     revision: LOCAL_BIREFNET_MODEL_REVISION,
     dtype: 'fp16',
     device: target,
-    progress_callback: transformerProgress,
+    progress_callback: (info) => transformerProgress(info, target),
   }) as Promise<BirefnetPipeline>;
 }
 

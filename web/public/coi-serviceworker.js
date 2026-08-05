@@ -12,14 +12,17 @@ if (typeof window === 'undefined') {
     const req = e.request;
     // 只代理「需要被加上 COOP/COEP/CORP」的請求：
     //   - 導覽（document）：讓頁面回應帶 COOP/COEP → crossOriginIsolated=true（多執行緒 wasm）
-    //   - 跨來源子資源：在 require-corp 下要補 CORP 才載得進來
-    // 同源子資源在 require-corp 下本來就允許、不需補 header，所以「直接放行、不攔截」。
+    //   - no-cors 跨來源子資源：在 require-corp 下要補 CORP 才載得進來
+    // 同源與 cors 子資源在 require-corp 下本來就允許、不需補 header，所以直接放行、不攔截。
     // 這很關鍵：去背的 ~80MB imgly 模型是同源大檔，若經 SW 代理重抓（fetch+new Response
     // 重組 body），在部分手機/in-app（WebKit）瀏覽器會失敗（TypeError: Load failed）而中止打包；
-    // 放它直連網路即可避免，且不影響 crossOriginIsolated（那只看導覽回應的 header）。
+    // BiRefNet 的 ~94 MiB 模型也是大檔，但由 Hugging Face 以 CORS 授權；讓該 cors fetch
+    // 直連可避免 Firefox 經 SW 重組串流時以 NS_BINDING_FAILED 中止。這不影響
+    // crossOriginIsolated，因為 COEP 對 cors request 由 CORS 控制。
     const isNavigate = req.mode === 'navigate';
     const sameOrigin = new URL(req.url).origin === self.location.origin;
-    if (sameOrigin && !isNavigate) return;
+    const isCors = req.mode === 'cors';
+    if (!isNavigate && (sameOrigin || isCors)) return;
     if (req.cache === 'only-if-cached' && req.mode !== 'same-origin') return;
     e.respondWith(
       fetch(req)
