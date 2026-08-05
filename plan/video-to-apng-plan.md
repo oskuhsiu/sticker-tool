@@ -1,14 +1,15 @@
 # 影片組圖裁切為 LINE 動態貼圖的實作計畫
 
-- 狀態：MVP 已實作（2026-07-29）
+- 狀態：MVP 已實作；共用內部分隔線編輯器 V1 已實作（2026-08-05）
 - 日期：2026-07-29
 - 主要交付面：Web app（互動式編輯）
 - 共用影響：`src/core/` 的時間軸、動畫結果契約與驗證，以及 Node/Web 兩套 APNG pipeline
 
-目前交付涵蓋固定等分網格、時間取樣、分段 master APNG、逐張時間/格數/播放/減色調整、
-baseline/current、LINE ZIP、Project ZIP round-trip、最終像素與時間證據，以及影片 E2E。
-計畫中的拖曳個別 crop、逐 frame offset、WebCodecs container demux、worker 化與 24 張專項
-memory profiling 尚未納入本次 MVP；目前影片 adapter 使用瀏覽器 media element 依時間點 seek。
+目前交付涵蓋預設等分且可拖曳共用內部分隔線的大型編輯器、Mediabunny/WebCodecs 全
+presentation-frame ingest、分段 master APNG、逐張時間/格數/播放/減色調整、baseline/current、
+LINE ZIP、Project ZIP round-trip、最終像素與時間證據，以及影片 E2E。外框拖曳、個別 crop
+rect、排序/停用、逐 frame offset 與 worker 化仍未實作；詳細 V1 範圍見
+[`video-adjustable-grid-editor.md`](video-adjustable-grid-editor.md)。
 
 ## 1. 功能摘要
 
@@ -371,9 +372,9 @@ auto-fit 每一階都回傳：
 
 ### 10.2 Step 2：裁切版面
 
-- 在可 scrub 的代表 frame 上畫出 `cols × rows` grid。
-- 支援拖曳外框與內部格線、個別 rect 微調、啟用/停用、排序。
-- 顯示最終要輸出的 8/16/24 個 crop。
+- 用開始／中間／結束／自選 selector，在單一大型代表 frame 上畫出 `cols × rows` grid。
+- 等分為預設值；V1 支援拖曳共用內部分隔線與恢復等分，外框、個別 rect、排序及停用保留為未實作項目。
+- 顯示實際來源格數的 row-major crop；LINE ZIP 的合法張數仍由最終 validation gate 判定。
 - 可套用全域綠幕/背景色，也可逐張 override。
 - crop rect 永遠使用固定 display pixels，畫面縮放只影響顯示映射。
 
@@ -606,7 +607,7 @@ auto-fit 每一階都回傳：
 
 **驗收**
 
-- 上傳影片後可建立、拖曳、排序並保存 8/16/24 個 rect。
+- 上傳影片後可在大型 editor 拖曳共用內部分隔線，並把相同的明確 rect 保存到 raw master 與 Project ZIP。
 - 上傳 project ZIP 後不啟動 video decoder，直接以 master APNG 進入 adjustment state。
 
 ### Task 7 — Timeline editor 與 frame plan preview

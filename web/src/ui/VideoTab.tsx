@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { emojiFileName, stickerFileName } from '@core/naming.js';
 import { ANIMATED_EMOJI_SPEC, ANIMATED_SPEC, POPUP_STICKER_SPEC, STATIC_SPEC, maxBounds } from '@core/spec.js';
-import { planVideoGrid, planVideoOutputCanvas, type VideoGridPlan } from '@core/videoCrop.js';
+import {
+  equalVideoAxisCuts,
+  planVideoGrid,
+  planVideoOutputCanvas,
+  type VideoAxisCuts,
+  type VideoGridPlan,
+} from '@core/videoCrop.js';
 import type { VideoBackgroundMode, VideoOutputTarget } from '@core/videoProject.js';
 import { mergeResults, validateEmojiPack, validatePack, validatePopupPack, type ImageInfo } from '@core/validate.js';
 import { createBackgroundRemovalJob, type BackgroundRemovalJob } from '../webpipe/backgroundRemovalJob.js';
@@ -158,6 +164,8 @@ export function VideoTab() {
   const [count, setCount] = useState(8);
   const [cols, setCols] = useState(4);
   const [rows, setRows] = useState(2);
+  const [xCuts, setXCuts] = useState<VideoAxisCuts | null>(null);
+  const [yCuts, setYCuts] = useState<VideoAxisCuts | null>(null);
   const [rangeStartUs, setRangeStartUs] = useState(0);
   const [rangeEndUs, setRangeEndUs] = useState(4_000_000);
   const [scrubUs, setScrubUs] = useState(0);
@@ -184,14 +192,34 @@ export function VideoTab() {
     void masterStoreRef.current?.clear();
   }, []);
 
-  const gridPlan = useMemo(() => {
-    if (!metadata) return null;
+  function resetSourceCuts(sourceWidth: number, sourceHeight: number, nextCols: number, nextRows: number): void {
     try {
-      return planVideoGrid({ sourceWidth: metadata.width, sourceHeight: metadata.height, cols, rows, count });
+      const nextXCuts = equalVideoAxisCuts(sourceWidth, nextCols);
+      const nextYCuts = equalVideoAxisCuts(sourceHeight, nextRows);
+      setXCuts(nextXCuts);
+      setYCuts(nextYCuts);
+    } catch {
+      setXCuts(null);
+      setYCuts(null);
+    }
+  }
+
+  const gridPlan = useMemo(() => {
+    if (!metadata || !xCuts || !yCuts) return null;
+    try {
+      return planVideoGrid({
+        sourceWidth: metadata.width,
+        sourceHeight: metadata.height,
+        cols,
+        rows,
+        count,
+        xCuts,
+        yCuts,
+      });
     } catch {
       return null;
     }
-  }, [metadata, cols, rows, count]);
+  }, [metadata, cols, rows, count, xCuts, yCuts]);
 
   const selectedSourceFrames = useMemo(() => {
     const source = sourceRef.current;
@@ -222,6 +250,11 @@ export function VideoTab() {
   function updateSourceGrid(nextCols: number, nextRows: number): void {
     setCols(nextCols);
     setRows(nextRows);
+    if (metadata) resetSourceCuts(metadata.width, metadata.height, nextCols, nextRows);
+    else {
+      setXCuts(null);
+      setYCuts(null);
+    }
     if (
       !Number.isSafeInteger(nextCols) ||
       !Number.isSafeInteger(nextRows) ||
@@ -310,6 +343,7 @@ export function VideoTab() {
       await clearCurrentProject();
       sourceRef.current = source;
       setMetadata(source.metadata);
+      resetSourceCuts(source.metadata.width, source.metadata.height, cols, rows);
       const startUs = Math.max(0, source.metadata.firstTimestampUs);
       const endUs = Math.min(source.metadata.endTimestampUs, startUs + 4_000_000);
       setRangeStartUs(startUs);
@@ -332,11 +366,11 @@ export function VideoTab() {
     abortRef.current = controller;
     setBusy(true);
     setLinePack(null);
-    setIngestProgress({ sourceFrames: 0, totalSourceFrames: selectedSourceFrames, crops: 0, totalCrops: selectedSourceFrames * count, chunks: 0 });
+    setIngestProgress({ sourceFrames: 0, totalSourceFrames: selectedSourceFrames, crops: 0, totalCrops: selectedSourceFrames * gridPlan.count, chunks: 0 });
     let store: Awaited<ReturnType<typeof createVideoMasterStore>> | null = null;
     try {
       store = await createVideoMasterStore({ estimatedBytes });
-      logger.log('step', `依 presentation order 擷取 ${selectedSourceFrames} 格，建立 ${count} 張未去背 raw master…`);
+      logger.log('step', `依 presentation order 擷取 ${selectedSourceFrames} 格，建立 ${gridPlan.count} 張未去背 raw master…`);
       const master = await buildRawVideoMaster({
         source,
         grid: gridPlan,
@@ -550,6 +584,8 @@ export function VideoTab() {
       setCount(manifest.grid.count);
       setCols(manifest.grid.cols);
       setRows(manifest.grid.rows);
+      setXCuts(null);
+      setYCuts(null);
       setRangeStartUs(manifest.source.editableStartUs);
       setRangeEndUs(manifest.source.editableEndUs);
       setName(manifest.name);
@@ -785,14 +821,20 @@ export function VideoTab() {
             rangeEndUs,
             scrubUs,
             grid: gridPlan,
+            xCuts,
+            yCuts,
             previews,
             sourceFrames: selectedSourceFrames,
             cropFrames: selectedSourceFrames * count,
             estimatedBytes,
             preflightError,
+            disabled: busy,
             onRangeStartUs: updateRangeStart,
             onRangeEndUs: updateRangeEnd,
             onScrubUs: setScrubUs,
+            onXCuts: setXCuts,
+            onYCuts: setYCuts,
+            onRestoreEqual: () => resetSourceCuts(metadata.width, metadata.height, cols, rows),
           }}
         />
       )}

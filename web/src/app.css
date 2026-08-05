@@ -585,42 +585,116 @@ textarea {
 .video-project-summary h3 {
   margin: 0 0 0.4rem;
 }
-.video-grid-preview {
-  display: inline-block;
-  max-width: 100%;
-  margin: 0.7rem 0;
+.video-grid-editor-shell,
+.video-grid-editor {
+  min-width: 0;
 }
-.video-grid-preview-media {
-  position: relative;
-  display: inline-block;
+.video-grid-time-selectors,
+.video-grid-editor-toolbar,
+.video-grid-zoom {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+.video-grid-time-selectors {
+  margin: 0.65rem 0;
+}
+.video-grid-editor {
+  margin: 0;
+}
+.video-grid-editor-toolbar {
+  justify-content: space-between;
+  margin-bottom: 0.5rem;
+}
+.video-grid-zoom > span {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+.video-grid-editor-viewport {
+  width: 100%;
   max-width: 100%;
+  max-height: min(70vh, 720px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background:
+    repeating-conic-gradient(#cfcfcf 0% 25%, #fff 0% 50%) 0 0 / 16px 16px;
+}
+.video-grid-editor-media {
+  position: relative;
+  max-width: none;
   line-height: 0;
 }
-.video-grid-preview img {
+.video-grid-editor-media img {
   display: block;
-  max-width: 100%;
-  max-height: 520px;
-  border-radius: 8px;
+  width: 100%;
+  height: auto;
+  max-width: none;
+  user-select: none;
 }
-.video-grid-preview svg {
+.video-grid-editor-media svg {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
 }
-.video-grid-preview rect {
+.video-grid-cell rect {
   fill: transparent;
   stroke: #06c755;
-  stroke-width: 3;
+  stroke-width: 2;
   vector-effect: non-scaling-stroke;
 }
-.video-grid-preview text {
+.video-grid-cell text {
   fill: #fff;
   stroke: #111;
   stroke-width: 3px;
   paint-order: stroke;
   font-size: 18px;
   font-weight: 700;
+  pointer-events: none;
+  user-select: none;
+}
+.video-grid-guide-visible {
+  stroke: #06c755;
+  stroke-width: 3;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+}
+.video-grid-guide-hit {
+  stroke: transparent;
+  stroke-width: 24;
+  vector-effect: non-scaling-stroke;
+  pointer-events: stroke;
+  cursor: ew-resize;
+  touch-action: none;
+  outline: none;
+}
+.video-grid-guide-hit[data-axis='y'] {
+  cursor: ns-resize;
+}
+.video-grid-guide-hit[aria-disabled='true'] {
+  cursor: default;
+  pointer-events: none;
+}
+.video-grid-guide:focus-within .video-grid-guide-visible {
+  stroke: #fff;
+  stroke-width: 6;
+  filter: drop-shadow(0 0 2px #111);
+}
+.video-grid-editor figcaption,
+.video-grid-editor-status {
+  display: block;
+  line-height: 1.4;
+  padding-top: 0.35rem;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+.video-grid-editor-status {
+  min-height: 1.5rem;
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
 }
 .video-settings-list {
   display: grid;
@@ -848,6 +922,7 @@ textarea {
 }
 
 .video-cut-range-step {
+  min-width: 0;
   margin: 0.8rem 0;
   padding: 0.8rem;
   border: 1px solid var(--line);
@@ -868,20 +943,6 @@ textarea {
 }
 .video-scrub-help {
   margin: 0.15rem 0 0.55rem;
-}
-.video-range-previews {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 0.6rem;
-}
-.video-range-previews .video-grid-preview {
-  margin: 0;
-}
-.video-range-previews figcaption {
-  line-height: 1.4;
-  padding-top: 0.3rem;
-  color: var(--muted);
-  font-size: 0.8rem;
 }
 .video-ingest-progress {
   display: grid;

@@ -16,7 +16,7 @@ AI image generation is intentionally outside the application. Use any image gene
 - Animated APNG stickers from frame files or a frame sheet.
 - Static and animated Regular Emoji from the same CLI and browser image, sheet, animation, and prompt workflows.
 - Browser Pop-up Sticker packs either from explicit static artwork plus frame sets, or from Video animations with one user-selected frame per item as the paired static image.
-- Animated APNG packs cropped from a fixed-grid video sheet in the browser.
+- Animated APNG packs cropped from an adjustable, fixed-layout video sheet in the browser.
 - Transparent, green-screen, and opaque-background handling.
 - Content-aware sheet cutting that finds gutters and preserves components crossing nominal grid lines.
 - Canvas fitting, even dimensions, transparent margins, optional outlines, and text overlays.
@@ -236,7 +236,7 @@ video workflow is browser-only:
 - Local images → Regular Sticker, Big Sticker, or Regular Emoji static pack.
 - Sprite sheet → Regular Sticker, Big Sticker, or Regular Emoji static pack, with a cut guide before processing.
 - Frame sheet or frame groups → Animated Sticker, Animated Regular Emoji, or a paired static/Pop-up Sticker pack.
-- Fixed-grid video → all-presentation-frame raw master → exact-target animated pack.
+- Adjustable shared-grid video → all-presentation-frame raw master → exact-target animated pack.
 - Static or animated image prompt generation.
 
 Run it locally:
@@ -315,9 +315,12 @@ The optional Colab branch sends one input image or already-cropped sheet/video c
 The **Video → APNG** tab accepts a local video that Mediabunny and the current browser can demux and
 decode. Before ingest, the user selects one project-level product: Animated Sticker, Animated Regular
 Emoji, or Pop-up Sticker. Uploading probes container, codec, display geometry, rotation, pixel aspect ratio, and every
-decoded presentation sample. After the user chooses an editable range and a fixed grid, the browser
-decodes every presentation frame in that range, applies the same crop plan, and proportionally fits each
-crop onto the selected product canvas. Target-fitted raw RGB/alpha is streamed into bounded, lossless
+decoded presentation sample. After the user chooses an editable range and grid dimensions, the browser
+opens one selected start/middle/end/custom frame in a full-width editor. The internal separators start
+equally divided, can be dragged in integer source pixels, and can be inspected at Fit, 150%, or 200%
+display zoom. The browser then decodes every presentation frame in that range, applies the same fixed
+crop plan, and proportionally fits each crop onto the selected product canvas. Target-fitted raw
+RGB/alpha is streamed into bounded, lossless
 master chunks. Identical visual payloads may be shared, but every source timestamp and duration remains
 in the index. The source video and audio are never embedded.
 
@@ -350,7 +353,9 @@ projects migrate explicitly to Animated Sticker; V1 projects remain importable a
 The video source grid may contain any positive number of cells, including fewer than a complete LINE
 pack. Such sources can still produce editable APNGs and a Project ZIP; the LINE ZIP validation gate
 requires 8, 16, or 24 Animated Stickers or Pop-up Stickers, or any integer from 8 through 40 Animated Emoji. Grid column
-or row changes update the source-cell count immediately. Solid-color keying is off by
+or row changes update the source-cell count and restore equal separators immediately; changing only the
+output count preserves edited separators. The shared internal separators define one row-major layout for
+the entire video, not a moving crop per frame. Solid-color keying is off by
 default because a black background may share pixels with hair, eyes, clothing, or text outlines.
 Colab BiRefNet is also off by default and requires an explicit connection. The source step reports the
 actual presentation-frame count, crop-frame count, and an upper-bound RGBA estimate before ingest.

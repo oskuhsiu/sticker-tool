@@ -82,31 +82,27 @@ async function configureSource(count, cols, rows) {
   await page.waitForSelector(`[data-tab="video"] >> text=實際來源 frames：${12}`);
 }
 
-async function assertGridPreviewsAligned() {
+async function assertGridEditorAligned() {
   await page.waitForFunction(() => {
-    const previews = [...document.querySelectorAll('[data-tab="video"] .video-grid-preview')];
-    return previews.length === 4 && previews.every((preview) => {
-      const image = preview.querySelector('img');
-      return image?.complete && image.naturalWidth > 0 && image.naturalHeight > 0;
-    });
+    const editor = document.querySelector('[data-tab="video"] .video-grid-editor');
+    const image = editor?.querySelector('img');
+    return image?.complete && image.naturalWidth > 0 && image.naturalHeight > 0;
   });
-  const mismatches = await page.locator('[data-tab="video"] .video-grid-preview').evaluateAll((previews) =>
-    previews.flatMap((preview, index) => {
-      const image = preview.querySelector('img')?.getBoundingClientRect();
-      const overlay = preview.querySelector('svg')?.getBoundingClientRect();
-      if (!image || !overlay) return [`preview ${index + 1} 缺少 image 或 grid overlay`];
-      const delta = {
-        left: Math.abs(image.left - overlay.left),
-        top: Math.abs(image.top - overlay.top),
-        width: Math.abs(image.width - overlay.width),
-        height: Math.abs(image.height - overlay.height),
-      };
-      return Object.values(delta).some((value) => value > 0.5)
-        ? [`preview ${index + 1} grid/image bounds 不一致：${JSON.stringify(delta)}`]
-        : [];
-    }),
-  );
-  if (mismatches.length) throw new Error(mismatches.join('\n'));
+  const mismatch = await page.locator('[data-tab="video"] .video-grid-editor').evaluate((editor) => {
+    const image = editor.querySelector('img')?.getBoundingClientRect();
+    const overlay = editor.querySelector('svg')?.getBoundingClientRect();
+    if (!image || !overlay) return '大型 editor 缺少 image 或 SVG grid overlay';
+    const delta = {
+      left: Math.abs(image.left - overlay.left),
+      top: Math.abs(image.top - overlay.top),
+      width: Math.abs(image.width - overlay.width),
+      height: Math.abs(image.height - overlay.height),
+    };
+    return Object.values(delta).some((value) => value > 0.5)
+      ? `大型 editor grid/image bounds 不一致：${JSON.stringify(delta)}`
+      : null;
+  });
+  if (mismatch) throw new Error(mismatch);
 }
 
 async function assertGridEditsSyncCount() {
@@ -114,12 +110,110 @@ async function assertGridEditsSyncCount() {
   if (await page.getByLabel('來源貼圖格數').inputValue() !== '6') {
     throw new Error('3×2 網格應自動更新來源貼圖格數為 6');
   }
-  await assertGridPreviewsAligned();
+  await page.waitForFunction(() => document.querySelector('[role="separator"][data-axis="x"]')?.getAttribute('aria-valuenow') === '213');
+  await assertGridEditorAligned();
   await page.getByLabel('欄').fill('4');
   if (await page.getByLabel('來源貼圖格數').inputValue() !== '8') {
     throw new Error('4×2 網格應自動更新來源貼圖格數為 8');
   }
-  await assertGridPreviewsAligned();
+  await page.waitForFunction(() => document.querySelector('[role="separator"][data-axis="x"]')?.getAttribute('aria-valuenow') === '160');
+  await assertGridEditorAligned();
+}
+
+async function waitForGuideValue(axis, index, expected) {
+  await page.waitForFunction(
+    ({ axis, index, expected }) => document.querySelector(
+      `[data-tab="video"] [role="separator"][data-axis="${axis}"][data-guide-index="${index}"]`,
+    )?.getAttribute('aria-valuenow') === String(expected),
+    { axis, index, expected },
+  );
+}
+
+async function assertLargeAdjustableGridEditor() {
+  const selectors = page.locator('[data-tab="video"] .video-grid-time-selectors button');
+  if (await selectors.count() !== 4) throw new Error('大型 editor 應保留開始／中間／結束／自選四個時間 selector');
+  await selectors.nth(3).click();
+  if (!/^自選 \d+\.\d{3} 秒$/.test(await page.locator('[data-tab="video"] .video-grid-editor figcaption').textContent() ?? '')) {
+    throw new Error('自選 selector 未切換大型 editor 的目前時間');
+  }
+  await selectors.nth(0).click();
+  await assertGridEditorAligned();
+
+  const fitBounds = await page.locator('[data-tab="video"] .video-grid-editor').evaluate((editor) => {
+    const image = editor.querySelector('img')?.getBoundingClientRect();
+    const viewport = editor.querySelector('.video-grid-editor-viewport')?.getBoundingClientRect();
+    return image && viewport ? { imageWidth: image.width, viewportWidth: viewport.width } : null;
+  });
+  if (!fitBounds || fitBounds.imageWidth < 600 || fitBounds.imageWidth < fitBounds.viewportWidth - 2) {
+    throw new Error(`Fit editor 未使用 source card 的大型工作區：${JSON.stringify(fitBounds)}`);
+  }
+
+  await page.getByRole('button', { name: '200%' }).click();
+  await page.waitForFunction(() => document.querySelector('[data-tab="video"] .video-grid-editor-viewport')?.getAttribute('data-zoom') === '200');
+  await assertGridEditorAligned();
+  const overflow = await page.locator('[data-tab="video"] .video-grid-editor-viewport').evaluate((viewport) => ({
+    clientWidth: viewport.clientWidth,
+    scrollWidth: viewport.scrollWidth,
+    pageClientWidth: document.documentElement.clientWidth,
+    pageScrollWidth: document.documentElement.scrollWidth,
+  }));
+  if (overflow.scrollWidth <= overflow.clientWidth) {
+    throw new Error(`200% 應只在 editor viewport 內產生捲動：${JSON.stringify(overflow)}`);
+  }
+  if (overflow.pageScrollWidth > overflow.pageClientWidth + 1) {
+    throw new Error(`200% 不得造成 page-level 水平 overflow：${JSON.stringify(overflow)}`);
+  }
+
+  const viewport = page.locator('[data-tab="video"] .video-grid-editor-viewport');
+  await viewport.scrollIntoViewIfNeeded();
+  const pointer = await page.locator('[data-tab="video"] .video-grid-editor-media').evaluate((media) => {
+    const bounds = media.getBoundingClientRect();
+    const viewportBounds = media.parentElement.getBoundingClientRect();
+    return {
+      x: bounds.left + (160 / 640) * bounds.width,
+      y: Math.max(viewportBounds.top + 30, Math.min(viewportBounds.bottom - 30, bounds.top + 80)),
+      renderedWidth: bounds.width,
+    };
+  });
+  if (Math.abs(pointer.renderedWidth - 1280) > 1) {
+    throw new Error(`200% 應以 640 source pixels 顯示為 1280 CSS pixels，實際 ${pointer.renderedWidth}`);
+  }
+  await page.mouse.move(pointer.x, pointer.y);
+  await page.mouse.down();
+  await page.mouse.move(pointer.x + 40, pointer.y);
+  await page.mouse.up();
+  await waitForGuideValue('x', 1, 180);
+
+  const vertical = page.locator('[data-tab="video"] [role="separator"][data-axis="x"][data-guide-index="1"]');
+  await vertical.focus();
+  await page.keyboard.press('ArrowRight');
+  await waitForGuideValue('x', 1, 181);
+  await page.keyboard.press('Shift+ArrowLeft');
+  await waitForGuideValue('x', 1, 171);
+  if (!(await page.locator('[data-tab="video"] .video-grid-editor-status').textContent())?.includes('x = 171 px')) {
+    throw new Error('目前分隔線的 source-pixel status 未即時更新');
+  }
+
+  await page.getByLabel('來源貼圖格數').fill('7');
+  await waitForGuideValue('x', 1, 171);
+  await page.getByLabel('來源貼圖格數').fill('8');
+  await waitForGuideValue('x', 1, 171);
+
+  await page.getByRole('button', { name: '恢復等分格線' }).click();
+  await waitForGuideValue('x', 1, 160);
+  await waitForGuideValue('y', 1, 160);
+
+  await vertical.focus();
+  await page.keyboard.press('Shift+ArrowRight');
+  await waitForGuideValue('x', 1, 170);
+  const horizontal = page.locator('[data-tab="video"] [role="separator"][data-axis="y"][data-guide-index="1"]');
+  await horizontal.focus();
+  await page.keyboard.press('ArrowDown');
+  await waitForGuideValue('y', 1, 161);
+  return {
+    xCuts: [0, 170, 320, 480, 640],
+    yCuts: [0, 161, 320],
+  };
 }
 
 async function buildRawMaster(expectedCount) {
@@ -150,15 +244,15 @@ try {
   if (!metadataText?.includes('12 個 presentation frames')) throw new Error('probe 未顯示實際 12 格');
   if (await page.locator('label', { hasText: 'master 取樣格數' }).count()) throw new Error('V2 不應再顯示 master 取樣格數');
   await page.getByLabel('自選網格預覽時間').waitFor();
-  await page.waitForSelector('[data-tab="video"] >> text=只會更新下方「自選」時間點的網格畫面');
+  await page.waitForSelector('[data-tab="video"] >> text=用開始／中間／結束／自選按鈕切換同一個大型編輯畫面');
   if (!/\d+\.\d{3} 秒/.test(await page.locator('[data-tab="video"] .video-scrub-value').textContent() ?? '')) {
     throw new Error('自選網格預覽時間必須顯示目前秒數');
   }
   await assertGridEditsSyncCount();
-  results.push('✓ 修改欄列會同步來源貼圖格數，preview remount 後仍保有有效影像');
+  results.push('✓ 修改欄列會同步來源貼圖格數、重建等分 guides，單一大型 editor 仍保有有效影像');
   await configureSource(6, 3, 2);
-  await assertGridPreviewsAligned();
-  results.push('✓ 四個時間預覽的裁切格線與影像 bounds 完全對齊');
+  await assertGridEditorAligned();
+  results.push('✓ 開始／中間／結束／自選 selectors 共用一個大型 editor，裁切 SVG 與影像 bounds 完全對齊');
   await buildRawMaster(6);
   if (modelRequested) throw new Error('raw ingest 與 color-key 不應下載語意去背模型');
   results.push('✓ 12 個 presentation frames 全數進入 6 張 raw master，沒有固定 20 格取樣器');
@@ -178,6 +272,8 @@ try {
 
   await uploadVideo();
   await configureSource(8, 4, 2);
+  const editedGrid = await assertLargeAdjustableGridEditor();
+  results.push('✓ Fit 大型工作區、200% 內部捲動、scaled pointer、1/10px 鍵盤微調與等分 reset 都通過');
   await buildRawMaster(8);
   await renderAll();
 
@@ -203,6 +299,21 @@ try {
     throw new Error('Project manifest 不是 Animated Sticker all-frame/raw V3');
   }
   if (manifest.master.sourceFrameCount !== 12) throw new Error(`Project 應保存 12 source refs，實際 ${manifest.master.sourceFrameCount}`);
+  const expectedRects = [];
+  for (let row = 0; row < editedGrid.yCuts.length - 1; row++) {
+    for (let col = 0; col < editedGrid.xCuts.length - 1; col++) {
+      expectedRects.push([
+        editedGrid.xCuts[col],
+        editedGrid.yCuts[row],
+        editedGrid.xCuts[col + 1] - editedGrid.xCuts[col],
+        editedGrid.yCuts[row + 1] - editedGrid.yCuts[row],
+      ]);
+    }
+  }
+  const manifestRects = manifest.grid.rects.map((rect) => [rect.left, rect.top, rect.width, rect.height]);
+  if (JSON.stringify(manifestRects) !== JSON.stringify(expectedRects)) {
+    throw new Error(`Project V3 未保留 edited source-pixel grid：${JSON.stringify(manifestRects)}`);
+  }
   for (const sticker of manifest.master.stickers) {
     const samples = sticker.chunks.reduce((sum, chunk) => sum + chunk.sampleRefs.length, 0);
     if (samples !== 12) throw new Error(`${sticker.id} 只保存 ${samples}/12 sample refs`);
@@ -210,7 +321,7 @@ try {
   if (Object.keys(entries).some((entry) => entry.startsWith('source/') || entry.startsWith('audio/'))) {
     throw new Error('Project V3 不得內嵌 source video/audio');
   }
-  results.push('✓ Project V3 manifest/ZIP 保存產品目標、每張完整 12 sample refs、raw checksums，且不含來源影片或音軌');
+  results.push('✓ raw ingest 與 Project V3 manifest 保留 edited rects、完整 12 sample refs、checksums，且不含來源影片或音軌');
 
   await page.setInputFiles('[data-tab="video"] input[type=file][accept^=".zip"]', projectPath);
   await page.waitForSelector('[data-tab="video"] >> text=已恢復 Project V3（Animated Sticker）的 12 個 sample refs', { timeout: 120_000 });
@@ -226,6 +337,8 @@ try {
   results.push('✓ 8 張 current + cover actual timeline → main/tab/LINE ZIP，final-byte validation 通過');
 
   await uploadVideo();
+  await waitForGuideValue('x', 1, 160);
+  await waitForGuideValue('y', 1, 160);
   await page.getByLabel('輸出產品').selectOption('animated-emoji');
   await configureSource(8, 4, 2);
   await buildRawMaster(8);

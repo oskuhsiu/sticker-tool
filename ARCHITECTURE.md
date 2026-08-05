@@ -94,7 +94,7 @@ the tab-only helper; `tab.png` remains static and no Emoji main file is generate
 
 `web/src/App.tsx` exposes five React tabs: build, sheet, animation, video-to-APNG, and prompt. Regular Emoji is a target inside Build, Sheet, both ordinary Animation modes, Video, and Prompt rather than a sixth tab. The animation tab also contains a dedicated paired Pop-up Sticker mode. Every tab remains mounted while hidden so switching tabs preserves selected files and results. Big Sticker, Video, and Pop-up Sticker are browser-only; Video exports Animated Sticker, Animated Regular Emoji, or a paired Pop-up package derived from user-selected static frames. `#/colab-birefnet` is an independent tutorial page; opening it hides but does not unmount the workflow tabs.
 
-`web/src/ui/` owns workflow state, logging, previews, downloads, validation display, and manual frame alignment. `SheetCutPreview.tsx` renders the Sheet tab's pre-process nominal grid without running background removal; the actual cutter may still snap its references to detected gutters. `PopupPackMode.tsx` owns the paired static/frame inputs and the browser-only Pop-up Sticker result. `ManualLayout.tsx` provides onion-skin alignment and applies user offsets before animation processing. `ColabBirefnetGuide.tsx` owns the tutorial and in-memory connection form; `colabBirefnetConnection.tsx` keeps the rotating endpoint and session key only for the current page lifetime and aborts active requests when the connection changes.
+`web/src/ui/` owns workflow state, logging, previews, downloads, validation display, and manual frame alignment. `SheetCutPreview.tsx` renders the Sheet tab's pre-process nominal grid without running background removal; the actual cutter may still snap its references to detected gutters. `VideoGridEditor.tsx` renders one large, zoomable representative video frame and edits shared internal separators in source-pixel coordinates before ingest. `PopupPackMode.tsx` owns the paired static/frame inputs and the browser-only Pop-up Sticker result. `ManualLayout.tsx` provides onion-skin alignment and applies user offsets before animation processing. `ColabBirefnetGuide.tsx` owns the tutorial and in-memory connection form; `colabBirefnetConnection.tsx` keeps the rotating endpoint and session key only for the current page lifetime and aborts active requests when the connection changes.
 
 `web/src/webpipe/` mirrors the Node pipeline using browser primitives:
 
@@ -285,8 +285,9 @@ The browser-only video workflow remains separate from the existing frame-sheet a
 Local browser-decodable video
   -> Mediabunny probe + decoded presentation-frame index in integer microseconds
   -> choose one immutable project target: Animated Sticker, Animated Regular Emoji, or Pop-up Sticker
-  -> explicit editable time window + start/middle/end/scrub grid previews
-  -> choose any positive source-cell count and fixed grid
+  -> explicit editable time window + one large start/middle/end/scrub-selectable grid editor
+  -> choose any positive source-cell count and an equal-by-default, source-pixel shared grid
+  -> optionally drag internal separators; keep the outer source bounds fixed
   -> sequentially decode every presentation sample intersecting the range
   -> apply the same fixed row-major grid and target-specific, aspect-preserving canvas plan to every sample
   -> deduplicate visual payloads without dropping any source timestamp/duration
@@ -312,6 +313,12 @@ intersecting the selected global range, not every compressed packet and not an F
 The source index is authoritative for time. Raw visual APNG delays are container details only; each
 `sampleRef` carries its own clipped `timestampUs` and `durationUs` and points to a `visualFrameId`.
 Visual deduplication therefore cannot collapse the editable timeline.
+
+Changing the source, columns, or rows restores equal separators; changing only the active output count,
+time selection, product target, or background setting preserves them. The editor's derived
+`VideoGridPlan.rects` drives preflight, every raw-master crop, and the Project ZIP V3 grid. Grid editing is
+pre-ingest only because the source decoder is disposed after the raw master is baked and imported projects
+do not embed the original video.
 
 The same decoded source sample feeds every crop before its `VideoSample` is closed. Ingest never removes
 backgrounds. IMG.LY, local BiRefNet, and Colab BiRefNet run serially only on selected render candidates;

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { strToU8, unzipSync, zipSync } from 'fflate';
-import { planVideoGrid } from '../../src/core/videoCrop.js';
+import { planVideoGrid, planVideoOutputCanvas } from '../../src/core/videoCrop.js';
 import { encodeApng, decodeApngFrames, encodeApngExactFrames } from '../src/webpipe/apng.js';
 import {
   buildVideoProjectZip,
@@ -18,15 +18,16 @@ import { VideoFrameRenderCache } from '../src/webpipe/videoFrameRenderCache.js';
 import { createVideoMasterStore } from '../src/webpipe/videoMasterStore.js';
 import type { Raster } from '../src/webpipe/raster.js';
 
-function frame(seed: number) {
-  const data = new Uint8ClampedArray(270 * 270 * 4);
-  for (let pixel = 0; pixel < 270 * 270; pixel++) {
+function frame(width: number, height: number, seed: number) {
+  const pixelCount = width * height;
+  const data = new Uint8ClampedArray(pixelCount * 4);
+  for (let pixel = 0; pixel < pixelCount; pixel++) {
     data[pixel * 4] = (pixel + seed * 29) % 256;
     data[pixel * 4 + 1] = (pixel * 3 + seed * 31) % 256;
     data[pixel * 4 + 2] = (pixel * 7 + seed * 37) % 256;
     data[pixel * 4 + 3] = pixel % 7 === 0 ? 0 : 255;
   }
-  return { data, width: 270, height: 270 };
+  return { data, width, height };
 }
 
 async function sha256(bytes: Uint8Array): Promise<string> {
@@ -36,11 +37,20 @@ async function sha256(bytes: Uint8Array): Promise<string> {
 
 const timestampsUs = [0, 200_000, 400_000, 600_000, 800_000, 999_000];
 const delaysMs = [200, 200, 200, 200, 199, 1];
-const grid = planVideoGrid({ sourceWidth: 1080, sourceHeight: 540, cols: 4, rows: 2, count: 8 });
+const grid = planVideoGrid({
+  sourceWidth: 1080,
+  sourceHeight: 540,
+  cols: 4,
+  rows: 2,
+  count: 8,
+  xCuts: [0, 250, 500, 800, 1080],
+  yCuts: [0, 250, 540],
+});
 const store = await createVideoMasterStore({ projectId: 'roundtrip', forceMemory: true });
 const stickers: MasterApngSet['stickers'] = [];
 for (const rect of grid.rects) {
-  const frames = timestampsUs.map((_, index) => frame(index + rect.index));
+  const canvas = planVideoOutputCanvas('animated-sticker', rect.width, rect.height);
+  const frames = timestampsUs.map((_, index) => frame(canvas.width, canvas.height, index + rect.index));
   const png = encodeApng(frames, { loops: 1, delaysMs, colors: 0, forbidPalette: true });
   const id = `${rect.id}-chunk-001`;
   const storeKey = `master/${rect.id}/chunk_001.png`;
@@ -54,8 +64,8 @@ for (const rect of grid.rects) {
   stickers.push({
     id: rect.id,
     index: rect.index,
-    width: 270,
-    height: 270,
+    width: canvas.width,
+    height: canvas.height,
     chunks: [{
       id,
       stickerId: rect.id,
@@ -68,8 +78,8 @@ for (const rect of grid.rects) {
         visualFrameId: visualRefs[index]!.visualFrameId,
       })),
       visualRefs,
-      width: 270,
-      height: 270,
+      width: canvas.width,
+      height: canvas.height,
       storeKey,
       bytes: png.length,
       sha256: await sha256(png),
@@ -100,7 +110,8 @@ const settings: VideoStickerSettings[] = grid.rects.map((rect) => ({
 }));
 const current: VideoRenderSnapshot[] = [];
 for (let index = 0; index < stickers.length; index++) {
-  const png = await store.get(stickers[index]!.chunks[0]!.storeKey);
+  const sticker = stickers[index]!;
+  const png = await store.get(sticker.chunks[0]!.storeKey);
   const targetFrames = index === 0 ? 5 : 6;
   const evidence = inspectAnimatedBytes(png, 6);
   current.push({
@@ -118,8 +129,8 @@ for (let index = 0; index < stickers.length; index++) {
       perLoopDurationMs: 1000,
       totalPlaybackMs: 1000,
       bytes: png.length,
-      width: 270,
-      height: 270,
+      width: sticker.width,
+      height: sticker.height,
       distinctFrames: evidence.distinctFrames,
       adjacentDuplicateFrames: evidence.adjacentDuplicateFrames,
       transparentPixels: evidence.transparentPixels,
@@ -176,6 +187,7 @@ assert.equal(restored.manifest.source.embedded, false);
 assert.equal(restored.manifest.frameCoverage, 'all-presentation-frames');
 assert.equal(restored.manifest.backgroundStage, 'raw');
 assert.equal(restored.manifest.master.stickers.length, 8);
+assert.deepEqual(restored.manifest.grid, grid, 'Project V3 must preserve unequal source-pixel grid geometry');
 assert.equal(restored.current[0]!.settings.targetFrames, 5);
 assert.equal(restored.manifest.settings[0]!.preserveColors, true);
 assert.equal(restored.current[0]!.info.format, 'png');
@@ -316,7 +328,7 @@ console.log('strict V2 rejection and explicit V1 sampled/baked import OK');
 async function contractMaster(id: string, sourceSeeds: number[]): Promise<MasterApngSet> {
   const contractStore = await createVideoMasterStore({ projectId: `contract-${id}`, forceMemory: true });
   const visualSeeds = [...new Set(sourceSeeds)];
-  const visualFrames = visualSeeds.map(frame);
+  const visualFrames = visualSeeds.map((seed) => frame(270, 270, seed));
   const chunkId = `${id}-chunk-001`;
   const storeKey = `master/${id}/chunk_001.png`;
   const png = encodeApng(visualFrames, {

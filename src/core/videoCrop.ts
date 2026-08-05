@@ -16,6 +16,15 @@ export interface VideoCropRect {
   height: number;
 }
 
+/**
+ * Source-pixel boundaries for one axis of a video grid.
+ *
+ * The first and last entries are the fixed outer bounds (0 and the source
+ * size); internal entries are the editable separators.  A readonly array is
+ * accepted so callers can keep their editor state immutable.
+ */
+export type VideoAxisCuts = readonly number[];
+
 export interface VideoGridPlan {
   sourceWidth: number;
   sourceHeight: number;
@@ -32,13 +41,97 @@ function positiveInt(name: string, value: number): number {
   return value;
 }
 
-/** Plan stable row-major crop rectangles that cover an equally divided grid. */
+/** Return equal source-pixel boundaries with deterministic rounded positions. */
+export function equalVideoAxisCuts(total: number, cells: number): number[] {
+  const source = positiveInt('total', total);
+  const count = positiveInt('cells', cells);
+  if (source < count) {
+    throw new RangeError(`cells ${count} exceed source size ${source}`);
+  }
+  return Array.from({ length: count + 1 }, (_, index) => Math.round((index * source) / count));
+}
+
+/**
+ * Move one internal separator to a proposed source-pixel position.
+ *
+ * Positions may be fractional while converting from a rendered pointer event;
+ * they are rounded to the nearest integer and clamped so every neighboring
+ * cell retains at least one source pixel.  The input array is never mutated.
+ */
+export function moveVideoGuide(cuts: VideoAxisCuts, index: number, position: number): number[] {
+  if (!Array.isArray(cuts) || cuts.length < 3) {
+    throw new RangeError('cuts must contain at least one internal guide');
+  }
+  if (!Number.isInteger(index) || index < 1 || index >= cuts.length - 1) {
+    throw new RangeError(`guide index ${index} must address an internal separator`);
+  }
+  if (!Number.isFinite(position)) {
+    throw new RangeError(`guide position must be finite, got ${position}`);
+  }
+
+  // Validate the existing boundaries before using their neighbors as clamps.
+  // This keeps the helper deterministic even when called independently of
+  // planVideoGrid().
+  for (let cursor = 0; cursor < cuts.length; cursor++) {
+    const cut = cuts[cursor]!;
+    if (!Number.isSafeInteger(cut)) {
+      throw new RangeError(`cuts[${cursor}] must be a safe integer, got ${cut}`);
+    }
+    if (cursor > 0 && cut <= cuts[cursor - 1]!) {
+      throw new RangeError(`cuts must be strictly increasing at index ${cursor}`);
+    }
+  }
+
+  const rounded = Math.round(position);
+  // Math.round() of a very large finite value can exceed the safe-integer
+  // range.  Clamp it against safe neighboring cuts first; the result is still
+  // guaranteed to be an integer in the legal interval.
+  const lower = cuts[index - 1]! + 1;
+  const upper = cuts[index + 1]! - 1;
+  const next = Math.min(upper, Math.max(lower, rounded));
+  const result = [...cuts];
+  result[index] = next;
+  return result;
+}
+
+function validateVideoAxisCuts(
+  name: 'xCuts' | 'yCuts',
+  cuts: VideoAxisCuts | undefined,
+  sourceSize: number,
+  cells: number,
+): number[] {
+  if (cuts === undefined) return equalVideoAxisCuts(sourceSize, cells);
+  if (!Array.isArray(cuts)) {
+    throw new RangeError(`${name} must be an array of source-pixel cuts`);
+  }
+  if (cuts.length !== cells + 1) {
+    throw new RangeError(`${name} must contain exactly ${cells + 1} cuts, got ${cuts.length}`);
+  }
+  const out = Array.from(cuts);
+  if (out[0] !== 0 || out[out.length - 1] !== sourceSize) {
+    throw new RangeError(`${name} must start at 0 and end at ${sourceSize}`);
+  }
+  for (let index = 0; index < out.length; index++) {
+    const cut = out[index]!;
+    if (!Number.isSafeInteger(cut)) {
+      throw new RangeError(`${name}[${index}] must be a safe integer, got ${cut}`);
+    }
+    if (index > 0 && cut <= out[index - 1]!) {
+      throw new RangeError(`${name} must be strictly increasing at index ${index}`);
+    }
+  }
+  return out;
+}
+
+/** Plan stable row-major crop rectangles from equal or explicit axis cuts. */
 export function planVideoGrid(args: {
   sourceWidth: number;
   sourceHeight: number;
   cols: number;
   rows: number;
   count: number;
+  xCuts?: VideoAxisCuts;
+  yCuts?: VideoAxisCuts;
 }): VideoGridPlan {
   const sourceWidth = positiveInt('sourceWidth', args.sourceWidth);
   const sourceHeight = positiveInt('sourceHeight', args.sourceHeight);
@@ -53,8 +146,8 @@ export function planVideoGrid(args: {
     throw new RangeError(`grid ${cols}x${rows} exceeds source ${sourceWidth}x${sourceHeight}`);
   }
 
-  const xs = Array.from({ length: cols + 1 }, (_, i) => Math.round((i * sourceWidth) / cols));
-  const ys = Array.from({ length: rows + 1 }, (_, i) => Math.round((i * sourceHeight) / rows));
+  const xs = validateVideoAxisCuts('xCuts', args.xCuts, sourceWidth, cols);
+  const ys = validateVideoAxisCuts('yCuts', args.yCuts, sourceHeight, rows);
   const rects: VideoCropRect[] = [];
   for (let index = 0; index < count; index++) {
     const row = Math.floor(index / cols);

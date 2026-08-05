@@ -10,7 +10,7 @@ with Canvas, WebAssembly, and Web Workers, and the built site can be hosted on G
 | Local images | `build` | Individual images to a fitted Regular Sticker, Big Sticker, or Regular Emoji pack |
 | Sprite sheet | `gen` for regular static/Emoji packs | Pre-process cut guide, gutter-aware extraction, and Regular Sticker, Big Sticker, or Regular Emoji packaging |
 | Animated APNG | `anim` for regular animation/Emoji | One frame sheet to APNG, frame groups to an Animated Sticker or Animated Regular Emoji pack, or paired static/frame inputs to a browser-only Pop-up Sticker pack |
-| Video → APNG | Web only | Fixed-grid video to editable Animated Sticker, Animated Emoji, or derived-static Pop-up packs |
+| Video → APNG | Web only | Adjustable shared-grid video to editable Animated Sticker, Animated Emoji, or derived-static Pop-up packs |
 | Prompt | `prompt` | Sticker- or Emoji-aware static-sheet and animation-frame prompts for external image tools |
 
 The separate `#/colab-birefnet` route explains how to launch the optional BiRefNet notebook, benchmark
@@ -125,12 +125,15 @@ not use `HTMLVideoElement.currentTime` seeking or a fixed 10/20/30/40/60-frame s
 1. Upload a video. The browser probes its container, codec, coded/display geometry, rotation, pixel
    aspect ratio, duration, first timestamp, and every decoded presentation sample.
 2. Select Animated Sticker, Animated Regular Emoji, or Pop-up Sticker, then choose a global editable time window and
-   fixed grid. Start, middle, end, and scrub previews show the same crop overlay. Changing grid columns
-   or rows updates the source-cell count. Preflight reports actual source frames, crop-frames, and a raw
-   RGBA upper bound.
+   grid dimensions. One full-width editor switches among start, middle, end, and custom frames. Its
+   internal separators start equally divided and can be dragged in integer source pixels at Fit, 150%,
+   or 200% display zoom; one action restores the exact equal split. Changing the source, columns, or rows
+   also restores equal separators, while changing only the output count preserves manual positions.
+   Preflight reports actual source frames, crop-frames, and a raw RGBA upper bound from that edited grid.
 3. Confirm ingest. Every presentation sample intersecting the range is decoded in order, fed to every
-   crop, proportionally fitted to the selected product canvas, and immediately released. Target-fitted
-   raw RGB/alpha is written to bounded lossless APNG chunks in memory or IndexedDB. Equal visuals may
+   crop from the same fixed row-major plan, proportionally fitted to the selected product canvas, and
+   immediately released. Target-fitted raw RGB/alpha is written to bounded lossless APNG chunks in
+   memory or IndexedDB. Equal visuals may
    share payload bytes, but every source timestamp/duration remains indexed.
 4. Edit stickers independently. Each draft owns a source range, hard 5–20-frame target, target-legal
    per-loop duration, finite loop count, background mode, and compression mode. A Pop-up draft also
