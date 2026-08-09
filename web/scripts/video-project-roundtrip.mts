@@ -534,35 +534,49 @@ const allSame = await renderContract([7, 7, 7, 7, 7, 7], 5);
 assert.equal(allSame.metrics.outputFrames, 1);
 assert.ok(allSame.errors.length > 0);
 assert.match(allSame.notes.join(' '), /最多只有 1 個可區分成品畫格/);
-const quantizationFrames = Array.from({ length: 6 }, (_, frameIndex): Raster => {
-  const width = 270;
-  const height = 270;
-  const data = new Uint8ClampedArray(width * height * 4);
-  for (let pixel = 0; pixel < width * height; pixel++) {
-    const shade = pixel % 256;
-    data[pixel * 4] = shade;
-    data[pixel * 4 + 1] = shade;
-    data[pixel * 4 + 2] = shade;
-    data[pixel * 4 + 3] = 255;
-  }
-  if (frameIndex <= 1) {
-    data[0] = 120 + frameIndex;
-  } else {
-    const startX = 20 + frameIndex * 32;
-    for (let y = 100; y < 130; y++) for (let x = startX; x < startX + 30; x++) {
-      const offset = (y * width + x) * 4;
-      data[offset] = 255;
-      data[offset + 1] = 0;
-      data[offset + 2] = 0;
+function makeQuantizationFrames(width: number, height: number): Raster[] {
+  return Array.from({ length: 6 }, (_, frameIndex): Raster => {
+    const data = new Uint8ClampedArray(width * height * 4);
+    for (let pixel = 0; pixel < width * height; pixel++) {
+      const shade = pixel % 256;
+      data[pixel * 4] = shade;
+      data[pixel * 4 + 1] = shade;
+      data[pixel * 4 + 2] = shade;
+      data[pixel * 4 + 3] = 255;
     }
-  }
-  return { data, width, height };
-});
+    if (frameIndex <= 1) {
+      data[0] = 120 + frameIndex;
+    } else {
+      const markSize = Math.min(30, Math.floor(width / 6), Math.floor(height / 6));
+      const startX = Math.min(width - markSize, 10 + frameIndex * Math.floor((width - 50) / 5));
+      const startY = Math.floor((height - markSize) / 2);
+      for (let y = startY; y < startY + markSize; y++) for (let x = startX; x < startX + markSize; x++) {
+        const offset = (y * width + x) * 4;
+        data[offset] = 255;
+        data[offset + 1] = 0;
+        data[offset + 2] = 0;
+      }
+    }
+    return { data, width, height };
+  });
+}
+const quantizationFrames = makeQuantizationFrames(270, 270);
 const quantizationReplacement = await renderQuantizationContract(quantizationFrames);
 assert.equal(quantizationReplacement.metrics.outputFrames, 5);
 assert.equal(quantizationReplacement.metrics.adjacentDuplicateFrames, 0);
 assert.ok(quantizationReplacement.selection.removedAdjacentSourceIndices.includes(1));
 assert.ok(quantizationReplacement.selection.replacementSourceIndices.includes(3));
+let automaticCandidateChecks = 0;
+const firstRejectedAutomaticCandidate = encodeApngExactFrames(makeQuantizationFrames(16, 16).slice(0, 5), {
+  loops: 1,
+  delaysMs: [200, 200, 200, 200, 200],
+  maxBytes: 1,
+  minColors: 16,
+  acceptCandidate: () => ++automaticCandidateChecks === 1,
+  returnFirstRejectedCandidate: true,
+});
+assert.equal(automaticCandidateChecks, 2, 'automatic color search must surface its first rejected candidate');
+assert.equal(firstRejectedAutomaticCandidate.accepted, false);
 const originalColorFailure = encodeApngExactFrames(quantizationFrames.slice(0, 5), {
   loops: 1,
   delaysMs: [200, 200, 200, 200, 200],

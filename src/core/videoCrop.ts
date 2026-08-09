@@ -51,6 +51,37 @@ export function equalVideoAxisCuts(total: number, cells: number): number[] {
   return Array.from({ length: count + 1 }, (_, index) => Math.round((index * source) / count));
 }
 
+/** Return the legal source-pixel range for an outer or internal grid guide. */
+export function videoGuideRange(
+  cuts: VideoAxisCuts,
+  index: number,
+  sourceSize: number,
+): { min: number; max: number } {
+  const source = positiveInt('sourceSize', sourceSize);
+  if (!Array.isArray(cuts) || cuts.length < 2) {
+    throw new RangeError('cuts must contain two outer bounds');
+  }
+  if (!Number.isInteger(index) || index < 0 || index >= cuts.length) {
+    throw new RangeError(`guide index ${index} must address an existing guide`);
+  }
+  for (let cursor = 0; cursor < cuts.length; cursor++) {
+    const cut = cuts[cursor]!;
+    if (!Number.isSafeInteger(cut)) {
+      throw new RangeError(`cuts[${cursor}] must be a safe integer, got ${cut}`);
+    }
+    if (cut < 0 || cut > source) {
+      throw new RangeError(`cuts[${cursor}] must stay within 0 and ${source}`);
+    }
+    if (cursor > 0 && cut <= cuts[cursor - 1]!) {
+      throw new RangeError(`cuts must be strictly increasing at index ${cursor}`);
+    }
+  }
+  return {
+    min: index === 0 ? 0 : cuts[index - 1]! + 1,
+    max: index === cuts.length - 1 ? source : cuts[index + 1]! - 1,
+  };
+}
+
 /**
  * Move one grid guide to a proposed source-pixel position.
  *
@@ -65,39 +96,15 @@ export function moveVideoGuide(
   position: number,
   sourceSize: number,
 ): number[] {
-  const source = positiveInt('sourceSize', sourceSize);
-  if (!Array.isArray(cuts) || cuts.length < 2) {
-    throw new RangeError('cuts must contain two outer bounds');
-  }
-  if (!Number.isInteger(index) || index < 0 || index >= cuts.length) {
-    throw new RangeError(`guide index ${index} must address an existing guide`);
-  }
   if (!Number.isFinite(position)) {
     throw new RangeError(`guide position must be finite, got ${position}`);
   }
-
-  // Validate the existing boundaries before using their neighbors as clamps.
-  // This keeps the helper deterministic even when called independently of
-  // planVideoGrid().
-  for (let cursor = 0; cursor < cuts.length; cursor++) {
-    const cut = cuts[cursor]!;
-    if (!Number.isSafeInteger(cut)) {
-      throw new RangeError(`cuts[${cursor}] must be a safe integer, got ${cut}`);
-    }
-    if (cut < 0 || cut > source) {
-      throw new RangeError(`cuts[${cursor}] must stay within 0 and ${source}`);
-    }
-    if (cursor > 0 && cut <= cuts[cursor - 1]!) {
-      throw new RangeError(`cuts must be strictly increasing at index ${cursor}`);
-    }
-  }
+  const { min: lower, max: upper } = videoGuideRange(cuts, index, sourceSize);
 
   const rounded = Math.round(position);
   // Math.round() of a very large finite value can exceed the safe-integer
   // range.  Clamp it against safe neighboring cuts first; the result is still
   // guaranteed to be an integer in the legal interval.
-  const lower = index === 0 ? 0 : cuts[index - 1]! + 1;
-  const upper = index === cuts.length - 1 ? source : cuts[index + 1]! - 1;
   const next = Math.min(upper, Math.max(lower, rounded));
   const result = [...cuts];
   result[index] = next;

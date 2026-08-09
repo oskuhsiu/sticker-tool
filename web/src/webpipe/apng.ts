@@ -239,6 +239,8 @@ export function encodeApngExactFrames(
     forbidPalette?: boolean;
     /** Optional final-byte contract. Rejected color candidates remain available as diagnostics only. */
     acceptCandidate?: (png: Uint8Array) => boolean;
+    /** Return the first rejected color candidate so the caller can replace a conflicting source frame. */
+    returnFirstRejectedCandidate?: boolean;
   },
 ): ExactFrameEncodeResult {
   let best: ExactFrameEncodeResult | null = null;
@@ -260,6 +262,7 @@ export function encodeApngExactFrames(
       accepted: opts.acceptCandidate?.(png) ?? true,
     };
     if (!best || candidate.bytes < best.bytes) best = candidate;
+    if (!candidate.accepted && opts.returnFirstRejectedCandidate) return candidate;
     if (candidate.accepted && (!bestAccepted || candidate.bytes < bestAccepted.bytes)) bestAccepted = candidate;
     if (candidate.accepted && !candidate.overBudget) return candidate;
   }

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { emojiFileName, stickerFileName } from '@core/naming.js';
 import {
   moveVideoGuide,
+  videoGuideRange,
   type VideoAxisCuts,
   type VideoGridPlan,
 } from '@core/videoCrop.js';
@@ -85,14 +86,6 @@ export function VideoGridEditor(props: {
     axis === 'x' ? props.grid.sourceWidth : props.grid.sourceHeight
   );
 
-  const guideRange = (axis: GuideAxis, index: number): { min: number; max: number } => {
-    const cuts = cutsFor(axis);
-    return {
-      min: index === 0 ? 0 : cuts[index - 1]! + 1,
-      max: index === cuts.length - 1 ? sourceSizeFor(axis) : cuts[index + 1]! - 1,
-    };
-  };
-
   const guideLabel = (axis: GuideAxis, index: number): string => {
     const cuts = cutsFor(axis);
     if (axis === 'x') {
@@ -171,7 +164,7 @@ export function VideoGridEditor(props: {
     if (!activeGuide) return '選取外框或內部分隔線以查看來源像素位置。';
     const cuts = cutsFor(activeGuide.axis);
     const value = cuts[activeGuide.index]!;
-    const { min, max } = guideRange(activeGuide.axis, activeGuide.index);
+    const { min, max } = videoGuideRange(cuts, activeGuide.index, sourceSizeFor(activeGuide.axis));
     const coordinate = activeGuide.axis === 'x' ? 'x' : 'y';
     return `${guideLabel(activeGuide.axis, activeGuide.index)}：${coordinate} = ${value} px（可調 ${min}–${max} px）`;
   })();
@@ -181,7 +174,7 @@ export function VideoGridEditor(props: {
     : `${props.grid.sourceWidth * (Number(zoom) / 100)}px`;
 
   const renderGuide = (axis: GuideAxis, index: number, position: number) => {
-    const { min, max } = guideRange(axis, index);
+    const { min, max } = videoGuideRange(cutsFor(axis), index, sourceSizeFor(axis));
     const vertical = axis === 'x';
     const label = guideLabel(axis, index);
     const lineProps = vertical

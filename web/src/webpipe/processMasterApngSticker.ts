@@ -283,6 +283,7 @@ export async function processMasterApngSticker(args: {
             candidateEvidence.loops === settings.loops
           );
         },
+        returnFirstRejectedCandidate: true,
       });
       const evidence = inspectAnimatedBytes(encoded.png, settings.targetFrames);
       const attempt = {

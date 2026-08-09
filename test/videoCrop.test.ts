@@ -6,6 +6,7 @@ import {
   planAnimatedCanvas,
   planVideoGrid,
   planVideoOutputCanvas,
+  videoGuideRange,
 } from '../src/core/videoCrop.js';
 
 test('Video grid keeps the existing equal source-pixel geometry by default', () => {
@@ -96,6 +97,9 @@ test('Video guide movement rounds and clamps internal separators between their n
 
 test('Video guide movement lets outer bounds inset but never leave the source or collapse a cell', () => {
   const cuts = [0, 100, 200, 300];
+  assert.deepEqual(videoGuideRange(cuts, 0, 300), { min: 0, max: 99 });
+  assert.deepEqual(videoGuideRange(cuts, 2, 300), { min: 101, max: 299 });
+  assert.deepEqual(videoGuideRange(cuts, 3, 300), { min: 201, max: 300 });
   assert.deepEqual(moveVideoGuide(cuts, 0, 40, 300), [40, 100, 200, 300]);
   assert.deepEqual(moveVideoGuide(cuts, 0, -20, 300), [0, 100, 200, 300]);
   assert.deepEqual(moveVideoGuide(cuts, 0, 999, 300), [99, 100, 200, 300]);

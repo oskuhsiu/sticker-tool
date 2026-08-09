@@ -188,6 +188,14 @@ upload-ready Effect package.
   receives a bounded grayscale mask, and applies alpha locally. The endpoint and random key exist only
   in current React memory. Free Colab and Quick Tunnel sessions have no availability guarantee.
 
+Semantic models are not text-aware and may remove small, detached, thin, or low-contrast lettering. For
+existing artwork, use **None** when the source is already transparent, use **Solid-color key** when a flat
+background is clearly different from the text, or remove the subject first and composite text or a speech
+bubble afterward. Thick opaque lettering with a strong outline and contact with an opaque subject or bubble
+is more likely to survive, but no model guarantees it. Thresholding or mask dilation cannot reconstruct a
+glyph whose mask is already zero; reliable in-app recovery would require a protected mask or a post-removal
+text-overlay workflow, neither of which the current Video editor provides.
+
 No model choice silently falls back to color keying. Sprite-sheet semantic removal uses overlapping
 nominal crops, merges their masks over the original sheet, and then runs component-aware extraction so a
 subject crossing a grid line is not clipped at a mask boundary.

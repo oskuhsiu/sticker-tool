@@ -72,7 +72,7 @@ export function VideoSourceStep(props: {
           : props.target === 'popup'
             ? ' Pop-up 動畫固定輸出 480×480；建立預覽後，每張可指定一個 frame 轉成配對的普通靜態貼圖，ZIP 同時包含 png/ 與 popup/。'
             : ' Animated Sticker 依來源比例 fit 到 320×270 範圍，至少一邊為 270px，單張 1MB 上限。'}
-        內部分隔線可在 ingest 前調整；同一組來源像素邊界會固定套用到每個 presentation frame。去背不在 ingest 執行；只在你產生單張預覽時處理實際候選格。
+        外框與內部分隔線都可在 ingest 前調整；同一組來源像素邊界會固定套用到每個 presentation frame。去背不在 ingest 執行；只在你產生單張預覽時處理實際候選格。
       </p>
       <VideoCutRangeStep {...props.range} />
       {!props.grid && <div className="video-inline-error">網格容量不足、數值無效，或網格大於 display size。</div>}

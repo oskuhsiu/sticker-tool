@@ -370,6 +370,8 @@ implemented; the app does not label an animation-only archive as a complete Effe
 
 IMG.LY, local BiRefNet, and Colab BiRefNet are mutually exclusive. None silently falls back to solid-color keying: local BiRefNet may fall back only from WebGPU to local WASM, while a model or remote-session failure is reported and leaves the source/settings available for retry.
 
+Semantic foreground models can remove small, detached, thin, or low-contrast lettering because the mask is not text-aware. For existing artwork, prefer **None** when the source is already transparent, use **Solid-color key** when the background is flat and clearly different from the lettering, or remove the subject first and composite the text or speech bubble afterward. Thick opaque lettering with a strong outline, ideally touching an opaque subject or bubble, is more likely to survive but is not guaranteed. Once a model mask has reduced an entire glyph to zero alpha, thresholding or mask dilation cannot reconstruct it; a future protected-mask or post-removal text-overlay tool would be needed for in-app recovery.
+
 ## LINE constraints targeted by the project
 
 | Constraint | Static | Big Sticker | Animated | Pop-up Sticker |
