@@ -126,9 +126,9 @@ not use `HTMLVideoElement.currentTime` seeking or a fixed 10/20/30/40/60-frame s
    aspect ratio, duration, first timestamp, and every decoded presentation sample.
 2. Select Animated Sticker, Animated Regular Emoji, or Pop-up Sticker, then choose a global editable time window and
    grid dimensions. One full-width editor switches among start, middle, end, and custom frames. Its
-   internal separators start equally divided and can be dragged in integer source pixels at Fit, 150%,
+   outer crop bounds and internal separators start as a full-source equal grid and can all be dragged in integer source pixels at Fit, 150%,
    or 200% display zoom; one action restores the exact equal split. Changing the source, columns, or rows
-   also restores equal separators, while changing only the output count preserves manual positions.
+   also restores the full-source equal grid, while changing only the output count preserves manual positions.
    Preflight reports actual source frames, crop-frames, and a raw RGBA upper bound from that edited grid.
 3. Confirm ingest. Every presentation sample intersecting the range is decoded in order, fed to every
    crop from the same fixed row-major plan, proportionally fitted to the selected product canvas, and
@@ -154,8 +154,8 @@ budget is backed by the CFR/VFR/rotation/cancellation and 8/24-crop spike in
 `scripts/video-all-frames-spike.mts`.
 
 Background removal is never baked into V3 ingest. `none` preserves target-fitted raw pixels; color-keying is local;
-IMG.LY, local BiRefNet, and Colab BiRefNet are lazy, mutually exclusive render-stage choices. Only
-selected candidates are processed, sequentially, with a bounded session cache. A model or remote error
+IMG.LY, local BiRefNet, and Colab BiRefNet are lazy, mutually exclusive render-stage choices. The
+time-uniform target candidates are processed sequentially with a bounded session cache. Unused source frames are tried only to replace adjacent visuals made identical by removal or quantization; exceeding the delivery byte limit does not process the rest of the range. A model or remote error
 does not silently fall back and does not overwrite the prior current render.
 
 Normal LINE ZIP download is available only when every current render matches its draft and final-byte

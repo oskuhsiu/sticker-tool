@@ -110,13 +110,13 @@ async function assertGridEditsSyncCount() {
   if (await page.getByLabel('來源貼圖格數').inputValue() !== '6') {
     throw new Error('3×2 網格應自動更新來源貼圖格數為 6');
   }
-  await page.waitForFunction(() => document.querySelector('[role="separator"][data-axis="x"]')?.getAttribute('aria-valuenow') === '213');
+  await waitForGuideValue('x', 1, 213);
   await assertGridEditorAligned();
   await page.getByLabel('欄').fill('4');
   if (await page.getByLabel('來源貼圖格數').inputValue() !== '8') {
     throw new Error('4×2 網格應自動更新來源貼圖格數為 8');
   }
-  await page.waitForFunction(() => document.querySelector('[role="separator"][data-axis="x"]')?.getAttribute('aria-valuenow') === '160');
+  await waitForGuideValue('x', 1, 160);
   await assertGridEditorAligned();
 }
 
@@ -127,6 +127,42 @@ async function waitForGuideValue(axis, index, expected) {
     )?.getAttribute('aria-valuenow') === String(expected),
     { axis, index, expected },
   );
+}
+
+async function dragGuideBySourcePixels(axis, index, delta) {
+  const guide = page.locator(
+    `[data-tab="video"] [role="separator"][data-axis="${axis}"][data-guide-index="${index}"]`,
+  );
+  const current = Number(await guide.getAttribute('aria-valuenow'));
+  const pointer = await page.locator('[data-tab="video"] .video-grid-editor-media').evaluate(
+    (media, { axis, current, delta }) => {
+      const bounds = media.getBoundingClientRect();
+      const sourceSize = axis === 'x' ? 640 : 320;
+      const renderedSize = axis === 'x' ? bounds.width : bounds.height;
+      let guidePosition = (current / sourceSize) * renderedSize;
+      if (guidePosition <= 0) guidePosition = 1;
+      if (guidePosition >= renderedSize) guidePosition = renderedSize - 1;
+      return axis === 'x'
+        ? {
+          startX: bounds.left + guidePosition,
+          startY: bounds.top + bounds.height * 0.37,
+          endX: bounds.left + guidePosition + (delta / sourceSize) * renderedSize,
+          endY: bounds.top + bounds.height * 0.37,
+        }
+        : {
+          startX: bounds.left + bounds.width * 0.43,
+          startY: bounds.top + guidePosition,
+          endX: bounds.left + bounds.width * 0.43,
+          endY: bounds.top + guidePosition + (delta / sourceSize) * renderedSize,
+        };
+    },
+    { axis, current, delta },
+  );
+  await page.mouse.move(pointer.startX, pointer.startY);
+  await page.mouse.down();
+  await page.mouse.move(pointer.endX, pointer.endY);
+  await page.mouse.up();
+  await waitForGuideValue(axis, index, current + delta);
 }
 
 async function assertLargeAdjustableGridEditor() {
@@ -203,6 +239,18 @@ async function assertLargeAdjustableGridEditor() {
   await waitForGuideValue('x', 1, 160);
   await waitForGuideValue('y', 1, 160);
 
+  await page.getByRole('button', { name: 'Fit' }).click();
+  await page.waitForFunction(() => document.querySelector('[data-tab="video"] .video-grid-editor-viewport')?.getAttribute('data-zoom') === 'fit');
+  for (const label of ['左邊界', '右邊界', '上邊界', '下邊界']) {
+    if (await page.getByRole('separator', { name: label }).count() !== 1) {
+      throw new Error(`大型 editor 缺少可操作的${label}`);
+    }
+  }
+  await dragGuideBySourcePixels('x', 0, 10);
+  await dragGuideBySourcePixels('x', 4, -10);
+  await dragGuideBySourcePixels('y', 0, 10);
+  await dragGuideBySourcePixels('y', 2, -10);
+
   await vertical.focus();
   await page.keyboard.press('Shift+ArrowRight');
   await waitForGuideValue('x', 1, 170);
@@ -211,8 +259,8 @@ async function assertLargeAdjustableGridEditor() {
   await page.keyboard.press('ArrowDown');
   await waitForGuideValue('y', 1, 161);
   return {
-    xCuts: [0, 170, 320, 480, 640],
-    yCuts: [0, 161, 320],
+    xCuts: [10, 170, 320, 480, 630],
+    yCuts: [10, 161, 310],
   };
 }
 
@@ -273,7 +321,7 @@ try {
   await uploadVideo();
   await configureSource(8, 4, 2);
   const editedGrid = await assertLargeAdjustableGridEditor();
-  results.push('✓ Fit 大型工作區、200% 內部捲動、scaled pointer、1/10px 鍵盤微調與等分 reset 都通過');
+  results.push('✓ Fit 四側外框拖曳、200% 內部捲動、scaled pointer、1/10px 鍵盤微調與等分 reset 都通過');
   await buildRawMaster(8);
   await renderAll();
 

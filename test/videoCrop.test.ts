@@ -48,11 +48,32 @@ test('Video grid accepts unequal cuts and emits gap-free, non-overlapping row-ma
   }
 });
 
+test('Video grid accepts inset outer bounds while keeping every crop inside the source', () => {
+  const grid = planVideoGrid({
+    sourceWidth: 400,
+    sourceHeight: 200,
+    cols: 3,
+    rows: 2,
+    count: 6,
+    xCuts: [10, 100, 275, 390],
+    yCuts: [5, 80, 190],
+  });
+  assert.deepEqual(grid.rects.map((rect) => [rect.left, rect.top, rect.width, rect.height]), [
+    [10, 5, 90, 75], [100, 5, 175, 75], [275, 5, 115, 75],
+    [10, 80, 90, 110], [100, 80, 175, 110], [275, 80, 115, 110],
+  ]);
+  assert.ok(grid.rects.every((rect) => (
+    rect.left >= 0 && rect.top >= 0 &&
+    rect.left + rect.width <= grid.sourceWidth &&
+    rect.top + rect.height <= grid.sourceHeight
+  )));
+});
+
 test('Video grid rejects malformed explicit source-pixel cuts', () => {
   const base = { sourceWidth: 100, sourceHeight: 80, cols: 2, rows: 2, count: 4 } as const;
   assert.throws(() => planVideoGrid({ ...base, xCuts: [0, 100] }), /xCuts must contain exactly 3 cuts/);
-  assert.throws(() => planVideoGrid({ ...base, xCuts: [1, 50, 100] }), /xCuts must start at 0/);
-  assert.throws(() => planVideoGrid({ ...base, yCuts: [0, 40, 79] }), /yCuts must start at 0 and end at 80/);
+  assert.throws(() => planVideoGrid({ ...base, xCuts: [-1, 50, 100] }), /xCuts must stay within 0 and 100/);
+  assert.throws(() => planVideoGrid({ ...base, yCuts: [0, 40, 81] }), /yCuts must stay within 0 and 80/);
   assert.throws(() => planVideoGrid({ ...base, xCuts: [0, 50.5, 100] }), /xCuts\[1\] must be a safe integer/);
   assert.throws(() => planVideoGrid({ ...base, xCuts: [0, 100, 100] }), /xCuts must be strictly increasing/);
   assert.throws(
@@ -61,16 +82,28 @@ test('Video grid rejects malformed explicit source-pixel cuts', () => {
   );
 });
 
-test('Video guide movement rounds, clamps to neighbors, validates index, and supports exact reset', () => {
+test('Video guide movement rounds and clamps internal separators between their neighbors', () => {
   const cuts = [0, 100, 200, 300];
-  assert.deepEqual(moveVideoGuide(cuts, 1, 150.5), [0, 151, 200, 300]);
+  assert.deepEqual(moveVideoGuide(cuts, 1, 150.5, 300), [0, 151, 200, 300]);
   assert.deepEqual(cuts, [0, 100, 200, 300], 'moving a guide must not mutate editor state');
-  assert.deepEqual(moveVideoGuide(cuts, 1, -10), [0, 1, 200, 300]);
-  assert.deepEqual(moveVideoGuide(cuts, 1, 999), [0, 199, 200, 300]);
-  assert.throws(() => moveVideoGuide(cuts, 0, 120), /internal separator/);
-  assert.throws(() => moveVideoGuide(cuts, 3, 120), /internal separator/);
-  assert.throws(() => moveVideoGuide(cuts, 1.5, 120), /internal separator/);
+  assert.deepEqual(moveVideoGuide(cuts, 1, -10, 300), [0, 1, 200, 300]);
+  assert.deepEqual(moveVideoGuide(cuts, 1, 999, 300), [0, 199, 200, 300]);
+  assert.throws(() => moveVideoGuide(cuts, -1, 120, 300), /guide index/);
+  assert.throws(() => moveVideoGuide(cuts, 4, 120, 300), /guide index/);
+  assert.throws(() => moveVideoGuide(cuts, 1.5, 120, 300), /guide index/);
   assert.deepEqual(equalVideoAxisCuts(300, 3), [0, 100, 200, 300]);
+});
+
+test('Video guide movement lets outer bounds inset but never leave the source or collapse a cell', () => {
+  const cuts = [0, 100, 200, 300];
+  assert.deepEqual(moveVideoGuide(cuts, 0, 40, 300), [40, 100, 200, 300]);
+  assert.deepEqual(moveVideoGuide(cuts, 0, -20, 300), [0, 100, 200, 300]);
+  assert.deepEqual(moveVideoGuide(cuts, 0, 999, 300), [99, 100, 200, 300]);
+  assert.deepEqual(moveVideoGuide(cuts, 3, 260, 300), [0, 100, 200, 260]);
+  assert.deepEqual(moveVideoGuide(cuts, 3, -20, 300), [0, 100, 200, 201]);
+  assert.deepEqual(moveVideoGuide(cuts, 3, 999, 300), [0, 100, 200, 300]);
+  assert.deepEqual(moveVideoGuide([0, 300], 0, 50, 300), [50, 300]);
+  assert.deepEqual(moveVideoGuide([0, 300], 1, 250, 300), [0, 250]);
 });
 
 test('Video output canvas is selected before ingest without stretching product contracts', () => {

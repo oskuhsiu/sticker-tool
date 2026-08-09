@@ -19,8 +19,8 @@ export interface VideoCropRect {
 /**
  * Source-pixel boundaries for one axis of a video grid.
  *
- * The first and last entries are the fixed outer bounds (0 and the source
- * size); internal entries are the editable separators.  A readonly array is
+ * The first and last entries are editable outer bounds contained by the
+ * source; internal entries are editable separators. A readonly array is
  * accepted so callers can keep their editor state immutable.
  */
 export type VideoAxisCuts = readonly number[];
@@ -52,18 +52,25 @@ export function equalVideoAxisCuts(total: number, cells: number): number[] {
 }
 
 /**
- * Move one internal separator to a proposed source-pixel position.
+ * Move one grid guide to a proposed source-pixel position.
  *
  * Positions may be fractional while converting from a rendered pointer event;
- * they are rounded to the nearest integer and clamped so every neighboring
- * cell retains at least one source pixel.  The input array is never mutated.
+ * they are rounded to the nearest integer and clamped to the source and their
+ * neighbor so every cell retains at least one source pixel. The input array is
+ * never mutated.
  */
-export function moveVideoGuide(cuts: VideoAxisCuts, index: number, position: number): number[] {
-  if (!Array.isArray(cuts) || cuts.length < 3) {
-    throw new RangeError('cuts must contain at least one internal guide');
+export function moveVideoGuide(
+  cuts: VideoAxisCuts,
+  index: number,
+  position: number,
+  sourceSize: number,
+): number[] {
+  const source = positiveInt('sourceSize', sourceSize);
+  if (!Array.isArray(cuts) || cuts.length < 2) {
+    throw new RangeError('cuts must contain two outer bounds');
   }
-  if (!Number.isInteger(index) || index < 1 || index >= cuts.length - 1) {
-    throw new RangeError(`guide index ${index} must address an internal separator`);
+  if (!Number.isInteger(index) || index < 0 || index >= cuts.length) {
+    throw new RangeError(`guide index ${index} must address an existing guide`);
   }
   if (!Number.isFinite(position)) {
     throw new RangeError(`guide position must be finite, got ${position}`);
@@ -77,6 +84,9 @@ export function moveVideoGuide(cuts: VideoAxisCuts, index: number, position: num
     if (!Number.isSafeInteger(cut)) {
       throw new RangeError(`cuts[${cursor}] must be a safe integer, got ${cut}`);
     }
+    if (cut < 0 || cut > source) {
+      throw new RangeError(`cuts[${cursor}] must stay within 0 and ${source}`);
+    }
     if (cursor > 0 && cut <= cuts[cursor - 1]!) {
       throw new RangeError(`cuts must be strictly increasing at index ${cursor}`);
     }
@@ -86,8 +96,8 @@ export function moveVideoGuide(cuts: VideoAxisCuts, index: number, position: num
   // Math.round() of a very large finite value can exceed the safe-integer
   // range.  Clamp it against safe neighboring cuts first; the result is still
   // guaranteed to be an integer in the legal interval.
-  const lower = cuts[index - 1]! + 1;
-  const upper = cuts[index + 1]! - 1;
+  const lower = index === 0 ? 0 : cuts[index - 1]! + 1;
+  const upper = index === cuts.length - 1 ? source : cuts[index + 1]! - 1;
   const next = Math.min(upper, Math.max(lower, rounded));
   const result = [...cuts];
   result[index] = next;
@@ -108,13 +118,13 @@ function validateVideoAxisCuts(
     throw new RangeError(`${name} must contain exactly ${cells + 1} cuts, got ${cuts.length}`);
   }
   const out = Array.from(cuts);
-  if (out[0] !== 0 || out[out.length - 1] !== sourceSize) {
-    throw new RangeError(`${name} must start at 0 and end at ${sourceSize}`);
-  }
   for (let index = 0; index < out.length; index++) {
     const cut = out[index]!;
     if (!Number.isSafeInteger(cut)) {
       throw new RangeError(`${name}[${index}] must be a safe integer, got ${cut}`);
+    }
+    if (cut < 0 || cut > sourceSize) {
+      throw new RangeError(`${name} must stay within 0 and ${sourceSize}`);
     }
     if (index > 0 && cut <= out[index - 1]!) {
       throw new RangeError(`${name} must be strictly increasing at index ${index}`);

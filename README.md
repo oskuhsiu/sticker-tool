@@ -316,8 +316,8 @@ The **Video → APNG** tab accepts a local video that Mediabunny and the current
 decode. Before ingest, the user selects one project-level product: Animated Sticker, Animated Regular
 Emoji, or Pop-up Sticker. Uploading probes container, codec, display geometry, rotation, pixel aspect ratio, and every
 decoded presentation sample. After the user chooses an editable range and grid dimensions, the browser
-opens one selected start/middle/end/custom frame in a full-width editor. The internal separators start
-equally divided, can be dragged in integer source pixels, and can be inspected at Fit, 150%, or 200%
+opens one selected start/middle/end/custom frame in a full-width editor. The outer crop bounds and internal
+separators start as a full-source equal grid, can all be dragged in integer source pixels, and can be inspected at Fit, 150%, or 200%
 display zoom. The browser then decodes every presentation frame in that range, applies the same fixed
 crop plan, and proportionally fits each crop onto the selected product canvas. Target-fitted raw
 RGB/alpha is streamed into bounded, lossless
@@ -330,8 +330,8 @@ aspect-preserving 320×270 boundary and 1 MB item limit. Animated Emoji uses an 
 canvas and 300 KB item limit. Pop-up uses a 480×480 truecolor animation canvas, 1–3-second playback
 contract, and lets each editor choose one final animation frame to derive its paired regular-size static
 PNG. Compression defaults to automatic;
-the advanced control can explicitly preserve original colors or set a palette ceiling. Background removal is lazy: it runs only for selected
-render candidates and is cached in a bounded session LRU. Exact-target encoding may reduce colors but
+the advanced control can explicitly preserve original colors or set a palette ceiling. Background removal is lazy: it runs on the selected
+time-uniform candidates and is cached in a bounded session LRU. Unused frames are tried only when removal or quantization makes adjacent selected visuals identical; an over-budget result is reported without triggering background removal on the remaining range. Exact-target encoding may reduce colors but
 does not silently remove frames to satisfy the 1 MB limit. Adjacent equal final visuals are coalesced,
 their duration moves to the previous visual, and deterministic replacement candidates are tried. The
 result is reopened and validated from its actual APNG bytes.
@@ -353,8 +353,8 @@ projects migrate explicitly to Animated Sticker; V1 projects remain importable a
 The video source grid may contain any positive number of cells, including fewer than a complete LINE
 pack. Such sources can still produce editable APNGs and a Project ZIP; the LINE ZIP validation gate
 requires 8, 16, or 24 Animated Stickers or Pop-up Stickers, or any integer from 8 through 40 Animated Emoji. Grid column
-or row changes update the source-cell count and restore equal separators immediately; changing only the
-output count preserves edited separators. The shared internal separators define one row-major layout for
+or row changes update the source-cell count and restore the full-source equal grid immediately; changing only the
+output count preserves edited outer bounds and internal separators. Those shared guides define one row-major layout for
 the entire video, not a moving crop per frame. Solid-color keying is off by
 default because a black background may share pixels with hair, eyes, clothing, or text outlines.
 Colab BiRefNet is also off by default and requires an explicit connection. The source step reports the

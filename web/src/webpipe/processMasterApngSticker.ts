@@ -210,7 +210,9 @@ export async function processMasterApngSticker(args: {
     if (args.signal?.aborted) throw new DOMException('動畫處理已取消', 'AbortError');
     const localIndex = expansion[expansionIndex]!;
     const raw = decoded[localIndex]!;
-    args.onProgress?.(`候選畫格 ${expansionIndex + 1}/${expansion.length}`);
+    args.onProgress?.(expansionIndex < initialCount
+      ? `初選畫格 ${expansionIndex + 1}/${initialCount}`
+      : `補選畫格 ${expansionIndex - initialCount + 1}/${expansion.length - initialCount}`);
     let frame = raw.frame;
     if (settings.background.mode !== 'none') {
       if (!args.removeBackground) throw new Error(`${settings.background.mode} 去背 adapter 未啟用`);
@@ -309,8 +311,7 @@ export async function processMasterApngSticker(args: {
       if (
         evidence.info.frames === settings.targetFrames &&
         evidence.adjacentDuplicateFrames === 0 &&
-        evidence.info.durationMs === settings.perLoopDurationMs &&
-        !encoded.overBudget
+        evidence.info.durationMs === settings.perLoopDurationMs
       ) {
         bestAttempt = attempt;
         break candidateLoop;

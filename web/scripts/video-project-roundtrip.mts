@@ -325,10 +325,16 @@ assert.equal(restoredLegacy.master.stickers[0]!.chunks[0]!.sampleRefs.length, 6)
 assert.match(restoredLegacy.current[0]!.notes.at(-1) ?? '', /無法補回缺失 frame/);
 console.log('strict V2 rejection and explicit V1 sampled/baked import OK');
 
-async function contractMaster(id: string, sourceSeeds: number[]): Promise<MasterApngSet> {
+async function contractMaster(
+  id: string,
+  sourceSeeds: number[],
+  makeFrame: (seed: number) => Raster = (seed) => frame(270, 270, seed),
+): Promise<MasterApngSet> {
   const contractStore = await createVideoMasterStore({ projectId: `contract-${id}`, forceMemory: true });
   const visualSeeds = [...new Set(sourceSeeds)];
-  const visualFrames = visualSeeds.map((seed) => frame(270, 270, seed));
+  const visualFrames = visualSeeds.map(makeFrame);
+  const width = visualFrames[0]!.width;
+  const height = visualFrames[0]!.height;
   const chunkId = `${id}-chunk-001`;
   const storeKey = `master/${id}/chunk_001.png`;
   const png = encodeApng(visualFrames, {
@@ -355,8 +361,8 @@ async function contractMaster(id: string, sourceSeeds: number[]): Promise<Master
     stickers: [{
       id,
       index: 0,
-      width: 270,
-      height: 270,
+      width,
+      height,
       chunks: [{
         id: chunkId,
         stickerId: id,
@@ -369,8 +375,8 @@ async function contractMaster(id: string, sourceSeeds: number[]): Promise<Master
           visualFrameId: visualRefs[visualSeeds.indexOf(seed)]!.visualFrameId,
         })),
         visualRefs,
-        width: 270,
-        height: 270,
+        width,
+        height,
         storeKey,
         bytes: png.length,
         sha256: await sha256(png),
@@ -460,6 +466,56 @@ async function renderQuantizationContract(sourceFrames: Raster[]) {
     removerVersion: 'none@quantization-contract',
   });
 }
+
+const removalSelectionMaster = await contractMaster(
+  'contract-removal-selection',
+  Array.from({ length: 48 }, (_, index) => index + 100),
+  (seed) => {
+    let state = seed;
+    const data = new Uint8ClampedArray(180 * 180 * 4);
+    for (let pixel = 0; pixel < 180 * 180; pixel++) {
+      for (let channel = 0; channel < 3; channel++) {
+        state ^= state << 13;
+        state ^= state >>> 17;
+        state ^= state << 5;
+        data[pixel * 4 + channel] = state & 255;
+      }
+      data[pixel * 4 + 3] = pixel % 7 === 0 ? 0 : 255;
+    }
+    return { data, width: 180, height: 180 };
+  },
+);
+let removalCalls = 0;
+const removalStages: string[] = [];
+const removalSelection = await processMasterApngSticker({
+  target: 'animated-emoji',
+  master: removalSelectionMaster.stickers[0]!,
+  store: removalSelectionMaster.store,
+  settings: {
+    stickerId: removalSelectionMaster.stickers[0]!.id,
+    rangeStartUs: removalSelectionMaster.rangeStartUs,
+    rangeEndUs: removalSelectionMaster.rangeEndUs,
+    targetFrames: 20,
+    perLoopDurationMs: 1000,
+    loops: 1,
+    background: { mode: 'imgly' },
+    preserveColors: true,
+    maxColors: 0,
+  },
+  cache: new VideoFrameRenderCache(32 * 1024 * 1024),
+  removerVersion: 'counting-remover@selection-contract',
+  removeBackground: async (input) => {
+    removalCalls++;
+    return input;
+  },
+  onProgress: (stage) => removalStages.push(stage),
+});
+assert.match(removalSelection.notes.join(' '), /超過/, 'fixture must exercise the over-budget fallback');
+assert.equal(removalSelection.metrics.outputFrames, 20);
+assert.equal(removalCalls, 20, 'background removal must stop after the 20 selected source frames');
+assert.equal(removalSelection.selection.replacementSourceIndices.length, 0);
+assert.ok(removalStages.includes('初選畫格 20/20'));
+assert.ok(removalStages.every((stage) => !stage.startsWith('補選畫格')));
 
 const adjacentReplacement = await renderContract([1, 1, 2, 3, 4, 5], 5);
 assert.equal(adjacentReplacement.metrics.outputFrames, 5);

@@ -67,7 +67,7 @@ export function VideoGridEditor(props: {
     setActiveGuide((current) => {
       if (!current) return null;
       const cuts = current.axis === 'x' ? props.xCuts : props.yCuts;
-      return current.index < cuts.length - 1 ? current : null;
+      return current.index < cuts.length ? current : null;
     });
   }, [props.xCuts, props.yCuts]);
 
@@ -81,8 +81,32 @@ export function VideoGridEditor(props: {
 
   const cutsFor = (axis: GuideAxis): VideoAxisCuts => axis === 'x' ? props.xCuts : props.yCuts;
 
+  const sourceSizeFor = (axis: GuideAxis): number => (
+    axis === 'x' ? props.grid.sourceWidth : props.grid.sourceHeight
+  );
+
+  const guideRange = (axis: GuideAxis, index: number): { min: number; max: number } => {
+    const cuts = cutsFor(axis);
+    return {
+      min: index === 0 ? 0 : cuts[index - 1]! + 1,
+      max: index === cuts.length - 1 ? sourceSizeFor(axis) : cuts[index + 1]! - 1,
+    };
+  };
+
+  const guideLabel = (axis: GuideAxis, index: number): string => {
+    const cuts = cutsFor(axis);
+    if (axis === 'x') {
+      if (index === 0) return '左邊界';
+      if (index === cuts.length - 1) return '右邊界';
+      return `垂直分隔線 ${index}`;
+    }
+    if (index === 0) return '上邊界';
+    if (index === cuts.length - 1) return '下邊界';
+    return `水平分隔線 ${index}`;
+  };
+
   const updateCuts = (axis: GuideAxis, index: number, position: number) => {
-    const next = moveVideoGuide(cutsFor(axis), index, position);
+    const next = moveVideoGuide(cutsFor(axis), index, position, sourceSizeFor(axis));
     if (axis === 'x') props.onXCuts(next);
     else props.onYCuts(next);
   };
@@ -144,15 +168,12 @@ export function VideoGridEditor(props: {
   };
 
   const guideStatus = (() => {
-    if (!activeGuide) return '選取內部分隔線以查看來源像素位置。';
+    if (!activeGuide) return '選取外框或內部分隔線以查看來源像素位置。';
     const cuts = cutsFor(activeGuide.axis);
     const value = cuts[activeGuide.index]!;
-    const min = cuts[activeGuide.index - 1]! + 1;
-    const max = cuts[activeGuide.index + 1]! - 1;
-    const number = activeGuide.index;
-    return activeGuide.axis === 'x'
-      ? `垂直分隔線 ${number}：x = ${value} px（可調 ${min}–${max} px）`
-      : `水平分隔線 ${number}：y = ${value} px（可調 ${min}–${max} px）`;
+    const { min, max } = guideRange(activeGuide.axis, activeGuide.index);
+    const coordinate = activeGuide.axis === 'x' ? 'x' : 'y';
+    return `${guideLabel(activeGuide.axis, activeGuide.index)}：${coordinate} = ${value} px（可調 ${min}–${max} px）`;
   })();
 
   const mediaWidth = zoom === 'fit'
@@ -160,11 +181,9 @@ export function VideoGridEditor(props: {
     : `${props.grid.sourceWidth * (Number(zoom) / 100)}px`;
 
   const renderGuide = (axis: GuideAxis, index: number, position: number) => {
-    const cuts = cutsFor(axis);
-    const min = cuts[index - 1]! + 1;
-    const max = cuts[index + 1]! - 1;
+    const { min, max } = guideRange(axis, index);
     const vertical = axis === 'x';
-    const label = `${vertical ? '垂直' : '水平'}分隔線 ${index}`;
+    const label = guideLabel(axis, index);
     const lineProps = vertical
       ? { x1: position, x2: position, y1: 0, y2: props.grid.sourceHeight }
       : { x1: 0, x2: props.grid.sourceWidth, y1: position, y2: position };
@@ -241,8 +260,8 @@ export function VideoGridEditor(props: {
                     <text x={rect.left + 8} y={rect.top + 22}>{cellFileName(props.target, rect.index)}</text>
                   </g>
                 ))}
-                {props.xCuts.slice(1, -1).map((position, offset) => renderGuide('x', offset + 1, position))}
-                {props.yCuts.slice(1, -1).map((position, offset) => renderGuide('y', offset + 1, position))}
+                {props.xCuts.map((position, index) => renderGuide('x', index, position))}
+                {props.yCuts.map((position, index) => renderGuide('y', index, position))}
               </svg>
             </>
           )}
