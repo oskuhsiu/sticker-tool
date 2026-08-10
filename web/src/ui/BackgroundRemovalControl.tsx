@@ -51,7 +51,7 @@ export function LocalBirefnetRuntimeWarning(props: { active: boolean }) {
   return (
     <div className="ai-local-notice" role="alert" data-testid="local-birefnet-wasm-warning">
       <strong>⚠ 無法取得可用的 WebGPU adapter：</strong>本機 BiRefNet 將改用 WASM。首次建立模型與每張推論都可能需要數分鐘，
-      多張處理會非常慢；建議改用支援 WebGPU 的 Chrome／Edge，或改選 Colab BiRefNet。
+      多張處理會非常慢；建議改用支援 WebGPU 的 Chrome／Edge，或改選 Colab 多模型去背。
     </div>
   );
 }
@@ -76,7 +76,7 @@ export function BackgroundRemovalControl(props: BackgroundRemovalControlProps) {
             <option value="color-key">單色色鍵（快速）</option>
             <option value="imgly">IMG.LY（本機瀏覽器）</option>
             <option value="local-birefnet">BiRefNet（本機）</option>
-            <option value="colab-birefnet">BiRefNet（Colab）</option>
+            <option value="colab-birefnet">Colab 多模型去背</option>
           </select>
         </Field>
         {props.value === 'color-key' && props.color && props.onColorChange && (
@@ -118,9 +118,9 @@ export function BackgroundRemovalControl(props: BackgroundRemovalControlProps) {
       <LocalBirefnetRuntimeWarning active={props.value === 'local-birefnet'} />
       {props.value === 'colab-birefnet' && (
         <div className="ai-local-notice" role="status">
-          <strong>Colab BiRefNet：</strong>{countText}每張處理用 crop 會透過 HTTPS 傳到你自己啟動的臨時 Colab session；
+          <strong>Colab 多模型去背：</strong>{countText}每張處理用 crop 會透過 HTTPS 傳到你自己啟動的臨時 Colab session；
           免費 runtime 與 tunnel 可能中斷，沒有 SLA。連線資料只保留在目前頁面記憶體。
-          {!connection && <> 尚未連線，請先開啟 <a href="#/colab-birefnet">Colab + BiRefNet 教學</a>。</>}
+          {!connection && <> 尚未連線，請先開啟 <a href="#/colab-birefnet">Colab 多模型去背教學</a>。</>}
         </div>
       )}
     </>

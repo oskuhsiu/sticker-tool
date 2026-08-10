@@ -1,9 +1,11 @@
-import { createContext, useCallback, useContext, useMemo, useState } from 'react';
+import { createContext, useCallback, useContext, useMemo, useRef, useState } from 'react';
 import type { ColabBirefnetConnectionConfig } from '../webpipe/colabBirefnet.js';
 
 export interface ColabBirefnetConnection {
   config: ColabBirefnetConnectionConfig;
   configuredAt: number;
+  /** In-memory cache identity. This is not a credential and is never persisted. */
+  generation: number;
 }
 
 interface ColabBirefnetConnectionContextValue {
@@ -35,10 +37,12 @@ export function createColabBirefnetRemovalRegistry() {
  */
 export function ColabBirefnetConnectionProvider({ children }: { children: React.ReactNode }) {
   const [connection, setConnectionState] = useState<ColabBirefnetConnection | null>(null);
+  const generationRef = useRef(0);
   const removalRegistry = useMemo(createColabBirefnetRemovalRegistry, []);
   const setConnection = useCallback((config: ColabBirefnetConnectionConfig) => {
     removalRegistry.invalidate();
-    setConnectionState({ config: { ...config }, configuredAt: Date.now() });
+    const generation = ++generationRef.current;
+    setConnectionState({ config: { ...config }, configuredAt: Date.now(), generation });
   }, [removalRegistry]);
   const forgetConnection = useCallback(() => {
     removalRegistry.invalidate();

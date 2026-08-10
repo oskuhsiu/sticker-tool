@@ -49,7 +49,7 @@ export function App() {
               LINE 貼圖與 Emoji 打包工具——去背、切格、縮放置中、描邊、疊字、APNG、全螢幕貼圖、上架包驗證。
               預設在瀏覽器內處理；只有你主動啟用自己的 Colab session 時，裁切格才會送到該臨時 endpoint。
             </p>
-            <a className="app-guide-link" href="#/colab-birefnet">Colab + BiRefNet 教學</a>
+            <a className="app-guide-link" href="#/colab-birefnet">Colab 多模型去背教學</a>
           </header>
           <nav className="tabs">
             {TABS.map((t) => (

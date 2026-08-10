@@ -59,7 +59,7 @@ export function VideoSourceStep(props: {
             <option value="color-key">單色色鍵</option>
             <option value="imgly">IMG.LY（本機）</option>
             <option value="local-birefnet">本機 BiRefNet（實驗性）</option>
-            <option value="colab-birefnet">Colab BiRefNet（實驗性）</option>
+            <option value="colab-birefnet">Colab 多模型去背（實驗性）</option>
           </select>
         </Field>
         {props.defaultBackground === 'color-key' && <Field label="背景色"><input disabled={props.busy} type="color" value={props.color} onChange={(event) => props.onColor(event.target.value)} /></Field>}

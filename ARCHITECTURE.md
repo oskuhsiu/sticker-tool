@@ -22,7 +22,7 @@ Prompt builder ─────────────┘             │
 There are two runtime surfaces:
 
 1. The Node.js CLI, bundled as one ESM entry point while keeping native and third-party dependencies external.
-2. A Vite/React static web app, deployed to GitHub Pages and executed in the browser. Its image workflows share five explicit background modes: none, solid-color keying, browser-local IMG.LY, browser-local BiRefNet, and BiRefNet through a temporary Google Colab session started by the user.
+2. A Vite/React static web app, deployed to GitHub Pages and executed in the browser. Its image workflows share five explicit background modes: none, solid-color keying, browser-local IMG.LY, browser-local BiRefNet, and one selected model through a temporary Google Colab session started by the user.
 
 Both surfaces import `src/core/` directly. They intentionally have separate image I/O implementations because Node uses `sharp` and `Buffer`, while the browser uses Canvas-compatible RGBA arrays and `Uint8Array`.
 
@@ -100,7 +100,7 @@ the tab-only helper; `tab.png` remains static and no Emoji main file is generate
 
 - RGBA raster objects and Canvas replace `sharp`.
 - `fitCanvas.ts` supports an optional minimum transparent canvas for Big Sticker output while preserving proportional content and the existing regular-static defaults.
-- `backgroundRemovalJob.ts` turns the five UI modes into one sequential, cancellable job contract. IMG.LY and local BiRefNet are dynamically loaded only for their respective modes; Colab is available only for BiRefNet.
+- `backgroundRemovalJob.ts` turns the five UI modes into one sequential, cancellable job contract. IMG.LY and local BiRefNet are dynamically loaded only for their respective modes; the Colab mode delegates to whichever single model the user's temporary Notebook session loaded.
 - `@imgly/background-removal` provides the self-hosted browser-local IMG.LY adapter. Its per-job progress callback avoids cross-talk between the always-mounted tabs.
 - `sheetBackgroundRemoval.ts` applies semantic removal to overlapping nominal-cell crops, merges their alpha masks over the original RGB sheet, and then hands the full sheet to component-aware extraction.
 - `upng-js` remains the APNG encoder. Final-byte APNG inspection supplies the strict timing, loop, frame, alpha, and distinct-visual evidence used by Popup Sticker validation.
@@ -122,7 +122,7 @@ the tab-only helper; `tab.png` remains static and no Emoji main file is generate
 
 Vite aliases `@core` to the repository's `src/core/`, so the browser consumes the same specification, grid, cell, prompt, naming, and validation code. The build copies `@imgly/background-removal-data` into `dist/imgly/` and the Transformers.js-matched ONNX Runtime assets into `dist/transformers/`; `coi-serviceworker.js` supplies cross-origin isolation behavior on static hosting where custom headers are unavailable. The service worker rewrites navigation responses and cross-origin `no-cors` resources only; same-origin resources and CORS-authorized fetches bypass its response proxy so large model streams are not rewrapped. The IMG.LY medium resources total 88,188,479 bytes and are fetched only by the IMG.LY branch. The BiRefNet weight is fetched from a pinned Hugging Face revision only when the user starts local inference. Both use the browser cache.
 
-`examples/colab/sticker-tool-birefnet-colab.ipynb` is the user-run compute adapter. Its checked-in generator pins BiRefNet model revisions and the Cloudflare Tunnel binary checksum. The Notebook provides lite/full fixed-square inference and dynamic aspect-preserving inference capped by the selected maximum edge and rounded to multiples of 32. It benchmarks the built-in scikit-image astronaut before accepting user work, starts a CORS-enabled FastAPI endpoint, and protects each POST with a per-runtime random session key.
+`examples/colab/sticker-tool-birefnet-colab.ipynb` is the user-run compute adapter; its legacy filename and route remain for compatibility. Its checked-in generator pins code and weight revisions, ONNX adapter versions, and the Cloudflare Tunnel binary checksum. A registry normalizes each selected Torch or ONNX model to a same-size 8-bit mask and records its input policy, traits, and license note. The Notebook benchmarks the built-in scikit-image astronaut before accepting user work, starts a CORS-enabled FastAPI endpoint, and protects each POST with a per-run random session key.
 
 ## Data flows
 
@@ -132,7 +132,7 @@ Vite aliases `@core` to the repository's `src/core/`, so the browser consumes th
 Natural-sort input files
   -> select requested count
   -> choose Regular Sticker, browser Big Sticker, or Regular Emoji product profile
-  -> choose no removal, color key, IMG.LY, local BiRefNet, or Colab BiRefNet
+  -> choose no removal, color key, IMG.LY, local BiRefNet, or Colab multi-model removal
   -> apply the selected remover before fitting
   -> trim and fit with transparent margin
   -> optional stroke
@@ -217,7 +217,7 @@ The background-removal implementation differs by runtime:
 
 - Node: transparency pass-through, green chroma key, or semantic removal for opaque sheets.
 - Browser none/color-key: preserve alpha or key a detected/user-selected solid color before extraction.
-- Browser semantic modes: run IMG.LY, local BiRefNet, or Colab BiRefNet over overlapping nominal-cell crops; merge alpha masks onto the original sheet; then run foreground projections and component-aware extraction. Overlap plus mask merging preserves subjects that cross nominal grid boundaries without sending a whole video frame to Colab.
+- Browser semantic modes: run IMG.LY, local BiRefNet, or the Colab multi-model remover over overlapping nominal-cell crops; merge alpha masks onto the original sheet; then run foreground projections and component-aware extraction. Overlap plus mask merging preserves subjects that cross nominal grid boundaries without sending a whole video frame to Colab.
 
 ### Animated sticker processing
 
@@ -321,7 +321,7 @@ pre-ingest only because the source decoder is disposed after the raw master is b
 do not embed the original video.
 
 The same decoded source sample feeds every crop before its `VideoSample` is closed. Ingest never removes
-backgrounds. IMG.LY, local BiRefNet, and Colab BiRefNet run serially on the time-uniform target candidates.
+backgrounds. IMG.LY, local BiRefNet, and Colab multi-model removal run serially on the time-uniform target candidates.
 Unused source frames are tried only as replacements when removal or quantization makes adjacent candidates identical, not merely because the encoded APNG exceeds its byte limit. None silently falls back to color keying. The Colab branch never sends a full source frame, source video,
 audio, or project archive. Internal raw-master APNG chunks use lossless non-palette encoding, are not LINE
 deliverables, and may exceed LINE delivery limits. Preflight reports actual source/crop counts and rejects
@@ -421,12 +421,23 @@ They are explicit choices rather than defaults. IMG.LY reports its approximately
 BiRefNet distinguishes its 44.4M parameter count from its roughly 94 MiB fp16 file. Both warn that work
 may be slow and that phones or tablets may run out of memory or fail to finish without blocking the attempt.
 
-The optional Colab BiRefNet branch is an explicit network exception available to the browser image,
-sheet, animation, and video adapters. The user must run the Notebook benchmark, start the temporary API,
-paste its URL and random session key, and confirm the estimated request count.
+The optional Colab multi-model branch is an explicit network exception available to the browser image,
+sheet, animation, and video adapters. Its stable boundary remains one PNG crop in and one same-size
+grayscale alpha mask out. The Notebook adapts pinned BiRefNet, BEN2 Base, MODNet Portrait, IS-Net,
+U²-Net, and gated custom-license RMBG 2.0 models behind that boundary, but keeps only one model resident.
+Prompt-, trimap-, clean-plate-, and temporal-state models require separate workflows and are not exposed
+as if they satisfied this contract. The user must run the benchmark, start the temporary API, paste its
+URL and random session key, and confirm the estimated request count.
 The connection exists only in React memory and is excluded from storage, URLs, logs, downloads, and
 Project ZIP metadata. Colab and Cloudflare operate the temporary compute/tunnel; neither is a service
 provided by this project, and neither has a runtime guarantee.
+
+Changing models is a same-VM restart, not an in-flight hot swap: the user stops the final API cell,
+changes `MODEL_CHOICE`, and runs all cells again. The Notebook shuts down the old tunnel and Uvicorn
+thread, releases the old Torch or ONNX model, synchronizes CUDA, clears allocator caches, and then loads
+one new adapter while retaining disk caches. Each run rotates the tunnel URL, session key, and runtime
+generation. Reconfiguring the browser aborts active requests and invalidates Colab-derived Video caches
+and current renders; credentials and generations are not persisted in Project ZIPs.
 
 ## Generated, local, and sensitive files
 

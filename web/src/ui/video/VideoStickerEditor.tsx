@@ -96,7 +96,7 @@ export function VideoStickerEditor(props: {
         )}
       </Row>
       <Row>
-        <Field label="去背模式"><select disabled={props.legacyBaked} value={settings.background.mode} onChange={(event) => setBackgroundMode(event.target.value as VideoBackgroundMode)}><option value="none">不去背</option><option value="color-key">單色色鍵</option><option value="imgly">IMG.LY（本機）</option><option value="local-birefnet">本機 BiRefNet</option><option value="colab-birefnet">Colab BiRefNet</option></select></Field>
+        <Field label="去背模式"><select disabled={props.legacyBaked} value={settings.background.mode} onChange={(event) => setBackgroundMode(event.target.value as VideoBackgroundMode)}><option value="none">不去背</option><option value="color-key">單色色鍵</option><option value="imgly">IMG.LY（本機）</option><option value="local-birefnet">本機 BiRefNet</option><option value="colab-birefnet">Colab 多模型去背</option></select></Field>
         {settings.background.mode === 'color-key' && <Field label="背景色"><input type="color" value={settings.background.color ?? '#00ff00'} onChange={(event) => props.onChange({ ...settings, background: { ...settings.background, color: event.target.value } })} /></Field>}
         <details>
           <summary>進階壓縮</summary>

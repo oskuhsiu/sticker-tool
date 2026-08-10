@@ -212,7 +212,7 @@ export function BuildTab() {
       <p className="tab-desc">
         把本機照片/圖片處理成 LINE 一般靜態貼圖、大貼圖或 Regular Emoji：去背 → 裁切置中 → 縮放 → 描邊 →
         support image → zip。Emoji 固定輸出 180×180，只上傳 tab.png，不產生 main.png。預設保留原色；超過容量才提示是否降色重試。
-        預設只在瀏覽器處理；只有選擇 Colab BiRefNet 時，處理用圖片才會送到你自己的臨時 session。
+        預設只在瀏覽器處理；只有選擇 Colab 多模型去背時，處理用圖片才會送到你自己的臨時 session。
       </p>
       <FilePick label={`輸入圖片（需 ≥ ${count} 張）`} multiple files={files} onChange={setFiles} />
       <Row>

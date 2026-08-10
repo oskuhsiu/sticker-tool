@@ -63,9 +63,9 @@ export function ColabBirefnetGuide() {
       <a className="colab-guide-back" href="#/">← 回 sticker-tool</a>
       <header className="colab-guide-header">
         <p className="colab-guide-eyebrow">使用自己的臨時運算資源</p>
-        <h1>在 Google Colab 啟動 BiRefNet</h1>
+        <h1>在 Google Colab 啟動多模型去背</h1>
         <p>
-          Notebook 會先用內建測試圖量測實際去背速度；你確認可接受後，才啟動臨時 HTTPS endpoint。
+          Notebook 可一次選一個去背模型，並先用內建測試圖量測實際速度；你確認可接受後，才啟動臨時 HTTPS endpoint。
           原始影片不會上傳，sticker-tool 只依序送出每張已裁切的 PNG。
         </p>
       </header>
@@ -101,17 +101,24 @@ export function ColabBirefnetGuide() {
 
       <section className="colab-guide-card">
         <h2>2. 選模型與運算裝置</h2>
-        <p>Notebook 第一格提供以下選項；預設值是 <code>lite + auto + 512</code>：</p>
+        <p>Notebook 第一個設定格提供 <code>MODEL_CHOICE</code>。同一時間只會載入一個模型：</p>
         <ul>
-          <li><strong>lite / full / dynamic：</strong>lite 較適合免費 VM 與 CPU；full 與 dynamic 都是約 0.2B 參數，建議用 GPU。</li>
+          <li><strong>BiRefNet lite：</strong>較省記憶體、啟動與推論通常較快；細小或複雜邊界可能不如較大的模型。</li>
+          <li><strong>BiRefNet full：</strong>一般用途的大型版本，通常比 lite 慢且占用更多 VRAM。</li>
+          <li><strong>BiRefNet dynamic：</strong>保留來源長寬比並以最長邊限制推論尺寸，適合非正方形 crop；仍可能漏掉細線、文字或半透明特效。</li>
+          <li><strong>BiRefNet matting：</strong>偏向產生柔和 alpha 與毛髮等細緻邊緣；不代表每種素材都比 segmentation 模型乾淨。</li>
+          <li><strong>BEN2：</strong>通用前景分離模型，可作為 BiRefNet 以外的品質比較；速度與邊界表現依素材而異。</li>
+          <li><strong>MODNet Portrait：</strong>輕量人物 matting，只適合真人肖像，不應當成一般角色／物件模型。</li>
+          <li><strong>IS-Net general / anime：</strong>general 是通用顯著物件分離；anime 偏向動漫與插畫。選錯領域可能降低結果品質。</li>
+          <li><strong>U2Net / U2NetP：</strong>成熟的通用基準；U2NetP 更小、更快，但通常犧牲細節與複雜邊界。</li>
+          <li><strong>RMBG 2.0（條件式提供）：</strong>釘選 revision 使用 BRIA 的 <code>bria-rmbg-2.0</code> 自訂授權；本 Notebook 只開放非商用評估。請先接受 gated 條款，並於 Colab Secrets 設定 <code>HF_TOKEN</code>；商業權利需另行確認。</li>
           <li><strong>auto / gpu / cpu：</strong>auto 有 CUDA 就用 GPU，否則使用 CPU；gpu 在無 CUDA 時會直接報錯。</li>
-          <li><strong>512 / 1024：</strong>lite/full 使用固定正方形；dynamic 將它視為最長邊上限。</li>
-          <li><strong>dynamic：</strong>不放大小圖，保留 crop 長寬比，再將寬高調整到 32 的倍數；適合比較非正方形素材。</li>
+          <li><strong>輸入尺寸：</strong>固定尺寸模型使用正方形輸入；dynamic 以設定值作為最長邊上限，並將寬高調整到模型需要的倍數。</li>
           <li><strong>1 / 3 benchmark runs：</strong>第一次先跑 1 次；要較穩定的中位數再選 3 次。</li>
         </ul>
         <p className="tab-desc">
-          模型固定到明確 revision，並以 Hugging Face 的 remote model code 載入。lite 是 44.4M 參數版本；
-          full 與 dynamic 約 0.2B 參數。選擇 CPU 會使用 FP32，CUDA 則使用 FP16。
+          所有選項都只輸出前景 mask，不保證保留文字、細線、透明材質、發光、煙霧或其他特效；請以實際 crop 預覽判斷。
+          需要文字 prompt、trimap、乾淨背景（clean plate）或跨 frame 影片狀態的模型，不是這個逐張、無狀態 API 的下拉選項。
         </p>
         <p className="tab-desc">
           Colab 可能預裝與這組固定版本衝突的 Google ADK、Gradio 與 FastHTML。安裝格會先移除這三個
@@ -138,9 +145,23 @@ export function ColabBirefnetGuide() {
           <li>只有 benchmark 可接受時，才執行最後一格。</li>
           <li>保持最後一格持續執行；不要關閉或停止 Colab runtime。</li>
           <li>複製輸出的 <strong>Endpoint URL</strong> 與 <strong>Session key</strong> 到下方表單。</li>
-          <li>回「影片 → APNG」，選擇 Colab BiRefNet，先用 1 格 × 10 時間點測試。</li>
+          <li>回「影片 → APNG」，選擇 Colab 多模型去背，先用 1 格 × 10 時間點測試。</li>
           <li>完成後停止最後一格，並在 Colab 選 Disconnect and delete runtime。</li>
         </ol>
+      </section>
+
+      <section className="colab-guide-card">
+        <h2>在同一張 T4 切換模型</h2>
+        <ol>
+          <li>先停止最後一個正在執行的 API cell，等目前請求結束；不要在一批處理途中切換。</li>
+          <li>回到設定格修改 <code>MODEL_CHOICE</code>，再選 <strong>Runtime → Run all</strong>。</li>
+          <li>不需要 disconnect 或 delete runtime；已下載的套件與模型 weights cache 會留在同一個 runtime，若新模型尚未下載才會補抓。</li>
+          <li>Run all 會只載入新選的那一個模型，並建立新的 tunnel 與 session key。</li>
+          <li>把新的 <strong>Endpoint URL</strong> 與 <strong>Session key</strong> 重新貼到下方表單；舊連線資料不能沿用。</li>
+        </ol>
+        <p className="tab-desc">
+          一次只載入一個模型可控制 T4 VRAM 用量。請先完成或取消整批工作，再切換模型並重跑；不要讓同一批 crop 混用不同模型。
+        </p>
       </section>
 
       <section className="colab-guide-card">

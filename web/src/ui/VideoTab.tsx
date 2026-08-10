@@ -108,6 +108,36 @@ function settingsEqual(a: VideoStickerSettings, b: VideoStickerSettings): boolea
   );
 }
 
+export function invalidateColabVideoCurrent<T extends {
+  settings: Pick<VideoStickerSettings, 'background'>;
+}>(
+  current: readonly (T | null)[],
+): Array<T | null> | readonly (T | null)[] {
+  let invalidated = false;
+  const next = current.map((snapshot) => {
+    if (snapshot?.settings.background.mode === 'colab-birefnet') {
+      invalidated = true;
+      return null;
+    }
+    return snapshot;
+  });
+  return invalidated ? next : current;
+}
+
+export function videoRemoverVersion(
+  mode: VideoBackgroundMode,
+  label: string | null,
+  colabGeneration: number | null,
+): string {
+  if (mode === 'none') return 'none@1';
+  if (!label) throw new Error(`${mode} remover 尚未啟用`);
+  if (mode !== 'colab-birefnet') return `${label}@1`;
+  if (!Number.isSafeInteger(colabGeneration) || colabGeneration === null || colabGeneration < 1) {
+    throw new Error('Colab 多模型去背 connection generation 無效');
+  }
+  return `${label}@1:connection-${colabGeneration}`;
+}
+
 function defaultSettings(args: {
   target: VideoOutputTarget;
   stickerId: string;
@@ -159,6 +189,7 @@ export function VideoTab() {
   const cacheRef = useRef(new VideoFrameRenderCache(RENDER_CACHE_BYTES));
   const logger = useLogger();
   const { connection: colabConnection, registerActiveRemoval } = useColabBirefnetConnection();
+  const colabGeneration = colabConnection?.generation ?? null;
   const [metadata, setMetadata] = useState<VideoMetadata | null>(null);
   const [target, setTarget] = useState<VideoOutputTarget>('animated-sticker');
   const [count, setCount] = useState(8);
@@ -191,6 +222,16 @@ export function VideoTab() {
     sourceRef.current?.dispose();
     void masterStoreRef.current?.clear();
   }, []);
+
+  useEffect(() => {
+    cacheRef.current.clear();
+    setProject((previous) => {
+      if (!previous) return previous;
+      const current = invalidateColabVideoCurrent(previous.current);
+      return current === previous.current ? previous : { ...previous, current: [...current] };
+    });
+    setLinePack(null);
+  }, [colabGeneration]);
 
   function resetSourceCuts(sourceWidth: number, sourceHeight: number, nextCols: number, nextRows: number): void {
     try {
@@ -439,7 +480,7 @@ export function VideoTab() {
     const mode = settings.background.mode;
     const colabConfig = mode === 'colab-birefnet' ? colabConnection?.config : null;
     if (mode === 'colab-birefnet' && !colabConfig) {
-      throw new Error('Colab BiRefNet 尚未設定；請先完成臨時 session 連線');
+      throw new Error('Colab 多模型去背尚未設定；請先完成臨時 session 連線');
     }
     let job: BackgroundRemovalJob | null = null;
     const unregister = colabConfig ? registerActiveRemoval(controller) : null;
@@ -453,17 +494,21 @@ export function VideoTab() {
           onStatus: (status) => status && setProgress(status),
         });
       }
-      return await processMasterApngSticker({
+      const snapshot = await processMasterApngSticker({
         target: project.target,
         master: project.master.stickers[index]!,
         store: project.master.store,
         settings,
         cache: cacheRef.current,
-        removerVersion: mode === 'none' ? 'none@1' : `${job!.label}@1`,
+        removerVersion: videoRemoverVersion(mode, job?.label ?? null, colabGeneration),
         removeBackground: job?.remove,
         signal: controller.signal,
         onProgress: (stage) => setProgress(`第 ${index + 1} 張：${stage}`),
       });
+      if (mode === 'colab-birefnet' && controller.signal.aborted) {
+        throw new DOMException('Colab 多模型去背 session 已變更', 'AbortError');
+      }
+      return snapshot;
     } finally {
       await job?.dispose();
       unregister?.();
@@ -566,6 +611,7 @@ export function VideoTab() {
       sourceRef.current = null;
       cacheRef.current.clear();
       const manifest = imported.manifest;
+      const restoredSettings = manifest.settings.map(cloneSettings);
       const restored: VideoProjectState = {
         target: manifest.target,
         name: manifest.name,
@@ -576,8 +622,8 @@ export function VideoTab() {
         editableEndUs: manifest.source.editableEndUs,
         grid: manifest.grid,
         master: imported.master,
-        settings: manifest.settings.map(cloneSettings),
-        current: imported.current,
+        settings: restoredSettings,
+        current: [...invalidateColabVideoCurrent(imported.current)],
       };
       setMetadata(manifest.source);
       setTarget(manifest.target);
@@ -871,7 +917,7 @@ export function VideoTab() {
                   <option value="color-key">單色色鍵</option>
                   <option value="imgly">IMG.LY（本機）</option>
                   <option value="local-birefnet">本機 BiRefNet</option>
-                  <option value="colab-birefnet">Colab BiRefNet</option>
+                  <option value="colab-birefnet">Colab 多模型去背</option>
                 </select>
               </label>
               {commonBackground === 'color-key' && <label>共同背景色<input type="color" value={backgroundColor} onChange={(event) => setBackgroundColor(event.target.value)} /></label>}

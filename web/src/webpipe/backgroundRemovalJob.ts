@@ -61,7 +61,7 @@ export async function createBackgroundRemovalJob(
     });
   }
   if (mode === 'colab-birefnet' && !options.colabConfig) {
-    throw new Error('Colab BiRefNet 尚未設定；請先開啟「Colab + BiRefNet 教學」完成連線');
+    throw new Error('Colab 多模型去背尚未設定；請先開啟「Colab 多模型去背教學」完成連線');
   }
 
   const labels: Record<WebBackgroundRemovalMode, string> = {
@@ -69,7 +69,7 @@ export async function createBackgroundRemovalJob(
     'color-key': '單色色鍵',
     imgly: 'IMG.LY',
     'local-birefnet': '本機 BiRefNet',
-    'colab-birefnet': 'Colab BiRefNet',
+    'colab-birefnet': 'Colab 多模型去背',
   };
   return {
     label: labels[mode],

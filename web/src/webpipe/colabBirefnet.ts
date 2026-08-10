@@ -1,5 +1,5 @@
 /**
- * Browser adapter for a user-started, temporary Colab BiRefNet session.
+ * Legacy-named browser adapter for the user's temporary Colab multi-model session.
  *
  * It accepts only Cloudflare Quick Tunnel URLs, keeps the session key outside
  * persistent storage, and sends one already-cropped PNG per request.

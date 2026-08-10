@@ -782,7 +782,7 @@ textarea {
   outline-offset: 2px;
 }
 
-/* Independent Colab + BiRefNet guide (hash page, not a workflow tab). */
+/* Independent Colab multi-model guide (legacy hash page, not a workflow tab). */
 .colab-guide {
   max-width: 860px;
 }

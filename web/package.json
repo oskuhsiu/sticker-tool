@@ -8,7 +8,7 @@
     "dev": "vite",
     "typecheck": "tsc --noEmit",
     "build": "tsc --noEmit && vite build",
-    "test:colab": "tsx --tsconfig tsconfig.json scripts/colab-birefnet-contract.mts",
+    "test:colab": "tsx --tsconfig tsconfig.json scripts/colab-birefnet-contract.mts && tsx --tsconfig tsconfig.json scripts/colab-video-invalidation-contract.mts",
     "test:background-removal": "tsx --tsconfig tsconfig.json scripts/background-removal-contract.mts",
     "test:output-safety": "tsx --tsconfig tsconfig.json scripts/output-safety-contract.mts",
     "test:local-birefnet": "tsx --tsconfig tsconfig.json scripts/local-birefnet-contract.mts",

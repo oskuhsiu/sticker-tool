@@ -13,8 +13,9 @@ with Canvas, WebAssembly, and Web Workers, and the built site can be hosted on G
 | Video → APNG | Web only | Adjustable shared-grid video to editable Animated Sticker, Animated Emoji, or derived-static Pop-up packs |
 | Prompt | `prompt` | Sticker- or Emoji-aware static-sheet and animation-frame prompts for external image tools |
 
-The separate `#/colab-birefnet` route explains how to launch the optional BiRefNet notebook, benchmark
-it with the built-in astronaut image, and connect a temporary Cloudflare Quick Tunnel endpoint.
+The separate `#/colab-birefnet` route explains how to launch the optional multi-model removal Notebook,
+benchmark one selected adapter with the built-in astronaut image, and connect a temporary Cloudflare
+Quick Tunnel endpoint. The route name remains unchanged for compatibility.
 
 ## Regular Emoji workflows
 
@@ -154,7 +155,7 @@ budget is backed by the CFR/VFR/rotation/cancellation and 8/24-crop spike in
 `scripts/video-all-frames-spike.mts`.
 
 Background removal is never baked into V3 ingest. `none` preserves target-fitted raw pixels; color-keying is local;
-IMG.LY, local BiRefNet, and Colab BiRefNet are lazy, mutually exclusive render-stage choices. The
+IMG.LY, local BiRefNet, and Colab multi-model removal are lazy, mutually exclusive render-stage choices. The
 time-uniform target candidates are processed sequentially with a bounded session cache. Unused source frames are tried only to replace adjacent visuals made identical by removal or quantization; exceeding the delivery byte limit does not process the rest of the range. A model or remote error
 does not silently fall back and does not overwrite the prior current render.
 
@@ -184,9 +185,13 @@ upload-ready Effect package.
   local, but first use can be slow and mobile devices may run out of memory.
 - **Local BiRefNet (experimental):** lazy-loads the pinned fp16 `birefnet-lite-512` model (about 94 MiB)
   in a worker, prefers WebGPU, and falls back to local WASM.
-- **Colab BiRefNet (experimental):** sends one selected crop at a time to the user's temporary endpoint,
-  receives a bounded grayscale mask, and applies alpha locally. The endpoint and random key exist only
-  in current React memory. Free Colab and Quick Tunnel sessions have no availability guarantee.
+- **Colab multi-model removal (experimental):** sends one selected crop at a time to the user's temporary
+  endpoint, receives a bounded grayscale mask, and applies alpha locally. The Notebook keeps one pinned
+  BiRefNet, BEN2 Base, MODNet Portrait, IS-Net, U²-Net, or gated custom-license RMBG 2.0 model resident at
+  a time. Stop its API cell, change `MODEL_CHOICE`, and run all cells to switch on the same T4 VM; the
+  disk cache remains, but the new tunnel URL and key must be entered again. Reconnection aborts active
+  work and invalidates Colab-derived Video caches/current renders. Connection data exists only in current
+  React memory. Free Colab and Quick Tunnel sessions have no availability guarantee.
 
 Semantic models are not text-aware and may remove small, detached, thin, or low-contrast lettering. For
 existing artwork, use **None** when the source is already transparent, use **Solid-color key** when a flat

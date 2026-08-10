@@ -5,7 +5,7 @@
 It provides two execution surfaces:
 
 - A Node.js CLI for deterministic image processing, APNG encoding, validation, and ZIP packaging.
-- A static React web app that processes locally by default. Its image workflows offer no removal, solid-color keying, browser-local IMG.LY, browser-local BiRefNet, or opt-in BiRefNet through a temporary Google Colab session started by the user.
+- A static React web app that processes locally by default. Its image workflows offer no removal, solid-color keying, browser-local IMG.LY, browser-local BiRefNet, or an opt-in multi-model remover through a temporary Google Colab session started by the user.
 
 AI image generation is intentionally outside the application. Use any image generator, the prompt builder, or the project-local skills under `.claude/skills/`, then give the resulting images to the CLI or web app.
 
@@ -24,7 +24,7 @@ AI image generation is intentionally outside the application. Use any image gene
 - Product-specific support assets, numbered files, ZIP packaging, and shared final-byte-aware LINE checks. Emoji ZIPs contain `tab.png` plus three-digit items and deliberately omit `main.png`.
 - Browser-side previews, pre-process sprite-sheet cut guides, downloads, grid mismatch warnings, and manual animation alignment.
 - Prompt generation for static sticker sheets and animation frame sheets.
-- A standalone Colab + BiRefNet tutorial with a downloadable Notebook, an astronaut benchmark, and CPU/GPU/model choices.
+- A standalone Colab multi-model-removal tutorial with a downloadable Notebook, an astronaut benchmark, and pinned BiRefNet, BEN2 Base, MODNet Portrait, IS-Net, U²-Net, and gated custom-license RMBG 2.0 choices.
 - Experimental local BiRefNet across the browser image, sheet, animation, and video workflows, with a lazy model download, WebGPU/WASM execution, and explicit mobile/runtime warnings.
 
 ## Requirements
@@ -300,15 +300,15 @@ an explicit truecolor color-reduction retry. That retry preserves the selected f
 animation's fitted RGBA frames are released immediately after its APNG and final-byte evidence are
 produced instead of being retained for the rest of the pack.
 
-The web app processes image and video pixels locally by default. Build, Sheet, Anim, and Video each expose the same five background choices: preserve the source, solid-color keying, browser-local IMG.LY, browser-local BiRefNet, or BiRefNet through the user's temporary Colab endpoint. IMG.LY has no Colab branch. All model choices are opt-in and never silently fall back to color keying.
+The web app processes image and video pixels locally by default. Build, Sheet, Anim, and Video each expose the same five background choices: preserve the source, solid-color keying, browser-local IMG.LY, browser-local BiRefNet, or one selected model through the user's temporary Colab endpoint. IMG.LY has no Colab branch. All model choices are opt-in and never silently fall back to color keying.
 
 IMG.LY downloads its self-hosted medium model and WASM runtime only when selected. The current model resources total 88,188,479 bytes (about 84 MiB). A clean desktop-Chrome verification completed eight opaque test images in about 116 seconds; this is evidence that the adapter works, not a runtime promise. The UI warns that first use can be slow and that phones may run out of memory or never finish.
 
 **Local BiRefNet (experimental)** lazy-loads the browser runtime after the user selects it and starts a job, then downloads the pinned `studioludens/birefnet-lite-512` fp16 model revision `4a3c40c36c94093cc1e724d9ea428b8fa4b57dc7`. The model runs in a Web Worker, prefers WebGPU, falls back to WASM, processes one raster at a time, and is disposed when the job ends. Model files use the browser cache; selected pixels are not uploaded. The UI reports the estimated inference count, warns every user that the job may take a long time, and specifically warns that a phone or tablet may exhaust memory or never finish. Mobile use is allowed but not claimed as supported.
 
-The independent `#/colab-birefnet` guide provides a downloadable [Colab Notebook](examples/colab/sticker-tool-birefnet-colab.ipynb). Users choose BiRefNet lite, full, or dynamic and `auto`/GPU/CPU. Lite/full use a selected 512 or 1024 square input; dynamic treats that choice as a maximum edge, does not upscale smaller crops, preserves aspect ratio, and rounds both dimensions down to multiples of 32. Before any user material is sent, the Notebook runs an included `skimage.data.astronaut()` benchmark and shows the source, mask, transparent result, actual inference size, model load time, and seconds per crop. If the result is acceptable, the last cell starts a temporary FastAPI endpoint through a Cloudflare Quick Tunnel.
+The independent `#/colab-birefnet` guide provides a downloadable [Colab Notebook](examples/colab/sticker-tool-birefnet-colab.ipynb). Its legacy route and filename remain for compatibility. Users choose one pinned BiRefNet, BEN2 Base, MODNet Portrait, IS-Net, U²-Net, or gated custom-license RMBG 2.0 adapter plus `auto`/GPU/CPU. Each adapter records its input policy and normalizes its result to one same-size grayscale alpha mask. Before any user material is sent, the Notebook runs an included `skimage.data.astronaut()` benchmark and shows the source, mask, transparent result, actual inference size, model load time, and seconds per crop. If the result is acceptable, the last cell starts a temporary FastAPI endpoint through a Cloudflare Quick Tunnel.
 
-Current Colab images may preinstall Google ADK, Gradio, and FastHTML versions whose FastAPI, Starlette, and Hugging Face Hub requirements conflict with the pinned BiRefNet environment. The Notebook removes those three unused packages before installing its fixed dependencies. This affects only the disposable runtime and does not remove any package from the user's account or Drive.
+Current Colab images may preinstall Google ADK, Gradio, and FastHTML versions whose FastAPI, Starlette, and Hugging Face Hub requirements conflict with the pinned multi-model environment. The Notebook removes those three unused packages before installing its fixed dependencies. This affects only the disposable runtime and does not remove any package from the user's account or Drive.
 
 The optional Colab branch sends one input image or already-cropped sheet/video cell at a time to that temporary endpoint, receives a bounded grayscale mask, and applies alpha locally. For sheets, overlapping nominal-cell masks are merged before component-aware cutting so a subject crossing a grid line is not clipped. Original video, audio, complete video frames, downloads, and Project ZIP never leave the browser. The rotating `*.trycloudflare.com/remove` URL and random session key stay only in current React memory. Colab and Quick Tunnel runtimes are temporary and unguaranteed; restarting either requires a new connection.
 
@@ -357,7 +357,7 @@ or row changes update the source-cell count and restore the full-source equal gr
 output count preserves edited outer bounds and internal separators. Those shared guides define one row-major layout for
 the entire video, not a moving crop per frame. Solid-color keying is off by
 default because a black background may share pixels with hair, eyes, clothing, or text outlines.
-Colab BiRefNet is also off by default and requires an explicit connection. The source step reports the
+Colab multi-model removal is also off by default and requires an explicit connection. The source step reports the
 actual presentation-frame count, crop-frame count, and an upper-bound RGBA estimate before ingest.
 The beta hard limit is 512 MiB; users must shorten the editable range or reduce the grid when the estimate
 exceeds it. There is no master sampling-count control in V3.
@@ -368,7 +368,16 @@ dedicated Pop-up workflow remains available when independent static artwork is p
 unsupported until its separate naming, validation, paired-project, and upload-package contracts are
 implemented; the app does not label an animation-only archive as a complete Effect package.
 
-IMG.LY, local BiRefNet, and Colab BiRefNet are mutually exclusive. None silently falls back to solid-color keying: local BiRefNet may fall back only from WebGPU to local WASM, while a model or remote-session failure is reported and leaves the source/settings available for retry.
+IMG.LY, local BiRefNet, and Colab multi-model removal are mutually exclusive. None silently falls back to solid-color keying: local BiRefNet may fall back only from WebGPU to local WASM, while a model or remote-session failure is reported and leaves the source/settings available for retry.
+
+The Colab Notebook keeps exactly one selected model resident at a time. To compare another model on the
+same T4 VM, finish or cancel the browser batch, stop the final API cell, change `MODEL_CHOICE`, and run all
+cells again. This reuses the runtime's package and weight caches without disconnecting the accelerator,
+but it deliberately creates a new tunnel URL and session key. Re-entering that connection invalidates
+in-flight requests, old Video render-cache entries, and Colab-derived current renders so one batch cannot
+silently mix model generations. RMBG 2.0 additionally requires acceptance of the pinned revision's
+gated `bria-rmbg-2.0` custom license and a `HF_TOKEN` stored in Colab Secrets; this Notebook enables it
+only for noncommercial evaluation, and the token is never printed or sent to this application.
 
 Semantic foreground models can remove small, detached, thin, or low-contrast lettering because the mask is not text-aware. For existing artwork, prefer **None** when the source is already transparent, use **Solid-color key** when the background is flat and clearly different from the lettering, or remove the subject first and composite the text or speech bubble afterward. Thick opaque lettering with a strong outline, ideally touching an opaque subject or bubble, is more likely to survive but is not guaranteed. Once a model mask has reduced an entire glyph to zero alpha, thresholding or mask dilation cannot reconstruct it; a future protected-mask or post-removal text-overlay tool would be needed for in-app recovery.
 
