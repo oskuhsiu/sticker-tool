@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react';
 import { POPUP_STICKER_SPEC, STATIC_SPEC, ZIP_MAX_BYTES, maxBounds } from '@core/spec.js';
+import { DEFAULT_COLOR_KEY_OPTIONS, type ColorKeyOptions } from '@core/colorKey.js';
 import { validatePopupPack } from '@core/validate.js';
 import { inspectAnimatedBytes } from '../webpipe/apng.js';
 import { processAnimated } from '../webpipe/processAnimated.js';
@@ -46,6 +47,7 @@ export function PopupPackMode() {
   const [reduceColors, setReduceColors] = useState(false);
   const [removeBgMode, setRemoveBgMode] = useState<WebBackgroundRemovalMode>('none');
   const [backgroundColor, setBackgroundColor] = useState('#00ff00');
+  const [colorKeyOptions, setColorKeyOptions] = useState<ColorKeyOptions>(() => ({ ...DEFAULT_COLOR_KEY_OPTIONS }));
   const [busy, setBusy] = useState(false);
   const [modelStatus, setModelStatus] = useState<string | null>(null);
   const [result, setResult] = useState<PopupPackResult | null>(null);
@@ -121,6 +123,7 @@ export function PopupPackMode() {
         mode: removeBgMode,
         signal: abortSignal,
         pickColor: removeBgMode === 'color-key' ? parsedColor : null,
+        ...(removeBgMode === 'color-key' ? { colorKey: colorKeyOptions } : {}),
         colabConfig: colabConnection?.config,
         onStatus: setModelStatus,
       });
@@ -300,6 +303,8 @@ export function PopupPackMode() {
         inferenceCount={removalInferenceCount}
         color={backgroundColor}
         onColorChange={(color) => { setBackgroundColor(color); setResult(null); }}
+        colorKeyOptions={colorKeyOptions}
+        onColorKeyOptionsChange={(options) => { setColorKeyOptions(options); setResult(null); }}
       />
       <div className="popup-frame-sets">
         {Array.from({ length: count }, (_, index) => (

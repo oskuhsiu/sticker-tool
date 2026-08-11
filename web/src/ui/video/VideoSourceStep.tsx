@@ -1,8 +1,9 @@
 import type { VideoGridPlan } from '@core/videoCrop.js';
+import type { ColorKeyOptions } from '@core/colorKey.js';
 import type { VideoBackgroundMode, VideoOutputTarget } from '@core/videoProject.js';
 import type { VideoMetadata } from '../../webpipe/videoSource.js';
 import { Field, Row } from '../common.jsx';
-import { LocalBirefnetRuntimeWarning } from '../BackgroundRemovalControl.jsx';
+import { ColorKeyOptionFields, LocalBirefnetRuntimeWarning } from '../BackgroundRemovalControl.jsx';
 import { VideoCutRangeStep } from './VideoCutRangeStep.jsx';
 
 export function VideoSourceStep(props: {
@@ -15,6 +16,7 @@ export function VideoSourceStep(props: {
   cover: number;
   defaultBackground: VideoBackgroundMode;
   color: string;
+  colorKeyOptions: ColorKeyOptions;
   grid: VideoGridPlan | null;
   range: React.ComponentProps<typeof VideoCutRangeStep>;
   busy: boolean;
@@ -26,6 +28,7 @@ export function VideoSourceStep(props: {
   onCover: (value: number) => void;
   onBackground: (value: VideoBackgroundMode) => void;
   onColor: (value: string) => void;
+  onColorKeyOptions: (value: ColorKeyOptions) => void;
   onBuild: () => void;
 }) {
   const { metadata } = props;
@@ -64,6 +67,13 @@ export function VideoSourceStep(props: {
         </Field>
         {props.defaultBackground === 'color-key' && <Field label="背景色"><input disabled={props.busy} type="color" value={props.color} onChange={(event) => props.onColor(event.target.value)} /></Field>}
       </Row>
+      {props.defaultBackground === 'color-key' && (
+        <ColorKeyOptionFields
+          value={props.colorKeyOptions}
+          onChange={props.onColorKeyOptions}
+          disabled={props.busy}
+        />
+      )}
       <LocalBirefnetRuntimeWarning active={props.defaultBackground === 'local-birefnet'} />
       <p className="tab-desc">
         產品會決定 raw master 與最終輸出尺寸，建立後不可切換。Effect Sticker 尚未實作，不會假裝輸出可上傳包。

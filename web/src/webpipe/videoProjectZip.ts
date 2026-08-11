@@ -9,10 +9,12 @@ import {
   ZipPassThrough,
 } from 'fflate';
 import { planVideoOutputCanvas, type VideoGridPlan } from '@core/videoCrop.js';
+import { LEGACY_COLOR_KEY_OPTIONS, isColorKeyOptions, type ColorKeyOptions } from '@core/colorKey.js';
 import { ANIMATED_EMOJI_SPEC, ANIMATED_SPEC, POPUP_STICKER_SPEC } from '@core/spec.js';
 import {
   VIDEO_PROJECT_SCHEMA,
   VIDEO_PROJECT_VERSION,
+  cloneVideoStickerDraft,
   isVideoProjectManifestHeader,
   type VideoBackgroundStage,
   type VideoFrameCoverage,
@@ -53,7 +55,7 @@ interface RenderManifestV2 {
   errors: string[];
 }
 
-export interface VideoProjectManifestV3 {
+export interface VideoProjectManifestV4 {
   schema: typeof VIDEO_PROJECT_SCHEMA;
   version: typeof VIDEO_PROJECT_VERSION;
   target: VideoOutputTarget;
@@ -96,7 +98,7 @@ export interface VideoProjectManifestV3 {
 }
 
 export interface VideoProjectRuntime {
-  manifest: VideoProjectManifestV3;
+  manifest: VideoProjectManifestV4;
   master: MasterApngSet;
   current: Array<VideoRenderSnapshot | null>;
 }
@@ -246,7 +248,7 @@ export async function buildVideoProjectZip(args: {
   master: MasterApngSet;
   settings: VideoStickerSettings[];
   current: Array<VideoRenderSnapshot | null>;
-}): Promise<{ zip: Uint8Array; manifest: VideoProjectManifestV3 }> {
+}): Promise<{ zip: Uint8Array; manifest: VideoProjectManifestV4 }> {
   if (args.master.stickers.length !== args.current.length || args.current.length !== args.settings.length) {
     throw new Error('Project ZIP 無法建立：master、settings、current 張數不一致');
   }
@@ -279,7 +281,7 @@ export async function buildVideoProjectZip(args: {
       path: renderPath(index),
       sha256: await sha256(snapshot.png),
       bytes: snapshot.png.length,
-      settings: { ...snapshot.settings, background: { ...snapshot.settings.background } },
+      settings: cloneVideoStickerDraft(snapshot.settings),
       metrics: { ...snapshot.metrics, selectedSourceIndices: [...snapshot.metrics.selectedSourceIndices], selectedTimestampsUs: [...snapshot.metrics.selectedTimestampsUs], frameDelaysMs: [...snapshot.metrics.frameDelaysMs] },
       selection: {
         ...snapshot.selection,
@@ -295,7 +297,7 @@ export async function buildVideoProjectZip(args: {
       errors: [...snapshot.errors],
     });
   }
-  const manifest: VideoProjectManifestV3 = {
+  const manifest: VideoProjectManifestV4 = {
     schema: VIDEO_PROJECT_SCHEMA,
     version: VIDEO_PROJECT_VERSION,
     target: args.target,
@@ -318,19 +320,21 @@ export async function buildVideoProjectZip(args: {
       chunkFrames: args.master.chunkFrames,
       stickers: masterStickers,
     },
-    settings: args.settings.map((settings) => ({ ...settings, background: { ...settings.background } })),
+    settings: args.settings.map(cloneVideoStickerDraft),
     current,
     versions: {
       app: '0.2.0-beta',
       decoder: 'mediabunny@1.51.0',
       demuxer: 'mediabunny@1.51.0',
       removers: {
+        'color-key': 'browser-color-key@2',
         imgly: '@imgly/background-removal@1.4.5',
         'local-birefnet': 'studioludens/birefnet-lite-512@4a3c40c36c94093cc1e724d9ea428b8fa4b57dc7',
         'colab-birefnet': 'user-session',
       },
     },
   };
+  assertV4Manifest(manifest);
   const report = strToU8(JSON.stringify({
     generatedAt: new Date().toISOString(),
     target: manifest.target,
@@ -502,6 +506,15 @@ function assertBackground(value: unknown, path: string): void {
     throw new Error(`${path}.color 必須是 #RRGGBB`);
   }
   if (background.tolerance !== undefined) requireFinite(background.tolerance, `${path}.tolerance`);
+  if (mode === 'color-key') {
+    assertColorKeyOptions(background.colorKey, `${path}.colorKey`);
+  } else if (background.colorKey !== undefined) {
+    throw new Error(`${path}.colorKey 只有 color-key 模式可使用`);
+  }
+}
+
+function assertColorKeyOptions(value: unknown, path: string): asserts value is ColorKeyOptions {
+  if (!isColorKeyOptions(value)) throw new Error(`${path} 不支援`);
 }
 
 function assertSettings(
@@ -633,9 +646,9 @@ function assertGrid(value: unknown, source: Record<string, unknown>): void {
   });
 }
 
-function assertV3Manifest(value: unknown): asserts value is VideoProjectManifestV3 {
+function assertV4Manifest(value: unknown): asserts value is VideoProjectManifestV4 {
   if (!isVideoProjectManifestHeader(value) || value.version !== VIDEO_PROJECT_VERSION) throw new Error('不支援的 Project ZIP schema 或版本');
-  const manifest = value as Partial<VideoProjectManifestV3>;
+  const manifest = value as Partial<VideoProjectManifestV4>;
   if (
     !['animated-sticker', 'animated-emoji', 'popup'].includes(manifest.target ?? '') ||
     manifest.sourceTimingUnit !== 'microseconds' ||
@@ -652,7 +665,7 @@ function assertV3Manifest(value: unknown): asserts value is VideoProjectManifest
     manifest.settings.length !== manifest.master.stickers.length ||
     manifest.current.length !== manifest.master.stickers.length
   ) {
-    throw new Error('Project ZIP V3 manifest 缺少或含有無效的必要欄位');
+    throw new Error('Project ZIP V4 manifest 缺少或含有無效的必要欄位');
   }
   const createdAt = Date.parse(requireString(manifest.createdAt, 'createdAt'));
   if (!Number.isFinite(createdAt)) throw new Error('createdAt 不是有效日期');
@@ -708,8 +721,8 @@ function assertV3Manifest(value: unknown): asserts value is VideoProjectManifest
   requireRecord(versions.removers, 'versions.removers');
 }
 
-async function restoreV3(
-  manifest: VideoProjectManifestV3,
+async function restoreV4(
+  manifest: VideoProjectManifestV4,
   archive: ArchiveContents,
   store: VideoMasterStore,
 ): Promise<VideoProjectRuntime> {
@@ -821,7 +834,7 @@ async function restoreV3(
     current.push({
       png,
       info: evidence.info,
-      settings: { ...render.settings, background: { ...render.settings.background } },
+      settings: cloneVideoStickerDraft(render.settings),
       metrics: { ...render.metrics },
       selection: { ...render.selection },
       notes: [...render.notes],
@@ -860,8 +873,34 @@ function upgradeV2(value: unknown): unknown {
   if (!isVideoProjectManifestHeader(value) || value.version !== 2 || !isRecord(value)) return value;
   return {
     ...value,
-    version: VIDEO_PROJECT_VERSION,
+    version: 3,
     target: 'animated-sticker' satisfies VideoOutputTarget,
+  };
+}
+
+/** V3 color-keying had implicit global/soft behavior. Preserve those rendered bytes. */
+function upgradeV3(value: unknown): unknown {
+  if (!isVideoProjectManifestHeader(value) || value.version !== 3 || !isRecord(value)) return value;
+  const project = value as Record<string, unknown>;
+  const upgradeSettings = (candidate: unknown): unknown => {
+    if (!isRecord(candidate) || !isRecord(candidate.background)) return candidate;
+    const { colorKey: _ignored, ...background } = candidate.background;
+    return {
+      ...candidate,
+      background: background.mode === 'color-key'
+        ? { ...background, colorKey: { ...LEGACY_COLOR_KEY_OPTIONS } }
+        : background,
+    };
+  };
+  return {
+    ...project,
+    version: VIDEO_PROJECT_VERSION,
+    settings: Array.isArray(project.settings) ? project.settings.map(upgradeSettings) : project.settings,
+    current: Array.isArray(project.current)
+      ? project.current.map((render: unknown) => isRecord(render)
+        ? { ...render, settings: upgradeSettings(render.settings) }
+        : render)
+      : project.current,
   };
 }
 
@@ -966,7 +1005,7 @@ async function restoreV1(
     frameCount: legacy.master.masterFrameCount,
     averageFps: legacy.master.masterFrameCount / Math.max(0.001, legacy.source.durationMs / 1000),
   };
-  const manifest: VideoProjectManifestV3 = {
+  const manifest: VideoProjectManifestV4 = {
     schema: VIDEO_PROJECT_SCHEMA,
     version: VIDEO_PROJECT_VERSION,
     target: 'animated-sticker',
@@ -1029,9 +1068,9 @@ export async function importVideoProjectZip(zipBytes: Uint8Array): Promise<Video
     const archive = await streamArchive(zipBytes, store);
     const parsed = parseJson(requireRetained(archive.retained, MANIFEST_PATH), 'Project ZIP 的 sticker-project.json');
     if (isV1(parsed)) return restoreV1(parsed, archive.retained, store);
-    const upgraded = upgradeV2(parsed);
-    assertV3Manifest(upgraded);
-    return restoreV3(upgraded, archive, store);
+    const upgraded = upgradeV3(upgradeV2(parsed));
+    assertV4Manifest(upgraded);
+    return restoreV4(upgraded, archive, store);
   } catch (error) {
     await store.clear();
     throw error;

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createBackgroundRemovalJob } from '../src/webpipe/backgroundRemovalJob.js';
 import { removeSheetBackgroundByCells } from '../src/webpipe/sheetBackgroundRemoval.js';
 import { processAnimated } from '../src/webpipe/processAnimated.js';
+import { chromaKeyGreen, chromaKeySolid } from '../src/webpipe/sheetAnalysis.js';
 import { makeAnimation } from '../src/ui/defaults.js';
 import type { Raster } from '../src/webpipe/raster.js';
 
@@ -51,10 +52,131 @@ async function main(): Promise<void> {
 
   const keyedSource = solid(5, 1, [255, 255, 255, 255]);
   setPixel(keyedSource, 2, 0, [220, 40, 30, 255]);
-  const colorJob = await createBackgroundRemovalJob({ mode: 'color-key', pickColor: [255, 255, 255] });
+  const colorJob = await createBackgroundRemovalJob({
+    mode: 'color-key',
+    pickColor: [255, 255, 255],
+    colorKey: { scope: 'edge-connected', edge: 'soft' },
+  });
   const keyed = await colorJob.remove(keyedSource);
   assert.equal(alphaAt(keyed, 0, 0), 0, 'selected solid color is keyed out');
   assert.equal(alphaAt(keyed, 2, 0), 255, 'different foreground color is retained');
+
+  const connectedSource = solid(5, 5, [255, 255, 255, 255]);
+  for (let y = 1; y <= 3; y++) {
+    for (let x = 1; x <= 3; x++) setPixel(connectedSource, x, y, [220, 40, 30, 255]);
+  }
+  setPixel(connectedSource, 2, 2, [255, 255, 255, 255]);
+  setPixel(connectedSource, 4, 0, [245, 245, 245, 255]);
+  const connected = await colorJob.remove(connectedSource);
+  assert.equal(alphaAt(connected, 0, 0), 0, 'edge-connected selected color is removed');
+  assert.equal(alphaAt(connected, 4, 0), 0, 'edge-connected near-background color is removed');
+  assert.equal(alphaAt(connected, 1, 1), 255, 'different-color subject remains opaque');
+  assert.equal(alphaAt(connected, 2, 2), 255, 'enclosed matching subject detail remains opaque');
+
+  const topologySource = solid(4, 4, [220, 40, 30, 255]);
+  setPixel(topologySource, 0, 0, [255, 255, 255, 255]);
+  setPixel(topologySource, 1, 1, [255, 255, 255, 173]);
+  setPixel(topologySource, 3, 0, [235, 235, 235, 255]);
+  setPixel(topologySource, 3, 1, [234, 234, 234, 200]);
+  setPixel(topologySource, 3, 2, [192, 192, 192, 64]);
+  setPixel(topologySource, 3, 3, [191, 191, 191, 100]);
+  const topology = await colorJob.remove(topologySource);
+  assert.equal(alphaAt(topology, 0, 0), 0, 'exact border color is removed');
+  assert.equal(alphaAt(topology, 1, 1), 173, 'diagonal-only matching detail is not four-way connected');
+  assert.equal(alphaAt(topology, 3, 0), 0, 'distance 20 is fully transparent');
+  assert.equal(alphaAt(topology, 3, 1), 6, 'distance 21 starts the soft matte');
+  assert.equal(alphaAt(topology, 3, 2), 64, 'soft matte never increases source alpha');
+  assert.equal(alphaAt(topology, 3, 3), 100, 'distance 64 is retained exactly');
+  assert.deepEqual([...topology.data.slice((1 * 4 + 3) * 4, (1 * 4 + 3) * 4 + 3)], [234, 234, 234]);
+
+  const allMatching = chromaKeySolid(
+    connectedSource,
+    [255, 255, 255],
+    { scope: 'all-matching', edge: 'soft' },
+  );
+  assert.equal(alphaAt(allMatching, 2, 2), 0, 'all-matching scope removes enclosed matching details');
+
+  const compositeEdge = solid(1, 1, [213, 213, 213, 255]);
+  const softEdge = chromaKeySolid(
+    compositeEdge,
+    [255, 255, 255],
+    { scope: 'edge-connected', edge: 'soft' },
+  );
+  const cleanEdge = chromaKeySolid(
+    compositeEdge,
+    [255, 255, 255],
+    { scope: 'edge-connected', edge: 'decontaminate' },
+  );
+  const hardEdge = chromaKeySolid(
+    compositeEdge,
+    [255, 255, 255],
+    { scope: 'edge-connected', edge: 'hard' },
+  );
+  assert.deepEqual([...softEdge.data], [213, 213, 213, 128], 'soft edge keeps composite RGB and feathered alpha');
+  assert.deepEqual([...cleanEdge.data], [171, 171, 171, 128], 'decontaminate removes background color from opaque edge RGB');
+  assert.deepEqual([...hardEdge.data], [213, 213, 213, 0], 'hard edge removes every in-scope candidate');
+
+  const greenTopology = solid(5, 5, [20, 120, 20, 255]);
+  for (let y = 1; y <= 3; y++) {
+    for (let x = 1; x <= 3; x++) setPixel(greenTopology, x, y, [220, 40, 30, 255]);
+  }
+  setPixel(greenTopology, 2, 2, [20, 120, 20, 173]);
+  const connectedGreen = chromaKeyGreen(greenTopology, { scope: 'edge-connected', edge: 'decontaminate' });
+  const allGreen = chromaKeyGreen(greenTopology, { scope: 'all-matching', edge: 'decontaminate' });
+  assert.equal(alphaAt(connectedGreen, 2, 2), 173, 'connected green key preserves enclosed green detail');
+  assert.deepEqual(
+    [...connectedGreen.data.slice((2 * 5 + 2) * 4, (2 * 5 + 2) * 4 + 4)],
+    [20, 120, 20, 173],
+    'connected green key preserves out-of-scope RGBA bit-for-bit',
+  );
+  assert.equal(alphaAt(allGreen, 2, 2), 0, 'all-matching green key removes enclosed green detail');
+
+  const connectedGreenJob = await createBackgroundRemovalJob({
+    mode: 'color-key',
+    colorKey: { scope: 'edge-connected', edge: 'decontaminate' },
+  });
+  const allGreenJob = await createBackgroundRemovalJob({
+    mode: 'color-key',
+    colorKey: { scope: 'all-matching', edge: 'decontaminate' },
+  });
+  assert.equal(
+    alphaAt(await connectedGreenJob.remove(greenTopology), 2, 2),
+    173,
+    'auto-detected green background receives connected scope through the job dispatcher',
+  );
+  assert.equal(
+    alphaAt(await allGreenJob.remove(greenTopology), 2, 2),
+    0,
+    'auto-detected green background receives all-matching scope through the job dispatcher',
+  );
+  await connectedGreenJob.dispose();
+  await allGreenJob.dispose();
+
+  const greenThresholds = solid(4, 1, [80, 92, 50, 200]);
+  setPixel(greenThresholds, 1, 0, [80, 93, 50, 255]);
+  setPixel(greenThresholds, 2, 0, [50, 100, 20, 255]);
+  setPixel(greenThresholds, 3, 0, [20, 110, 10, 255]);
+  const softGreen = chromaKeyGreen(greenThresholds, { scope: 'all-matching', edge: 'soft' });
+  const cleanGreen = chromaKeyGreen(greenThresholds, { scope: 'all-matching', edge: 'decontaminate' });
+  const hardGreen = chromaKeyGreen(greenThresholds, { scope: 'all-matching', edge: 'hard' });
+  assert.equal(alphaAt(softGreen, 0, 0), 200, 'greenness 12 preserves source alpha');
+  assert.equal(alphaAt(softGreen, 1, 0), 252, 'greenness 13 starts the soft matte');
+  assert.deepEqual([...softGreen.data.slice(8, 12)], [50, 100, 20, 131], 'soft green edge preserves RGB');
+  assert.deepEqual([...cleanGreen.data.slice(8, 12)], [50, 70, 20, 131], 'green decontaminate despills only selected edge pixels');
+  assert.equal(alphaAt(softGreen, 3, 0), 0, 'greenness 90 is fully transparent');
+  assert.equal(alphaAt(hardGreen, 2, 0), 0, 'hard green edge removes every in-scope candidate');
+
+  await assert.rejects(
+    createBackgroundRemovalJob({
+      mode: 'none',
+      colorKey: { scope: 'edge-connected', edge: 'soft' },
+    }),
+    /單色色鍵選項.*color-key/,
+    'non-color-key jobs reject color-key-only options',
+  );
+
+  const empty = await colorJob.remove(solid(0, 0, [255, 255, 255, 255]));
+  assert.equal(empty.data.length, 0, 'empty rasters remain empty');
   await colorJob.dispose();
 
   let animatedCalls = 0;

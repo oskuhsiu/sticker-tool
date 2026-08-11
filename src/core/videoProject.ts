@@ -1,7 +1,8 @@
 import type { SourceFrameTiming } from './videoTimeline.js';
+import type { ColorKeyOptions } from './colorKey.js';
 
 export const VIDEO_PROJECT_SCHEMA = 'sticker-tool/video-apng-project' as const;
-export const VIDEO_PROJECT_VERSION = 3 as const;
+export const VIDEO_PROJECT_VERSION = 4 as const;
 
 /**
  * Product selected before raw-master ingest. Canvas geometry is baked into the
@@ -25,11 +26,23 @@ export interface RawVisualFrameRef {
 
 export type VideoBackgroundMode = 'none' | 'color-key' | 'imgly' | 'local-birefnet' | 'colab-birefnet';
 
-export interface VideoBackgroundSettings {
-  mode: VideoBackgroundMode;
+export interface VideoColorKeyBackgroundSettings {
+  mode: 'color-key';
   color?: string;
   tolerance?: number;
+  colorKey: ColorKeyOptions;
 }
+
+export interface VideoNonColorKeyBackgroundSettings {
+  mode: Exclude<VideoBackgroundMode, 'color-key'>;
+  color?: never;
+  tolerance?: number;
+  colorKey?: never;
+}
+
+export type VideoBackgroundSettings =
+  | VideoColorKeyBackgroundSettings
+  | VideoNonColorKeyBackgroundSettings;
 
 export interface VideoStickerDraftV2 {
   stickerId: string;
@@ -44,6 +57,21 @@ export interface VideoStickerDraftV2 {
   /** Keep truecolor RGBA even when the result exceeds the delivery byte limit. */
   preserveColors?: boolean;
   maxColors: number;
+}
+
+/** Clone persisted draft data across UI, render, and archive ownership boundaries. */
+export function cloneVideoStickerDraft(settings: VideoStickerDraftV2): VideoStickerDraftV2 {
+  return {
+    ...settings,
+    background: settings.background.mode === 'color-key'
+      ? { ...settings.background, colorKey: { ...settings.background.colorKey } }
+      : {
+          mode: settings.background.mode,
+          ...(settings.background.tolerance === undefined
+            ? {}
+            : { tolerance: settings.background.tolerance }),
+        },
+  };
 }
 
 export interface VideoSelectionPlanV2 {

@@ -4,6 +4,7 @@ import { useMemo, useRef, useState } from 'react';
 import { BIG_STICKER_SPEC, EMOJI_SPEC, STATIC_SPEC, ZIP_MAX_BYTES, allowedCounts, maxBounds } from '@core/spec.js';
 import { emojiFileName, stickerFileName } from '@core/naming.js';
 import { planGrid } from '@core/grid.js';
+import { DEFAULT_COLOR_KEY_OPTIONS, type ColorKeyOptions } from '@core/colorKey.js';
 import type { GridLayout } from '@core/types.js';
 import { validateEmojiPack, validatePack } from '@core/validate.js';
 import { decodeBlob, yieldToUI, type Raster } from '../webpipe/raster.js';
@@ -45,6 +46,7 @@ export function SheetTab() {
   const [isCharacter, setIsCharacter] = useState(true);
   const [gridText, setGridText] = useState('auto');
   const [removeBgMode, setRemoveBgMode] = useState<WebBackgroundRemovalMode>('color-key');
+  const [colorKeyOptions, setColorKeyOptions] = useState<ColorKeyOptions>(() => ({ ...DEFAULT_COLOR_KEY_OPTIONS }));
   const [strokeOn, setStrokeOn] = useState(false);
   const [strokeWidth, setStrokeWidth] = useState(8);
   const [strokeColor, setStrokeColor] = useState('#ffffff');
@@ -105,6 +107,7 @@ export function SheetTab() {
       removalJob = await createBackgroundRemovalJob({
         mode: removeBgMode,
         signal: abort.signal,
+        ...(removeBgMode === 'color-key' ? { colorKey: colorKeyOptions } : {}),
         colabConfig: colabConnection?.config,
         onStatus: setModelStatus,
       });
@@ -136,7 +139,9 @@ export function SheetTab() {
           count: thisCount,
           key: semantic
             ? { autoRemove: false, preRemovedLabel: removalJob.label }
-            : { autoRemove: removeBgMode === 'color-key' },
+            : removeBgMode === 'color-key'
+              ? { autoRemove: true, colorKey: colorKeyOptions }
+              : { autoRemove: false },
         });
         reportCut(cut, logger);
         cells.push(...cut.cells);
@@ -304,6 +309,8 @@ export function SheetTab() {
         disabled={busy}
         inferenceCount={count}
         colorHelp={<span className="layout-hint">自動偵測綠幕或邊框背景色</span>}
+        colorKeyOptions={colorKeyOptions}
+        onColorKeyOptionsChange={setColorKeyOptions}
       />
       <Row>
         <Field label="輸出規格">

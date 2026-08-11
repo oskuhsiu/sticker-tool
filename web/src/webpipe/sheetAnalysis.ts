@@ -1,7 +1,8 @@
 /**
  * 組圖切格（瀏覽器版）：偵測背景 → 去背成透明 → 由前景占用剖面規劃「參照」切線
  * → 元件式抽格（@core/cells：格線僅參照、逐格偵測實際範圍、越線不切斷、空格回報）。
- * 純逐像素邏輯與 CLI 版一致；切線規劃與抽格直接重用 @core 的純函式。
+ * 綠幕門檻與 CLI 版一致；瀏覽器色鍵可選外框連通或全圖相近色範圍。
+ * 切線規劃與抽格直接重用 @core 的純函式。
  *
  * 去背一律走色鍵（綠幕／單色），不用 @imgly 語意模型——sheet 流程曾卡在 ~80MB
  * 模型下載；不透明背景改用「邊框平均色」或「使用者點選色」做單色色鍵。
@@ -9,6 +10,11 @@
 
 import { inferAxisCells, planCutsFromProfile, type CutPlan } from '@core/sheet.js';
 import { extractCells, type CellMeta } from '@core/cells.js';
+import {
+  DEFAULT_COLOR_KEY_OPTIONS,
+  type ColorKeyOptions,
+  type ColorKeyScope,
+} from '@core/colorKey.js';
 import type { Raster } from './raster.js';
 
 export type Background =
@@ -36,8 +42,10 @@ export interface KeyOptions {
   autoRemove?: boolean;
   /** 上游已完成語意去背時，用這個標籤取代「須已透明」警告。 */
   preRemovedLabel?: string;
-  /** 使用者點選的背景色：指定時一律用此色做單色色鍵（蓋過自動偵測） */
+  /** 使用者點選的背景色：指定時用此色做單色色鍵（蓋過自動偵測） */
   pickColor?: [number, number, number] | null;
+  /** 僅供單色色鍵使用的範圍與邊緣策略。 */
+  colorKey?: ColorKeyOptions;
 }
 
 const ALPHA_OPAQUE = 128;
@@ -84,63 +92,139 @@ export function detectBackground(src: Raster): Background {
   return { kind: 'opaque', color };
 }
 
-/**
- * 綠幕色鍵 + despill（soft matte／抗鋸齒）。
- * greenness = g − max(r,b) 映射 alpha：≤KEY_LO 全保留、≥KEY_HI 全透明、之間線性漸層。
- * 門檻與 CLI 版相同（取自實測直方圖）。
- */
 const KEY_LO = 12;
 const KEY_HI = 90;
-export function chromaKeyGreen(src: Raster): Raster {
+
+function selectByScope(
+  width: number,
+  height: number,
+  scope: ColorKeyScope,
+  isCandidate: (pixel: number) => boolean,
+): Uint8Array {
+  const pixels = width * height;
+  // 0 = unseen, 1 = rejected, 2 = selected.
+  const state = new Uint8Array(pixels);
+  if (scope === 'all-matching') {
+    for (let pixel = 0; pixel < pixels; pixel++) {
+      state[pixel] = isCandidate(pixel) ? 2 : 1;
+    }
+    return state;
+  }
+  if (pixels === 0) return state;
+
+  // Rejected pixels are remembered so a non-candidate touching several selected
+  // pixels is still tested only once.
+  const queue = new Uint32Array(pixels);
+  let head = 0;
+  let tail = 0;
+  const visit = (pixel: number): void => {
+    if (state[pixel]) return;
+    if (!isCandidate(pixel)) {
+      state[pixel] = 1;
+      return;
+    }
+    state[pixel] = 2;
+    queue[tail++] = pixel;
+  };
+
+  for (let x = 0; x < width; x++) {
+    visit(x);
+    visit((height - 1) * width + x);
+  }
+  for (let y = 0; y < height; y++) {
+    visit(y * width);
+    visit(y * width + width - 1);
+  }
+  while (head < tail) {
+    const pixel = queue[head++]!;
+    const x = pixel % width;
+    const y = Math.floor(pixel / width);
+    if (x > 0) visit(pixel - 1);
+    if (x + 1 < width) visit(pixel + 1);
+    if (y > 0) visit(pixel - width);
+    if (y + 1 < height) visit(pixel + width);
+  }
+  return state;
+}
+
+/**
+ * 綠幕色鍵。greenness 候選可限制在外框 4 向連通區；soft 保留 RGB，
+ * decontaminate 套用既有綠色 despill，hard 則把候選直接設為透明。
+ */
+export function chromaKeyGreen(src: Raster, options: ColorKeyOptions): Raster {
   const { data, width: W, height: H } = src;
-  const out = new Uint8ClampedArray(W * H * 4);
+  const out = new Uint8ClampedArray(data);
+  const selected = selectByScope(W, H, options.scope, (pixel) => {
+    const i = pixel * 4;
+    const r = data[i]!;
+    const g = data[i + 1]!;
+    const b = data[i + 2]!;
+    return g > 90 && g - Math.max(r, b) > KEY_LO;
+  });
   for (let p = 0; p < W * H; p++) {
+    if (selected[p] !== 2) continue;
     const i = p * 4;
     const r = data[i]!;
-    let gg = data[i + 1]!;
+    const g = data[i + 1]!;
     const b = data[i + 2]!;
     const a0 = data[i + 3]!;
     const mx = Math.max(r, b);
-    const greenness = gg - mx;
-    let keyA = 255;
-    if (gg > 90) {
-      if (greenness >= KEY_HI) keyA = 0;
-      else if (greenness > KEY_LO) keyA = Math.round((255 * (KEY_HI - greenness)) / (KEY_HI - KEY_LO));
-    }
-    if (gg > mx + 20) gg = mx + 20; // despill
-    out[p * 4] = r;
-    out[p * 4 + 1] = gg;
-    out[p * 4 + 2] = b;
-    out[p * 4 + 3] = Math.min(a0, keyA);
+    const greenness = g - mx;
+    const keyA = options.edge === 'hard'
+      ? 0
+      : greenness >= KEY_HI
+        ? 0
+        : Math.round((255 * (KEY_HI - greenness)) / (KEY_HI - KEY_LO));
+    if (options.edge === 'decontaminate') out[i + 1] = Math.min(g, mx + 20);
+    out[i + 3] = Math.min(a0, keyA);
   }
   return { data: out, width: W, height: H };
 }
 
 /**
- * 單色色鍵（soft matte）：與背景色的 Chebyshev 距離映射 alpha——
- * ≤LO 全透明（背景）、≥HI 全保留（主體）、之間線性漸層（抗鋸齒）。
- * 平塗背景的雜訊只有幾個色階，LO=20 足以蓋掉；HI=64 之外視為主體。
- * 注意：主體與背景同色處（如白衣白底）會一起被打穿——產圖時避免同色背景。
+ * 單色色鍵：候選是與背景色 Chebyshev 距離 < HI 的像素；scope 決定選取
+ * 全部候選，或只選取與外框 4 向連通者。edge 決定 soft matte、去色暈或 hard alpha。
  */
 const SOLID_LO = 20;
 const SOLID_HI = 64;
-export function chromaKeySolid(src: Raster, color: [number, number, number]): Raster {
+export function chromaKeySolid(
+  src: Raster,
+  color: [number, number, number],
+  options: ColorKeyOptions,
+): Raster {
   const { data, width: W, height: H } = src;
   const [r0, g0, b0] = color;
-  const out = new Uint8ClampedArray(W * H * 4);
-  for (let p = 0; p < W * H; p++) {
+  const pixels = W * H;
+  const out = new Uint8ClampedArray(data);
+  if (pixels === 0) return { data: out, width: W, height: H };
+
+  const distance = (p: number): number => {
     const i = p * 4;
-    const d = Math.max(
+    return Math.max(
       Math.abs(data[i]! - r0),
       Math.abs(data[i + 1]! - g0),
       Math.abs(data[i + 2]! - b0),
     );
-    let keyA = 255;
-    if (d <= SOLID_LO) keyA = 0;
-    else if (d < SOLID_HI) keyA = Math.round((255 * (d - SOLID_LO)) / (SOLID_HI - SOLID_LO));
-    out[i] = data[i]!;
-    out[i + 1] = data[i + 1]!;
-    out[i + 2] = data[i + 2]!;
+  };
+  const selected = selectByScope(W, H, options.scope, (pixel) => distance(pixel) < SOLID_HI);
+  for (let p = 0; p < pixels; p++) {
+    if (selected[p] !== 2) continue;
+    const i = p * 4;
+    const d = distance(p);
+    const keyA = options.edge === 'hard'
+      ? 0
+      : d <= SOLID_LO
+        ? 0
+        : Math.round((255 * (d - SOLID_LO)) / (SOLID_HI - SOLID_LO));
+    if (options.edge === 'decontaminate' && keyA > 0 && data[i + 3] === 255) {
+      const inverseComposite = (channel: number, background: number): number => Math.max(
+        0,
+        Math.min(255, Math.round((255 * channel - (255 - keyA) * background) / keyA)),
+      );
+      out[i] = inverseComposite(data[i]!, r0);
+      out[i + 1] = inverseComposite(data[i + 1]!, g0);
+      out[i + 2] = inverseComposite(data[i + 2]!, b0);
+    }
     out[i + 3] = Math.min(data[i + 3]!, keyA);
   }
   return { data: out, width: W, height: H };
@@ -152,14 +236,15 @@ export function chromaKeySolid(src: Raster, color: [number, number, number]): Ra
  */
 export function keyBackground(src: Raster, bg: Background, opts: KeyOptions = {}): Raster {
   if (opts.autoRemove === false) return src;
-  if (opts.pickColor) return chromaKeySolid(src, opts.pickColor);
+  const colorKey = opts.colorKey ?? DEFAULT_COLOR_KEY_OPTIONS;
+  if (opts.pickColor) return chromaKeySolid(src, opts.pickColor, colorKey);
   if (bg.kind === 'transparent') return src;
-  if (bg.kind === 'green') return chromaKeyGreen(src);
+  if (bg.kind === 'green') return chromaKeyGreen(src, colorKey);
   return chromaKeySolid(src, [
     Math.round(bg.color[0]),
     Math.round(bg.color[1]),
     Math.round(bg.color[2]),
-  ]);
+  ], colorKey);
 }
 
 /** 每欄/列的前景（alpha>門檻）像素數 */
@@ -186,6 +271,7 @@ export async function analyzeSheet(
 ): Promise<SheetAnalysis> {
   const { cols, rows } = grid;
   const warnings: string[] = [];
+  const colorKey = key.colorKey ?? DEFAULT_COLOR_KEY_OPTIONS;
   const background = detectBackground(src);
   const keyed = keyBackground(src, background, key);
   const { colOcc, rowOcc } = foregroundProfiles(keyed);
@@ -209,13 +295,20 @@ export async function analyzeSheet(
     warnings.push('已關閉自動去背：直接使用原圖 alpha（圖須已是透明底，否則切格會失敗）。');
   } else if (key.pickColor) {
     const [r, g, b] = key.pickColor;
-    warnings.push(`以點選色 rgb(${r},${g},${b}) 做單色色鍵去背；主體與背景同色處會一起變透明。`);
+    warnings.push(
+      `以點選色 rgb(${r},${g},${b}) 做${colorKey.scope === 'edge-connected' ? '外框連通' : '全圖相近色'}單色色鍵去背；` +
+        (colorKey.scope === 'edge-connected'
+          ? '被非背景色完整包住的同色細節會保留，封閉的背景洞也可能保留。'
+          : '不與外框相連的近色也會移除，主體內的相近色可能被挖空。'),
+    );
   } else if (background.kind === 'opaque') {
     const [r, g, b] = background.color;
     warnings.push(
-      `背景非透明（近 rgb(${r | 0},${g | 0},${b | 0})）：以邊框平均色做單色色鍵去背。` +
-        `若主體與背景同色（如白衣白底）會被一起打穿——可改用「從圖選色」指定背景色，` +
-        `最乾淨的做法是產圖時用綠幕或透明底。`,
+      `背景非透明（近 rgb(${r | 0},${g | 0},${b | 0})）：以邊框平均色做${colorKey.scope === 'edge-connected' ? '外框連通' : '全圖相近色'}單色色鍵去背。` +
+        (colorKey.scope === 'edge-connected'
+          ? '被非背景色完整包住的同色細節會保留，封閉的背景洞也可能保留；'
+          : '不與外框相連的近色也會移除，主體內的相近色可能被挖空；') +
+        `若自動顏色不準，可改用「從圖選色」指定背景色。`,
     );
   }
 

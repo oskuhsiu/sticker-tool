@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { emojiFileName, stickerFileName } from '@core/naming.js';
 import { ANIMATED_EMOJI_SPEC, ANIMATED_SPEC, POPUP_STICKER_SPEC } from '@core/spec.js';
+import { DEFAULT_COLOR_KEY_OPTIONS, copyColorKeyOptions } from '@core/colorKey.js';
 import type { VideoBackgroundMode, VideoOutputTarget } from '@core/videoProject.js';
 import {
   validateVideoStickerSettings,
@@ -10,6 +11,7 @@ import {
 import { decodeApngFrames } from '../../webpipe/apng.js';
 import { encodePng } from '../../webpipe/png.js';
 import { Field, PngPreview, Row, kb } from '../common.jsx';
+import { ColorKeyOptionFields } from '../BackgroundRemovalControl.jsx';
 import { ApngTimelinePlayer } from './ApngTimelinePlayer.jsx';
 
 export function VideoStickerEditor(props: {
@@ -35,11 +37,13 @@ export function VideoStickerEditor(props: {
   const seconds = (value: number) => value / 1_000_000;
   const setBackgroundMode = (mode: VideoBackgroundMode) => props.onChange({
     ...settings,
-    background: {
-      ...settings.background,
-      mode,
-      color: mode === 'color-key' ? settings.background.color ?? '#00ff00' : undefined,
-    },
+    background: mode === 'color-key'
+      ? {
+          mode,
+          color: settings.background.color ?? '#00ff00',
+          colorKey: settings.background.colorKey ?? copyColorKeyOptions(DEFAULT_COLOR_KEY_OPTIONS),
+        }
+      : { mode },
   });
   const legalLoops = [1, 2, 3, 4].filter((loops) =>
     loops <= contract.maxLoops && settings.perLoopDurationMs * loops <= contract.maxDurationSec * 1000,
@@ -97,7 +101,10 @@ export function VideoStickerEditor(props: {
       </Row>
       <Row>
         <Field label="去背模式"><select disabled={props.legacyBaked} value={settings.background.mode} onChange={(event) => setBackgroundMode(event.target.value as VideoBackgroundMode)}><option value="none">不去背</option><option value="color-key">單色色鍵</option><option value="imgly">IMG.LY（本機）</option><option value="local-birefnet">本機 BiRefNet</option><option value="colab-birefnet">Colab 多模型去背</option></select></Field>
-        {settings.background.mode === 'color-key' && <Field label="背景色"><input type="color" value={settings.background.color ?? '#00ff00'} onChange={(event) => props.onChange({ ...settings, background: { ...settings.background, color: event.target.value } })} /></Field>}
+        {settings.background.mode === 'color-key' && <Field label="背景色"><input type="color" value={settings.background.color ?? '#00ff00'} onChange={(event) => {
+          if (settings.background.mode !== 'color-key') return;
+          props.onChange({ ...settings, background: { ...settings.background, color: event.target.value } });
+        }} /></Field>}
         <details>
           <summary>進階壓縮</summary>
           <Field label="減色上限"><select value={colorMode} onChange={(event) => {
@@ -110,6 +117,19 @@ export function VideoStickerEditor(props: {
           }}><option value="0">自動</option><option value="original">不減色（原色）</option><option value="256">256</option><option value="128">128</option><option value="64">64</option><option value="32">32</option></select></Field>
         </details>
       </Row>
+      {settings.background.mode === 'color-key' && (
+        <ColorKeyOptionFields
+          value={settings.background.colorKey}
+          onChange={(colorKey) => {
+            if (settings.background.mode !== 'color-key') return;
+            props.onChange({
+              ...settings,
+              background: { ...settings.background, colorKey },
+            });
+          }}
+          disabled={props.legacyBaked}
+        />
+      )}
       <p className="tab-desc">
         來源 {(sourceSpanMs / 1000).toFixed(3)} 秒 → 成品 {(settings.perLoopDurationMs / 1000).toFixed(0)} 秒（{speed.toFixed(2)}× 播放速度）。
         {props.target === 'popup' ? ` 打包時會把第 ${staticFrameIndex + 1} 格等比轉成 png/${stickerFileName(props.index + 1)}。` : ''}

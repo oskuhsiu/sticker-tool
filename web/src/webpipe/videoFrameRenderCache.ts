@@ -28,6 +28,9 @@ export class VideoFrameRenderCache {
       mode: args.background.mode,
       color: args.background.color ?? null,
       tolerance: args.background.tolerance ?? null,
+      ...(args.background.mode === 'color-key'
+        ? { colorKey: args.background.colorKey ?? null }
+        : {}),
     };
     return `${args.stickerId}|${args.rawFrameHash}|${args.removerVersion}|${JSON.stringify(background)}`;
   }

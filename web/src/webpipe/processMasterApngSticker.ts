@@ -1,4 +1,5 @@
 import { adjacentDuplicateIndices, coalesceAdjacentFrames, equalRgbaFrames } from '@core/frameSequence.js';
+import { isColorKeyOptions } from '@core/colorKey.js';
 import { ANIMATED_EMOJI_SPEC, ANIMATED_SPEC, POPUP_STICKER_SPEC } from '@core/spec.js';
 import {
   candidateExpansionOrder,
@@ -7,10 +8,11 @@ import {
   selectTimeUniformIndices,
   type SourceFrameTiming,
 } from '@core/videoTimeline.js';
-import type {
+import {
+  cloneVideoStickerDraft,
+  type VideoOutputTarget,
   VideoSelectionPlanV2,
   VideoStickerDraftV2,
-  VideoOutputTarget,
 } from '@core/videoProject.js';
 import {
   validateAnimatedEmojiImage,
@@ -160,11 +162,12 @@ export function validateVideoStickerSettings(
   if (settings.background.mode === 'color-key' && settings.background.color !== undefined) {
     if (!/^#[0-9a-f]{6}$/i.test(settings.background.color)) errors.push('單色色鍵必須是 #RRGGBB');
   }
+  if (settings.background.mode === 'color-key') {
+    if (!isColorKeyOptions(settings.background.colorKey)) errors.push('單色去背選項無效');
+  } else if (settings.background.colorKey !== undefined) {
+    errors.push('只有單色去背可使用單色去背選項');
+  }
   return errors;
-}
-
-function cloneSettings(settings: VideoStickerSettings): VideoStickerSettings {
-  return { ...settings, background: { ...settings.background } };
 }
 
 /** Render one draft from raw master frames without changing its requested target frame count. */
@@ -361,7 +364,7 @@ export async function processMasterApngSticker(args: {
   return {
     png: bestAttempt.png,
     info: evidence.info,
-    settings: cloneSettings(settings),
+    settings: cloneVideoStickerDraft(settings),
     selection,
     notes,
     errors,

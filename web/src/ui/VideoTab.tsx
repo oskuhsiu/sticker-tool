@@ -1,5 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { emojiFileName, stickerFileName } from '@core/naming.js';
+import {
+  DEFAULT_COLOR_KEY_OPTIONS,
+  copyColorKeyOptions,
+  type ColorKeyOptions,
+} from '@core/colorKey.js';
 import { ANIMATED_EMOJI_SPEC, ANIMATED_SPEC, POPUP_STICKER_SPEC, STATIC_SPEC, maxBounds } from '@core/spec.js';
 import {
   equalVideoAxisCuts,
@@ -8,7 +13,11 @@ import {
   type VideoAxisCuts,
   type VideoGridPlan,
 } from '@core/videoCrop.js';
-import type { VideoBackgroundMode, VideoOutputTarget } from '@core/videoProject.js';
+import {
+  cloneVideoStickerDraft,
+  type VideoBackgroundMode,
+  type VideoOutputTarget,
+} from '@core/videoProject.js';
 import { mergeResults, validateEmojiPack, validatePack, validatePopupPack, type ImageInfo } from '@core/validate.js';
 import { createBackgroundRemovalJob, type BackgroundRemovalJob } from '../webpipe/backgroundRemovalJob.js';
 import { colabBirefnetEndpointHost } from '../webpipe/colabBirefnet.js';
@@ -35,7 +44,7 @@ import { buildEmojiPackZip } from '../webpipe/emojiZip.js';
 import { processStatic, type ProcessedSticker } from '../webpipe/processStatic.js';
 import { buildPackZip, buildPopupPackZip, downloadBytes, safeName } from '../webpipe/zip.js';
 import { LogPane, ValidationView, kb, useLogger } from './common.jsx';
-import { LocalBirefnetRuntimeWarning } from './BackgroundRemovalControl.jsx';
+import { ColorKeyOptionFields, LocalBirefnetRuntimeWarning } from './BackgroundRemovalControl.jsx';
 import { useColabBirefnetConnection } from './colabBirefnetConnection.jsx';
 import { VideoIngestProgress, type VideoIngestProgressValue } from './video/VideoIngestProgress.jsx';
 import { VideoSourceStep } from './video/VideoSourceStep.jsx';
@@ -87,10 +96,6 @@ function hexToRgb(hex: string): [number, number, number] | null {
   return [(value >> 16) & 255, (value >> 8) & 255, value & 255];
 }
 
-function cloneSettings(settings: VideoStickerSettings): VideoStickerSettings {
-  return { ...settings, background: { ...settings.background } };
-}
-
 function settingsEqual(a: VideoStickerSettings, b: VideoStickerSettings): boolean {
   // staticFrameIndex selects a derived Popup static image; it does not change APNG bytes.
   return (
@@ -104,7 +109,11 @@ function settingsEqual(a: VideoStickerSettings, b: VideoStickerSettings): boolea
     a.maxColors === b.maxColors &&
     a.background.mode === b.background.mode &&
     a.background.color === b.background.color &&
-    a.background.tolerance === b.background.tolerance
+    a.background.tolerance === b.background.tolerance &&
+    (a.background.mode !== 'color-key' || (
+      a.background.colorKey?.scope === b.background.colorKey?.scope &&
+      a.background.colorKey?.edge === b.background.colorKey?.edge
+    ))
   );
 }
 
@@ -131,6 +140,7 @@ export function videoRemoverVersion(
 ): string {
   if (mode === 'none') return 'none@1';
   if (!label) throw new Error(`${mode} remover 尚未啟用`);
+  if (mode === 'color-key') return `${label}@2`;
   if (mode !== 'colab-birefnet') return `${label}@1`;
   if (!Number.isSafeInteger(colabGeneration) || colabGeneration === null || colabGeneration < 1) {
     throw new Error('Colab 多模型去背 connection generation 無效');
@@ -146,6 +156,7 @@ function defaultSettings(args: {
   sourceFrames: number;
   backgroundMode: VideoBackgroundMode;
   color: string;
+  colorKeyOptions: ColorKeyOptions;
 }): VideoStickerSettings {
   const contract = args.target === 'animated-emoji'
     ? ANIMATED_EMOJI_SPEC
@@ -163,10 +174,9 @@ function defaultSettings(args: {
     targetFrames: Math.max(contract.minFrames, Math.min(contract.maxFrames, args.sourceFrames)),
     perLoopDurationMs: (roundedSeconds * 1000) as VideoStickerSettings['perLoopDurationMs'],
     loops: 1,
-    background: {
-      mode: args.backgroundMode,
-      color: args.backgroundMode === 'color-key' ? args.color : undefined,
-    },
+    background: args.backgroundMode === 'color-key'
+      ? { mode: 'color-key', color: args.color, colorKey: { ...args.colorKeyOptions } }
+      : { mode: args.backgroundMode },
     staticFrameIndex: args.target === 'popup' ? 0 : undefined,
     preserveColors: false,
     maxColors: 0,
@@ -203,6 +213,9 @@ export function VideoTab() {
   const [previews, setPreviews] = useState<Array<{ label: string; png: Uint8Array }>>([]);
   const [defaultBackground, setDefaultBackground] = useState<VideoBackgroundMode>('none');
   const [backgroundColor, setBackgroundColor] = useState('#00ff00');
+  const [colorKeyOptions, setColorKeyOptions] = useState<ColorKeyOptions>(
+    () => copyColorKeyOptions(DEFAULT_COLOR_KEY_OPTIONS),
+  );
   const [name, setName] = useState('Video Animated Stickers');
   const [cover, setCover] = useState(1);
   const [project, setProject] = useState<VideoProjectState | null>(null);
@@ -431,6 +444,7 @@ export function VideoTab() {
         sourceFrames: master.sourceFrameCount,
         backgroundMode: defaultBackground,
         color: backgroundColor,
+        colorKeyOptions,
       }));
       const created: VideoProjectState = {
         target,
@@ -452,6 +466,9 @@ export function VideoTab() {
       setCommonLoops(settings[0]?.loops ?? 1);
       setCommonBackground(settings[0]?.background.mode ?? 'none');
       setBackgroundColor(settings[0]?.background.color ?? backgroundColor);
+      setColorKeyOptions(settings[0]?.background.colorKey
+        ? { ...settings[0].background.colorKey }
+        : copyColorKeyOptions(DEFAULT_COLOR_KEY_OPTIONS));
       setActiveIndex(0);
       source.dispose();
       sourceRef.current = null;
@@ -490,6 +507,7 @@ export function VideoTab() {
           mode,
           signal: controller.signal,
           pickColor: mode === 'color-key' ? hexToRgb(settings.background.color ?? '#00ff00') : null,
+          ...(mode === 'color-key' ? { colorKey: settings.background.colorKey } : {}),
           colabConfig,
           onStatus: (status) => status && setProgress(status),
         });
@@ -591,7 +609,7 @@ export function VideoTab() {
         settings: project.settings,
         current: project.current,
       });
-      downloadBytes(`${safeName(project.name)}.video-apng-project-v3.zip`, built.zip, 'application/zip');
+      downloadBytes(`${safeName(project.name)}.video-apng-project-v4.zip`, built.zip, 'application/zip');
     } catch (error) {
       logger.log('err', error instanceof Error ? error.message : String(error));
     } finally {
@@ -611,7 +629,7 @@ export function VideoTab() {
       sourceRef.current = null;
       cacheRef.current.clear();
       const manifest = imported.manifest;
-      const restoredSettings = manifest.settings.map(cloneSettings);
+      const restoredSettings = manifest.settings.map(cloneVideoStickerDraft);
       const restored: VideoProjectState = {
         target: manifest.target,
         name: manifest.name,
@@ -643,12 +661,15 @@ export function VideoTab() {
       setCommonLoops(restored.settings[0]?.loops ?? 1);
       setCommonBackground(restored.settings[0]?.background.mode ?? 'none');
       setBackgroundColor(restored.settings[0]?.background.color ?? '#00ff00');
+      setColorKeyOptions(restored.settings[0]?.background.colorKey
+        ? { ...restored.settings[0].background.colorKey }
+        : copyColorKeyOptions(DEFAULT_COLOR_KEY_OPTIONS));
       setPosters(await posterPngs(imported.master));
       setActiveIndex(0);
       setLinePack(null);
       logger.log('ok', manifest.legacy
         ? '已以 sampled/baked legacy 限制匯入 V1 Project，未製造缺失 frames 或 raw RGB'
-        : `已恢復 Project V3（${videoTargetLabel(manifest.target)}）的 ${manifest.master.sourceFrameCount} 個 sample refs，未啟動影片 decoder`);
+        : `已恢復 Project V4（${videoTargetLabel(manifest.target)}）的 ${manifest.master.sourceFrameCount} 個 sample refs，未啟動影片 decoder`);
     } catch (error) {
       await imported?.master.store.clear();
       logger.log('err', error instanceof Error ? error.message : String(error));
@@ -815,10 +836,9 @@ export function VideoTab() {
           loops: commonLoops,
           background: previous.master.backgroundStage === 'baked-legacy'
             ? { ...settings.background }
-            : {
-                mode: commonBackground,
-                color: commonBackground === 'color-key' ? backgroundColor : undefined,
-              },
+            : commonBackground === 'color-key'
+              ? { mode: 'color-key', color: backgroundColor, colorKey: { ...colorKeyOptions } }
+              : { mode: commonBackground },
         })),
       };
     });
@@ -848,6 +868,7 @@ export function VideoTab() {
           cover={cover}
           defaultBackground={defaultBackground}
           color={backgroundColor}
+          colorKeyOptions={colorKeyOptions}
           grid={gridPlan}
           busy={busy}
           onTarget={changeTarget}
@@ -858,6 +879,7 @@ export function VideoTab() {
           onCover={setCover}
           onBackground={setDefaultBackground}
           onColor={setBackgroundColor}
+          onColorKeyOptions={setColorKeyOptions}
           onBuild={() => void buildMaster()}
           range={{
             target,
@@ -923,6 +945,13 @@ export function VideoTab() {
               {commonBackground === 'color-key' && <label>共同背景色<input type="color" value={backgroundColor} onChange={(event) => setBackgroundColor(event.target.value)} /></label>}
               <button className="btn small" disabled={busy} onClick={applyCommonSettings}>套用共同設定到所有貼圖</button>
             </div>
+            {commonBackground === 'color-key' && (
+              <ColorKeyOptionFields
+                value={colorKeyOptions}
+                onChange={setColorKeyOptions}
+                disabled={project.master.backgroundStage === 'baked-legacy'}
+              />
+            )}
             <LocalBirefnetRuntimeWarning
               active={commonBackground === 'local-birefnet'
                 || project.settings.some((settings) => settings.background.mode === 'local-birefnet')}
@@ -954,7 +983,7 @@ export function VideoTab() {
           </div>
           <div className="run-row">
             <button className="btn primary" disabled={busy || dirtyCount === 0} onClick={() => void rerenderAll()}>依序產生所有 dirty previews</button>
-            <button className="btn" disabled={busy} onClick={() => void downloadProject()}>下載 Project ZIP V3</button>
+            <button className="btn" disabled={busy} onClick={() => void downloadProject()}>下載 Project ZIP V4</button>
             <button className="btn" disabled={busy} onClick={() => void makeLinePack()}>建立 {videoTargetLabel(project.target)} LINE ZIP / 最終驗證</button>
             {busy && <button className="btn" onClick={() => abortRef.current?.abort()}>取消</button>}
             {progress && <span className="model-status">{progress}</span>}

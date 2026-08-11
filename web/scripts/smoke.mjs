@@ -210,7 +210,7 @@ async function previewPngColorType(locator) {
 try {
   await page.goto(`${BASE.replace(/#.*/, '')}#/colab-birefnet`, { waitUntil: 'load' });
   await page.waitForTimeout(800); // 容 COI service worker 註冊/可能的一次重載
-  await page.waitForSelector('[data-page="colab-birefnet"] >> text=在 Google Colab 啟動 BiRefNet');
+  await page.waitForSelector('[data-page="colab-birefnet"] >> text=在 Google Colab 啟動多模型去背');
   await page.waitForSelector('[data-page="colab-birefnet"] >> text=直接在 Colab 開啟');
   await page.waitForSelector('[data-page="colab-birefnet"] >> text=astronaut');
   await page.waitForSelector('[data-page="colab-birefnet"] >> text=下載 Notebook');
@@ -224,8 +224,30 @@ try {
   // --- 1) 本機圖片打包（預設不去背：不動模型） ---
   await page.click('.tabs >> text=本機圖片打包');
   await page.setInputFiles('[data-tab="build"] input[type=file][accept="image/*"]', singles);
+  const buildTab = page.locator('[data-tab="build"]');
   const buildRemoval = page.locator('[data-tab="build"]').getByLabel('去背方式');
   if (await buildRemoval.inputValue() !== 'none') throw new Error('本機圖片打包應預設不去背');
+  const colorKeyScope = buildTab.getByLabel('單色色鍵去背範圍');
+  const colorKeyEdge = buildTab.getByLabel('單色色鍵邊緣處理');
+  if (await colorKeyScope.count() || await colorKeyEdge.count()) {
+    throw new Error('非單色色鍵模式不應顯示單色色鍵選項');
+  }
+  await buildRemoval.selectOption('color-key');
+  if (await colorKeyScope.inputValue() !== 'edge-connected' || await colorKeyEdge.inputValue() !== 'decontaminate') {
+    throw new Error('新單色色鍵預設應為外框連通＋清除色暈');
+  }
+  await colorKeyScope.selectOption('all-matching');
+  await colorKeyEdge.selectOption('hard');
+  await buildRemoval.selectOption('imgly');
+  if (await colorKeyScope.count() || await colorKeyEdge.count()) {
+    throw new Error('IMG.LY 不應顯示單色色鍵選項');
+  }
+  await buildRemoval.selectOption('color-key');
+  if (await colorKeyScope.inputValue() !== 'all-matching' || await colorKeyEdge.inputValue() !== 'hard') {
+    throw new Error('切換去背模式後應保留單色色鍵選項，但不能套用到其他模式');
+  }
+  await buildRemoval.selectOption('none');
+  results.push('✓ 單色色鍵專屬選項只在該模式顯示，且新預設與切換保留行為正確');
   await page.click('text=開始打包');
   await expectText('build', '全部符合 LINE 規格');
   const nImgs = await page.locator('[data-tab="build"] .sticker-grid img').count();
@@ -234,7 +256,6 @@ try {
   results.push('✓ 本機圖片 → 靜態包：驗證全過、預覽 10 張');
 
   // --- 1a) 同一批本機圖片切換 Big Sticker 規格 ---
-  const buildTab = page.locator('[data-tab="build"]');
   await buildTab.getByTestId('build-spec-select').selectOption('big');
   await buildTab.getByTestId('build-big-limits').waitFor();
   await buildTab.getByRole('button', { name: '開始打包', exact: true }).click();

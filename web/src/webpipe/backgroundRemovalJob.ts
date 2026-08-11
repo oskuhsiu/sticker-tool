@@ -1,3 +1,4 @@
+import { DEFAULT_COLOR_KEY_OPTIONS, type ColorKeyOptions } from '@core/colorKey.js';
 import type { ColabBirefnetConnectionConfig } from './colabBirefnet.js';
 import { removeBackgroundWithColabBirefnet } from './colabBirefnet.js';
 import {
@@ -26,6 +27,8 @@ export interface BackgroundRemovalJobOptions {
   mode: WebBackgroundRemovalMode;
   signal?: AbortSignal;
   pickColor?: [number, number, number] | null;
+  /** Valid only when mode is color-key. */
+  colorKey?: ColorKeyOptions;
   colabConfig?: ColabBirefnetConnectionConfig | null;
   onStatus?: (status: string | null) => void;
 }
@@ -52,6 +55,9 @@ export async function createBackgroundRemovalJob(
 ): Promise<BackgroundRemovalJob> {
   const { mode, signal, onStatus } = options;
   assertNotAborted(signal);
+  if (mode !== 'color-key' && options.colorKey !== undefined) {
+    throw new Error('單色色鍵選項只能用於 color-key 模式');
+  }
 
   let localRemover: LocalBirefnetRemover | null = null;
   if (mode === 'local-birefnet') {
@@ -80,6 +86,7 @@ export async function createBackgroundRemovalJob(
         return keyBackground(input, detectBackground(input), {
           autoRemove: true,
           pickColor: options.pickColor,
+          colorKey: options.colorKey ?? DEFAULT_COLOR_KEY_OPTIONS,
         });
       }
       if (mode === 'imgly') {

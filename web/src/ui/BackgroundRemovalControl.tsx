@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import type { ColorKeyOptions } from '@core/colorKey.js';
 import {
   LOCAL_BIREFNET_MODEL_BYTES,
   LOCAL_BIREFNET_PARAMETER_COUNT,
@@ -19,6 +20,50 @@ export interface BackgroundRemovalControlProps {
   color?: string;
   onColorChange?: (color: string) => void;
   colorHelp?: React.ReactNode;
+  colorKeyOptions: ColorKeyOptions;
+  onColorKeyOptionsChange: (options: ColorKeyOptions) => void;
+}
+
+export interface ColorKeyOptionFieldsProps {
+  value: ColorKeyOptions;
+  onChange: (options: ColorKeyOptions) => void;
+  disabled?: boolean;
+}
+
+export function ColorKeyOptionFields(props: ColorKeyOptionFieldsProps) {
+  return (
+    <Row>
+      <Field label="去背範圍">
+        <select
+          aria-label="單色色鍵去背範圍"
+          value={props.value.scope}
+          disabled={props.disabled}
+          onChange={(event) => props.onChange({
+            ...props.value,
+            scope: event.target.value as ColorKeyOptions['scope'],
+          })}
+        >
+          <option value="edge-connected">外框連通（保護主體）</option>
+          <option value="all-matching">全圖相近色（可能挖空主體）</option>
+        </select>
+      </Field>
+      <Field label="邊緣處理">
+        <select
+          aria-label="單色色鍵邊緣處理"
+          value={props.value.edge}
+          disabled={props.disabled}
+          onChange={(event) => props.onChange({
+            ...props.value,
+            edge: event.target.value as ColorKeyOptions['edge'],
+          })}
+        >
+          <option value="decontaminate">清除色暈（建議）</option>
+          <option value="soft">柔和邊緣（可能留背景圈）</option>
+          <option value="hard">硬邊（可能鋸齒）</option>
+        </select>
+      </Field>
+    </Row>
+  );
 }
 
 const imglyMib = Math.round(IMGLY_MEDIUM_MODEL_BYTES / 1024 / 1024);
@@ -97,8 +142,16 @@ export function BackgroundRemovalControl(props: BackgroundRemovalControlProps) {
         )}
       </Row>
       {props.value === 'color-key' && (
+        <ColorKeyOptionFields
+          value={props.colorKeyOptions}
+          onChange={props.onColorKeyOptionsChange}
+          disabled={props.disabled}
+        />
+      )}
+      {props.value === 'color-key' && (
         <div className="ai-local-notice" role="status">
-          <strong>單色色鍵：</strong>速度最快、不下載模型；主體含有背景色時，那些部位也可能被打穿。
+          <strong>單色色鍵：</strong>速度最快、不下載模型。外框連通可保留被主體包住的同色細節；全圖相近色也會清除
+          不與外框相連的區域，但可能挖空主體。清除色暈可減少背景圈；硬邊可能產生鋸齒。
         </div>
       )}
       {props.value === 'imgly' && (

@@ -10,6 +10,11 @@ import { ANIMATED_EMOJI_SPEC, ANIMATED_SPEC, allowedCounts, maxBounds } from '@c
 import { emojiFileName, stickerFileName } from '@core/naming.js';
 import { parseColor } from '@core/color.js';
 import {
+  DEFAULT_COLOR_KEY_OPTIONS,
+  copyColorKeyOptions,
+  type ColorKeyOptions,
+} from '@core/colorKey.js';
+import {
   validateAnimatedEmojiImage,
   validateAnimatedImage,
   validateCount,
@@ -104,6 +109,9 @@ function SheetMode() {
   const nameCustomizedRef = useRef(false);
   const [removeBgMode, setRemoveBgMode] = useState<WebBackgroundRemovalMode>('color-key');
   const [pickColor, setPickColor] = useState<[number, number, number] | null>(null);
+  const [colorKeyOptions, setColorKeyOptions] = useState<ColorKeyOptions>(
+    () => copyColorKeyOptions(DEFAULT_COLOR_KEY_OPTIONS),
+  );
   const [gridGuard, setGridGuard] = useState(true);
   const [loopPreview, setLoopPreview] = useState(true);
   const [maxColors, setMaxColors] = useState(0);
@@ -214,6 +222,7 @@ function SheetMode() {
         mode: removeBgMode,
         signal: abort.signal,
         pickColor: removeBgMode === 'color-key' ? pickColor : null,
+        ...(removeBgMode === 'color-key' ? { colorKey: colorKeyOptions } : {}),
         colabConfig: colabConnection?.config,
         onStatus: setModelStatus,
       });
@@ -241,10 +250,9 @@ function SheetMode() {
         align: 'grid',
         key: semantic
           ? { autoRemove: false, preRemovedLabel: removalJob.label }
-          : {
-              autoRemove: removeBgMode === 'color-key',
-              pickColor: removeBgMode === 'color-key' ? pickColor : null,
-            },
+          : removeBgMode === 'color-key'
+            ? { autoRemove: true, pickColor, colorKey: colorKeyOptions }
+            : { autoRemove: false },
       });
       reportCut(cut, logger);
 
@@ -323,6 +331,8 @@ function SheetMode() {
         disabled={busy}
         inferenceCount={sheetInferenceEstimate}
         colorHelp={<span className="layout-hint">可自動偵測，或在下方直接點選背景色</span>}
+        colorKeyOptions={colorKeyOptions}
+        onColorKeyOptionsChange={setColorKeyOptions}
       />
       <Row>
         <Field label="輸出規格">
@@ -524,6 +534,9 @@ function PackMode() {
   const [maxColorsPack, setMaxColorsPack] = useState(0);
   const [removeBgMode, setRemoveBgMode] = useState<WebBackgroundRemovalMode>('none');
   const [backgroundColor, setBackgroundColor] = useState('#00ff00');
+  const [colorKeyOptions, setColorKeyOptions] = useState<ColorKeyOptions>(
+    () => copyColorKeyOptions(DEFAULT_COLOR_KEY_OPTIONS),
+  );
   const [strokeOn, setStrokeOn] = useState(false);
   const [strokeWidth, setStrokeWidth] = useState(8);
   const [strokeColor, setStrokeColor] = useState('#ffffff');
@@ -620,6 +633,7 @@ function PackMode() {
         pickColor: removeBgMode === 'color-key'
           ? [parsedColor.r, parsedColor.g, parsedColor.b]
           : null,
+        ...(removeBgMode === 'color-key' ? { colorKey: colorKeyOptions } : {}),
         colabConfig: colabConnection?.config,
         onStatus: setModelStatus,
       });
@@ -823,6 +837,8 @@ function PackMode() {
         inferenceCount={inferenceEstimate}
         color={backgroundColor}
         onColorChange={setBackgroundColor}
+        colorKeyOptions={colorKeyOptions}
+        onColorKeyOptionsChange={setColorKeyOptions}
       />
       <Row>
         <Field label="主體穩定化">

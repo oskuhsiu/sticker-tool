@@ -4,6 +4,7 @@ import { useRef, useState } from 'react';
 import { BIG_STICKER_SPEC, EMOJI_SPEC, STATIC_SPEC, ZIP_MAX_BYTES, allowedCounts, maxBounds } from '@core/spec.js';
 import { emojiFileName, stickerFileName } from '@core/naming.js';
 import { parseColor } from '@core/color.js';
+import { DEFAULT_COLOR_KEY_OPTIONS, type ColorKeyOptions } from '@core/colorKey.js';
 import { validateCount, validateEmojiPack, validatePack } from '@core/validate.js';
 import { decodeBlob, yieldToUI } from '../webpipe/raster.js';
 import {
@@ -31,6 +32,7 @@ export function BuildTab() {
   const [name, setName] = useState('My Stickers');
   const [removeBgMode, setRemoveBgMode] = useState<WebBackgroundRemovalMode>('none');
   const [backgroundColor, setBackgroundColor] = useState('#00ff00');
+  const [colorKeyOptions, setColorKeyOptions] = useState<ColorKeyOptions>(() => ({ ...DEFAULT_COLOR_KEY_OPTIONS }));
   const [strokeOn, setStrokeOn] = useState(false);
   const [strokeWidth, setStrokeWidth] = useState(8);
   const [strokeColor, setStrokeColor] = useState('#ffffff');
@@ -80,6 +82,7 @@ export function BuildTab() {
         pickColor: removeBgMode === 'color-key'
           ? [parsedColor.r, parsedColor.g, parsedColor.b]
           : null,
+        ...(removeBgMode === 'color-key' ? { colorKey: colorKeyOptions } : {}),
         colabConfig: colabConnection?.config,
         onStatus: setModelStatus,
       });
@@ -268,6 +271,8 @@ export function BuildTab() {
         inferenceCount={count}
         color={backgroundColor}
         onColorChange={setBackgroundColor}
+        colorKeyOptions={colorKeyOptions}
+        onColorKeyOptionsChange={setColorKeyOptions}
       />
       <Row>
         <Field label="白色描邊">
