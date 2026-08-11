@@ -9,7 +9,8 @@ import {
   ZipPassThrough,
 } from 'fflate';
 import { planVideoOutputCanvas, type VideoGridPlan } from '@core/videoCrop.js';
-import { LEGACY_COLOR_KEY_OPTIONS, isColorKeyOptions, type ColorKeyOptions } from '@core/colorKey.js';
+import { LEGACY_COLOR_KEY_OPTIONS, type ColorKeyOptions } from '@core/colorKey.js';
+import { isColorKeyOptions } from '@core/validate.js';
 import { ANIMATED_EMOJI_SPEC, ANIMATED_SPEC, POPUP_STICKER_SPEC } from '@core/spec.js';
 import {
   VIDEO_PROJECT_SCHEMA,
@@ -55,7 +56,7 @@ interface RenderManifestV2 {
   errors: string[];
 }
 
-export interface VideoProjectManifestV4 {
+export interface VideoProjectManifestV5 {
   schema: typeof VIDEO_PROJECT_SCHEMA;
   version: typeof VIDEO_PROJECT_VERSION;
   target: VideoOutputTarget;
@@ -98,9 +99,10 @@ export interface VideoProjectManifestV4 {
 }
 
 export interface VideoProjectRuntime {
-  manifest: VideoProjectManifestV4;
+  manifest: VideoProjectManifestV5;
   master: MasterApngSet;
   current: Array<VideoRenderSnapshot | null>;
+  migrationNotes: string[];
 }
 
 interface VideoProjectManifestV1 {
@@ -248,7 +250,7 @@ export async function buildVideoProjectZip(args: {
   master: MasterApngSet;
   settings: VideoStickerSettings[];
   current: Array<VideoRenderSnapshot | null>;
-}): Promise<{ zip: Uint8Array; manifest: VideoProjectManifestV4 }> {
+}): Promise<{ zip: Uint8Array; manifest: VideoProjectManifestV5 }> {
   if (args.master.stickers.length !== args.current.length || args.current.length !== args.settings.length) {
     throw new Error('Project ZIP 無法建立：master、settings、current 張數不一致');
   }
@@ -297,7 +299,7 @@ export async function buildVideoProjectZip(args: {
       errors: [...snapshot.errors],
     });
   }
-  const manifest: VideoProjectManifestV4 = {
+  const manifest: VideoProjectManifestV5 = {
     schema: VIDEO_PROJECT_SCHEMA,
     version: VIDEO_PROJECT_VERSION,
     target: args.target,
@@ -327,14 +329,14 @@ export async function buildVideoProjectZip(args: {
       decoder: 'mediabunny@1.51.0',
       demuxer: 'mediabunny@1.51.0',
       removers: {
-        'color-key': 'browser-color-key@2',
+        'color-key': 'browser-color-key@3',
         imgly: '@imgly/background-removal@1.4.5',
         'local-birefnet': 'studioludens/birefnet-lite-512@4a3c40c36c94093cc1e724d9ea428b8fa4b57dc7',
         'colab-birefnet': 'user-session',
       },
     },
   };
-  assertV4Manifest(manifest);
+  assertV5Manifest(manifest);
   const report = strToU8(JSON.stringify({
     generatedAt: new Date().toISOString(),
     target: manifest.target,
@@ -646,9 +648,9 @@ function assertGrid(value: unknown, source: Record<string, unknown>): void {
   });
 }
 
-function assertV4Manifest(value: unknown): asserts value is VideoProjectManifestV4 {
+function assertV5Manifest(value: unknown): asserts value is VideoProjectManifestV5 {
   if (!isVideoProjectManifestHeader(value) || value.version !== VIDEO_PROJECT_VERSION) throw new Error('不支援的 Project ZIP schema 或版本');
-  const manifest = value as Partial<VideoProjectManifestV4>;
+  const manifest = value as Partial<VideoProjectManifestV5>;
   if (
     !['animated-sticker', 'animated-emoji', 'popup'].includes(manifest.target ?? '') ||
     manifest.sourceTimingUnit !== 'microseconds' ||
@@ -665,7 +667,7 @@ function assertV4Manifest(value: unknown): asserts value is VideoProjectManifest
     manifest.settings.length !== manifest.master.stickers.length ||
     manifest.current.length !== manifest.master.stickers.length
   ) {
-    throw new Error('Project ZIP V4 manifest 缺少或含有無效的必要欄位');
+    throw new Error('Project ZIP V5 manifest 缺少或含有無效的必要欄位');
   }
   const createdAt = Date.parse(requireString(manifest.createdAt, 'createdAt'));
   if (!Number.isFinite(createdAt)) throw new Error('createdAt 不是有效日期');
@@ -721,10 +723,12 @@ function assertV4Manifest(value: unknown): asserts value is VideoProjectManifest
   requireRecord(versions.removers, 'versions.removers');
 }
 
-async function restoreV4(
-  manifest: VideoProjectManifestV4,
+async function restoreV5(
+  manifest: VideoProjectManifestV5,
   archive: ArchiveContents,
   store: VideoMasterStore,
+  invalidatedColorKeyRenders: ReadonlySet<number> = new Set(),
+  migrationNotes: string[] = [],
 ): Promise<VideoProjectRuntime> {
   const { retained } = archive;
   requireRetained(retained, REPORT_PATH);
@@ -831,15 +835,17 @@ async function restoreV4(
     ) {
       throw new Error(`current[${renderIndex}] final-byte evidence 與 manifest 不一致`);
     }
-    current.push({
-      png,
-      info: evidence.info,
-      settings: cloneVideoStickerDraft(render.settings),
-      metrics: { ...render.metrics },
-      selection: { ...render.selection },
-      notes: [...render.notes],
-      errors: [...render.errors],
-    });
+    current.push(invalidatedColorKeyRenders.has(renderIndex)
+      ? null
+      : {
+          png,
+          info: evidence.info,
+          settings: cloneVideoStickerDraft(render.settings),
+          metrics: { ...render.metrics },
+          selection: { ...render.selection },
+          notes: [...render.notes],
+          errors: [...render.errors],
+        });
   }
   for (const path of archive.paths) {
     if (!declaredPaths.has(path)) throw new Error(`Project ZIP 含未宣告 entry：${path}`);
@@ -847,8 +853,14 @@ async function restoreV4(
   for (const path of declaredPaths) {
     if (!archive.paths.has(path)) throw new Error(`Project ZIP 缺少 manifest 宣告 entry：${path}`);
   }
+  const runtimeManifest = invalidatedColorKeyRenders.size > 0
+    ? {
+        ...manifest,
+        current: manifest.current.map((render, index) => invalidatedColorKeyRenders.has(index) ? null : render),
+      }
+    : manifest;
   return {
-    manifest,
+    manifest: runtimeManifest,
     master: {
       rangeStartUs: manifest.source.editableStartUs,
       rangeEndUs: manifest.source.editableEndUs,
@@ -861,6 +873,7 @@ async function restoreV4(
       store,
     },
     current,
+    migrationNotes,
   };
 }
 
@@ -878,7 +891,7 @@ function upgradeV2(value: unknown): unknown {
   };
 }
 
-/** V3 color-keying had implicit global/soft behavior. Preserve those rendered bytes. */
+/** V3 color-keying had implicit global/soft behavior; make it explicit before the V4 safety upgrade. */
 function upgradeV3(value: unknown): unknown {
   if (!isVideoProjectManifestHeader(value) || value.version !== 3 || !isRecord(value)) return value;
   const project = value as Record<string, unknown>;
@@ -894,13 +907,108 @@ function upgradeV3(value: unknown): unknown {
   };
   return {
     ...project,
-    version: VIDEO_PROJECT_VERSION,
+    version: 4,
     settings: Array.isArray(project.settings) ? project.settings.map(upgradeSettings) : project.settings,
     current: Array.isArray(project.current)
       ? project.current.map((render: unknown) => isRecord(render)
         ? { ...render, settings: upgradeSettings(render.settings) }
         : render)
       : project.current,
+  };
+}
+
+interface VideoProjectUpgrade {
+  project: unknown;
+  invalidatedColorKeyRenders: Set<number>;
+  migrationNotes: string[];
+}
+
+/**
+ * V5 retires whole-raster keying. Safe edge-connected V4 renders keep their bytes;
+ * global renders are verified during import but removed from the editable runtime.
+ */
+function upgradeV4(value: unknown): VideoProjectUpgrade {
+  const unchanged: VideoProjectUpgrade = {
+    project: value,
+    invalidatedColorKeyRenders: new Set(),
+    migrationNotes: [],
+  };
+  if (!isVideoProjectManifestHeader(value) || value.version !== 4 || !isRecord(value)) return unchanged;
+  const project = value as Record<string, unknown>;
+
+  const migrateSettings = (candidate: unknown): { value: unknown; unsafeGlobal: boolean } => {
+    if (!isRecord(candidate) || !isRecord(candidate.background)) {
+      return { value: candidate, unsafeGlobal: false };
+    }
+    const background = candidate.background;
+    if (background.mode !== 'color-key' || !isRecord(background.colorKey)) {
+      return { value: candidate, unsafeGlobal: false };
+    }
+    const scope = background.colorKey.scope;
+    if (scope !== 'edge-connected' && scope !== 'all-matching') {
+      return { value: candidate, unsafeGlobal: false };
+    }
+    return {
+      value: {
+        ...candidate,
+        background: {
+          ...background,
+          colorKey: { edge: background.colorKey.edge },
+        },
+      },
+      unsafeGlobal: scope === 'all-matching',
+    };
+  };
+
+  const settings = Array.isArray(project.settings)
+    ? project.settings.map(migrateSettings)
+    : [];
+  const current = Array.isArray(project.current)
+    ? project.current.map((render: unknown) => {
+        if (!isRecord(render)) return { value: render, unsafeGlobal: false };
+        const migrated = migrateSettings(render.settings);
+        return {
+          value: { ...render, settings: migrated.value },
+          unsafeGlobal: migrated.unsafeGlobal,
+        };
+      })
+    : [];
+  const invalidatedColorKeyRenders = new Set<number>();
+  for (let index = 0; index < current.length; index++) {
+    if (current[index]?.unsafeGlobal) {
+      invalidatedColorKeyRenders.add(index);
+    }
+  }
+  const versions = isRecord(project.versions) ? project.versions : null;
+  const removers = versions && isRecord(versions.removers) ? versions.removers : null;
+  const migratedGlobalDrafts = settings.filter((entry) => entry.unsafeGlobal).length;
+  const invalidatedRenderCount = invalidatedColorKeyRenders.size;
+  const migrationNotes: string[] = [];
+  if (migratedGlobalDrafts > 0) {
+    migrationNotes.push(`舊 Project 的 ${migratedGlobalDrafts} 個全圖相近色色鍵草稿已改為外框連通。`);
+  }
+  if (invalidatedRenderCount > 0) {
+    migrationNotes.push(
+      `舊 Project 中 ${invalidatedRenderCount} 張由全圖相近色色鍵產生的成品預覽已清除，請以外框連通重新產生。`,
+    );
+  }
+  return {
+    project: {
+      ...project,
+      version: VIDEO_PROJECT_VERSION,
+      settings: Array.isArray(project.settings) ? settings.map((entry) => entry.value) : project.settings,
+      current: Array.isArray(project.current) ? current.map((entry) => entry.value) : project.current,
+      ...(versions && removers
+        ? {
+            versions: {
+              ...versions,
+              removers: { ...removers, 'color-key': 'browser-color-key@3' },
+            },
+          }
+        : {}),
+    },
+    invalidatedColorKeyRenders,
+    migrationNotes,
   };
 }
 
@@ -1005,7 +1113,7 @@ async function restoreV1(
     frameCount: legacy.master.masterFrameCount,
     averageFps: legacy.master.masterFrameCount / Math.max(0.001, legacy.source.durationMs / 1000),
   };
-  const manifest: VideoProjectManifestV4 = {
+  const manifest: VideoProjectManifestV5 = {
     schema: VIDEO_PROJECT_SCHEMA,
     version: VIDEO_PROJECT_VERSION,
     target: 'animated-sticker',
@@ -1056,6 +1164,7 @@ async function restoreV1(
       store,
     },
     current,
+    migrationNotes: [],
   };
 }
 
@@ -1068,9 +1177,15 @@ export async function importVideoProjectZip(zipBytes: Uint8Array): Promise<Video
     const archive = await streamArchive(zipBytes, store);
     const parsed = parseJson(requireRetained(archive.retained, MANIFEST_PATH), 'Project ZIP 的 sticker-project.json');
     if (isV1(parsed)) return restoreV1(parsed, archive.retained, store);
-    const upgraded = upgradeV3(upgradeV2(parsed));
-    assertV4Manifest(upgraded);
-    return restoreV4(upgraded, archive, store);
+    const upgraded = upgradeV4(upgradeV3(upgradeV2(parsed)));
+    assertV5Manifest(upgraded.project);
+    return restoreV5(
+      upgraded.project,
+      archive,
+      store,
+      upgraded.invalidatedColorKeyRenders,
+      upgraded.migrationNotes,
+    );
   } catch (error) {
     await store.clear();
     throw error;

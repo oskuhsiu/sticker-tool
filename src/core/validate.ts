@@ -33,6 +33,22 @@ import {
   popupStaticFilePath,
 } from './naming.js';
 import type { ValidationIssue, ValidationResult } from './types.js';
+import type { ColorKeyOptions } from './colorKey.js';
+
+export function isColorKeyOptions(value: unknown): value is ColorKeyOptions {
+  if (!value || typeof value !== 'object') return false;
+  const options = value as Partial<ColorKeyOptions> & { scope?: unknown };
+  return (
+    options.scope === undefined &&
+    (options.edge === 'soft' || options.edge === 'decontaminate' || options.edge === 'hard')
+  );
+}
+
+export function assertSupportedColorKeyOptions(value: unknown): asserts value is ColorKeyOptions {
+  if (!isColorKeyOptions(value)) {
+    throw new Error('單色色鍵不支援全圖相近色去背；請使用外框連通去背');
+  }
+}
 
 /** 平台無關的影像中繼資料（pipeline 蒐集後餵入驗證） */
 export interface ImageInfo {

@@ -1,5 +1,5 @@
 import { adjacentDuplicateIndices, coalesceAdjacentFrames, equalRgbaFrames } from '@core/frameSequence.js';
-import { isColorKeyOptions } from '@core/colorKey.js';
+import { isColorKeyOptions } from '@core/validate.js';
 import { ANIMATED_EMOJI_SPEC, ANIMATED_SPEC, POPUP_STICKER_SPEC } from '@core/spec.js';
 import {
   candidateExpansionOrder,

@@ -1,4 +1,5 @@
 import { DEFAULT_COLOR_KEY_OPTIONS, type ColorKeyOptions } from '@core/colorKey.js';
+import { assertSupportedColorKeyOptions } from '@core/validate.js';
 import type { ColabBirefnetConnectionConfig } from './colabBirefnet.js';
 import { removeBackgroundWithColabBirefnet } from './colabBirefnet.js';
 import {
@@ -58,6 +59,7 @@ export async function createBackgroundRemovalJob(
   if (mode !== 'color-key' && options.colorKey !== undefined) {
     throw new Error('單色色鍵選項只能用於 color-key 模式');
   }
+  if (mode === 'color-key' && options.colorKey !== undefined) assertSupportedColorKeyOptions(options.colorKey);
 
   let localRemover: LocalBirefnetRemover | null = null;
   if (mode === 'local-birefnet') {

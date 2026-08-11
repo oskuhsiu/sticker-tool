@@ -111,7 +111,6 @@ function settingsEqual(a: VideoStickerSettings, b: VideoStickerSettings): boolea
     a.background.color === b.background.color &&
     a.background.tolerance === b.background.tolerance &&
     (a.background.mode !== 'color-key' || (
-      a.background.colorKey?.scope === b.background.colorKey?.scope &&
       a.background.colorKey?.edge === b.background.colorKey?.edge
     ))
   );
@@ -140,7 +139,7 @@ export function videoRemoverVersion(
 ): string {
   if (mode === 'none') return 'none@1';
   if (!label) throw new Error(`${mode} remover 尚未啟用`);
-  if (mode === 'color-key') return `${label}@2`;
+  if (mode === 'color-key') return `${label}@3`;
   if (mode !== 'colab-birefnet') return `${label}@1`;
   if (!Number.isSafeInteger(colabGeneration) || colabGeneration === null || colabGeneration < 1) {
     throw new Error('Colab 多模型去背 connection generation 無效');
@@ -609,7 +608,7 @@ export function VideoTab() {
         settings: project.settings,
         current: project.current,
       });
-      downloadBytes(`${safeName(project.name)}.video-apng-project-v4.zip`, built.zip, 'application/zip');
+      downloadBytes(`${safeName(project.name)}.video-apng-project-v5.zip`, built.zip, 'application/zip');
     } catch (error) {
       logger.log('err', error instanceof Error ? error.message : String(error));
     } finally {
@@ -669,7 +668,8 @@ export function VideoTab() {
       setLinePack(null);
       logger.log('ok', manifest.legacy
         ? '已以 sampled/baked legacy 限制匯入 V1 Project，未製造缺失 frames 或 raw RGB'
-        : `已恢復 Project V4（${videoTargetLabel(manifest.target)}）的 ${manifest.master.sourceFrameCount} 個 sample refs，未啟動影片 decoder`);
+        : `已恢復 Project V5（${videoTargetLabel(manifest.target)}）的 ${manifest.master.sourceFrameCount} 個 sample refs，未啟動影片 decoder`);
+      for (const note of imported.migrationNotes) logger.log('warn', note);
     } catch (error) {
       await imported?.master.store.clear();
       logger.log('err', error instanceof Error ? error.message : String(error));
@@ -983,7 +983,7 @@ export function VideoTab() {
           </div>
           <div className="run-row">
             <button className="btn primary" disabled={busy || dirtyCount === 0} onClick={() => void rerenderAll()}>依序產生所有 dirty previews</button>
-            <button className="btn" disabled={busy} onClick={() => void downloadProject()}>下載 Project ZIP V4</button>
+            <button className="btn" disabled={busy} onClick={() => void downloadProject()}>下載 Project ZIP V5</button>
             <button className="btn" disabled={busy} onClick={() => void makeLinePack()}>建立 {videoTargetLabel(project.target)} LINE ZIP / 最終驗證</button>
             {busy && <button className="btn" onClick={() => abortRef.current?.abort()}>取消</button>}
             {progress && <span className="model-status">{progress}</span>}

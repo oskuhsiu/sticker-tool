@@ -33,20 +33,6 @@ export interface ColorKeyOptionFieldsProps {
 export function ColorKeyOptionFields(props: ColorKeyOptionFieldsProps) {
   return (
     <Row>
-      <Field label="去背範圍">
-        <select
-          aria-label="單色色鍵去背範圍"
-          value={props.value.scope}
-          disabled={props.disabled}
-          onChange={(event) => props.onChange({
-            ...props.value,
-            scope: event.target.value as ColorKeyOptions['scope'],
-          })}
-        >
-          <option value="edge-connected">外框連通（保護主體）</option>
-          <option value="all-matching">全圖相近色（可能挖空主體）</option>
-        </select>
-      </Field>
       <Field label="邊緣處理">
         <select
           aria-label="單色色鍵邊緣處理"
@@ -150,8 +136,8 @@ export function BackgroundRemovalControl(props: BackgroundRemovalControlProps) {
       )}
       {props.value === 'color-key' && (
         <div className="ai-local-notice" role="status">
-          <strong>單色色鍵：</strong>速度最快、不下載模型。外框連通可保留被主體包住的同色細節；全圖相近色也會清除
-          不與外框相連的區域，但可能挖空主體。清除色暈可減少背景圈；硬邊可能產生鋸齒。
+          <strong>單色色鍵：</strong>速度最快、不下載模型，只清除與外框四向連通的近色背景，以保留被主體包住的
+          同色細節；封閉的背景洞可能保留。清除色暈可減少背景圈；硬邊可能產生鋸齒。
         </div>
       )}
       {props.value === 'imgly' && (

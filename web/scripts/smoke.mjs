@@ -233,21 +233,20 @@ try {
     throw new Error('非單色色鍵模式不應顯示單色色鍵選項');
   }
   await buildRemoval.selectOption('color-key');
-  if (await colorKeyScope.inputValue() !== 'edge-connected' || await colorKeyEdge.inputValue() !== 'decontaminate') {
-    throw new Error('新單色色鍵預設應為外框連通＋清除色暈');
+  if (await colorKeyScope.count() || await colorKeyEdge.inputValue() !== 'decontaminate') {
+    throw new Error('單色色鍵應固定外框連通，且預設清除色暈');
   }
-  await colorKeyScope.selectOption('all-matching');
   await colorKeyEdge.selectOption('hard');
   await buildRemoval.selectOption('imgly');
   if (await colorKeyScope.count() || await colorKeyEdge.count()) {
     throw new Error('IMG.LY 不應顯示單色色鍵選項');
   }
   await buildRemoval.selectOption('color-key');
-  if (await colorKeyScope.inputValue() !== 'all-matching' || await colorKeyEdge.inputValue() !== 'hard') {
-    throw new Error('切換去背模式後應保留單色色鍵選項，但不能套用到其他模式');
+  if (await colorKeyScope.count() || await colorKeyEdge.inputValue() !== 'hard') {
+    throw new Error('切換去背模式後應保留單色色鍵邊緣選項，但不能套用到其他模式');
   }
   await buildRemoval.selectOption('none');
-  results.push('✓ 單色色鍵專屬選項只在該模式顯示，且新預設與切換保留行為正確');
+  results.push('✓ 單色色鍵固定外框連通；邊緣選項只在該模式顯示且切換後保留');
   await page.click('text=開始打包');
   await expectText('build', '全部符合 LINE 規格');
   const nImgs = await page.locator('[data-tab="build"] .sticker-grid img').count();

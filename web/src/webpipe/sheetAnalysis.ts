@@ -1,7 +1,7 @@
 /**
  * 組圖切格（瀏覽器版）：偵測背景 → 去背成透明 → 由前景占用剖面規劃「參照」切線
  * → 元件式抽格（@core/cells：格線僅參照、逐格偵測實際範圍、越線不切斷、空格回報）。
- * 綠幕門檻與 CLI 版一致；瀏覽器色鍵可選外框連通或全圖相近色範圍。
+ * 綠幕門檻與 CLI 版一致；瀏覽器色鍵只處理外框四向連通的背景區域。
  * 切線規劃與抽格直接重用 @core 的純函式。
  *
  * 去背一律走色鍵（綠幕／單色），不用 @imgly 語意模型——sheet 流程曾卡在 ~80MB
@@ -13,8 +13,8 @@ import { extractCells, type CellMeta } from '@core/cells.js';
 import {
   DEFAULT_COLOR_KEY_OPTIONS,
   type ColorKeyOptions,
-  type ColorKeyScope,
 } from '@core/colorKey.js';
+import { assertSupportedColorKeyOptions } from '@core/validate.js';
 import type { Raster } from './raster.js';
 
 export type Background =
@@ -95,21 +95,14 @@ export function detectBackground(src: Raster): Background {
 const KEY_LO = 12;
 const KEY_HI = 90;
 
-function selectByScope(
+function selectEdgeConnected(
   width: number,
   height: number,
-  scope: ColorKeyScope,
   isCandidate: (pixel: number) => boolean,
 ): Uint8Array {
   const pixels = width * height;
   // 0 = unseen, 1 = rejected, 2 = selected.
   const state = new Uint8Array(pixels);
-  if (scope === 'all-matching') {
-    for (let pixel = 0; pixel < pixels; pixel++) {
-      state[pixel] = isCandidate(pixel) ? 2 : 1;
-    }
-    return state;
-  }
   if (pixels === 0) return state;
 
   // Rejected pixels are remembered so a non-candidate touching several selected
@@ -148,13 +141,14 @@ function selectByScope(
 }
 
 /**
- * 綠幕色鍵。greenness 候選可限制在外框 4 向連通區；soft 保留 RGB，
+ * 綠幕色鍵。greenness 候選只選取外框 4 向連通區；soft 保留 RGB，
  * decontaminate 套用既有綠色 despill，hard 則把候選直接設為透明。
  */
 export function chromaKeyGreen(src: Raster, options: ColorKeyOptions): Raster {
+  assertSupportedColorKeyOptions(options);
   const { data, width: W, height: H } = src;
   const out = new Uint8ClampedArray(data);
-  const selected = selectByScope(W, H, options.scope, (pixel) => {
+  const selected = selectEdgeConnected(W, H, (pixel) => {
     const i = pixel * 4;
     const r = data[i]!;
     const g = data[i + 1]!;
@@ -182,8 +176,8 @@ export function chromaKeyGreen(src: Raster, options: ColorKeyOptions): Raster {
 }
 
 /**
- * 單色色鍵：候選是與背景色 Chebyshev 距離 < HI 的像素；scope 決定選取
- * 全部候選，或只選取與外框 4 向連通者。edge 決定 soft matte、去色暈或 hard alpha。
+ * 單色色鍵：候選是與背景色 Chebyshev 距離 < HI、且與外框 4 向連通的像素。
+ * edge 決定 soft matte、去色暈或 hard alpha。
  */
 const SOLID_LO = 20;
 const SOLID_HI = 64;
@@ -192,6 +186,7 @@ export function chromaKeySolid(
   color: [number, number, number],
   options: ColorKeyOptions,
 ): Raster {
+  assertSupportedColorKeyOptions(options);
   const { data, width: W, height: H } = src;
   const [r0, g0, b0] = color;
   const pixels = W * H;
@@ -206,7 +201,7 @@ export function chromaKeySolid(
       Math.abs(data[i + 2]! - b0),
     );
   };
-  const selected = selectByScope(W, H, options.scope, (pixel) => distance(pixel) < SOLID_HI);
+  const selected = selectEdgeConnected(W, H, (pixel) => distance(pixel) < SOLID_HI);
   for (let p = 0; p < pixels; p++) {
     if (selected[p] !== 2) continue;
     const i = p * 4;
@@ -271,7 +266,6 @@ export async function analyzeSheet(
 ): Promise<SheetAnalysis> {
   const { cols, rows } = grid;
   const warnings: string[] = [];
-  const colorKey = key.colorKey ?? DEFAULT_COLOR_KEY_OPTIONS;
   const background = detectBackground(src);
   const keyed = keyBackground(src, background, key);
   const { colOcc, rowOcc } = foregroundProfiles(keyed);
@@ -296,18 +290,14 @@ export async function analyzeSheet(
   } else if (key.pickColor) {
     const [r, g, b] = key.pickColor;
     warnings.push(
-      `以點選色 rgb(${r},${g},${b}) 做${colorKey.scope === 'edge-connected' ? '外框連通' : '全圖相近色'}單色色鍵去背；` +
-        (colorKey.scope === 'edge-connected'
-          ? '被非背景色完整包住的同色細節會保留，封閉的背景洞也可能保留。'
-          : '不與外框相連的近色也會移除，主體內的相近色可能被挖空。'),
+      `以點選色 rgb(${r},${g},${b}) 做外框連通單色色鍵去背；` +
+        '被非背景色完整包住的同色細節會保留，封閉的背景洞也可能保留。',
     );
   } else if (background.kind === 'opaque') {
     const [r, g, b] = background.color;
     warnings.push(
-      `背景非透明（近 rgb(${r | 0},${g | 0},${b | 0})）：以邊框平均色做${colorKey.scope === 'edge-connected' ? '外框連通' : '全圖相近色'}單色色鍵去背。` +
-        (colorKey.scope === 'edge-connected'
-          ? '被非背景色完整包住的同色細節會保留，封閉的背景洞也可能保留；'
-          : '不與外框相連的近色也會移除，主體內的相近色可能被挖空；') +
+      `背景非透明（近 rgb(${r | 0},${g | 0},${b | 0})）：以邊框平均色做外框連通單色色鍵去背。` +
+        '被非背景色完整包住的同色細節會保留，封閉的背景洞也可能保留；' +
         `若自動顏色不準，可改用「從圖選色」指定背景色。`,
     );
   }
