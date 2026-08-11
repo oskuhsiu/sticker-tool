@@ -27,7 +27,9 @@ import { decodeMasterPoster, type MasterApngSet } from '../webpipe/masterApng.js
 import { encodePng } from '../webpipe/png.js';
 import {
   inspectAnimatedBytes,
+  loadVideoRepresentativeFrames,
   processMasterApngSticker,
+  type VideoRepresentativeFrame,
   type VideoRenderSnapshot,
   type VideoStickerSettings,
 } from '../webpipe/processMasterApngSticker.js';
@@ -111,7 +113,11 @@ function settingsEqual(a: VideoStickerSettings, b: VideoStickerSettings): boolea
     a.background.color === b.background.color &&
     a.background.tolerance === b.background.tolerance &&
     (a.background.mode !== 'color-key' || (
-      a.background.colorKey?.edge === b.background.colorKey?.edge
+      b.background.mode === 'color-key' &&
+      a.background.colorKey.scope === b.background.colorKey.scope &&
+      (a.background.colorKey.scope === 'edge-connected'
+        ? b.background.colorKey.scope === 'edge-connected' && a.background.colorKey.edge === b.background.colorKey.edge
+        : b.background.colorKey.scope === 'whole-image' && a.background.colorKey.tolerancePercent === b.background.colorKey.tolerancePercent)
     ))
   );
 }
@@ -139,7 +145,7 @@ export function videoRemoverVersion(
 ): string {
   if (mode === 'none') return 'none@1';
   if (!label) throw new Error(`${mode} remover 尚未啟用`);
-  if (mode === 'color-key') return `${label}@3`;
+  if (mode === 'color-key') return `${label}@4`;
   if (mode !== 'colab-birefnet') return `${label}@1`;
   if (!Number.isSafeInteger(colabGeneration) || colabGeneration === null || colabGeneration < 1) {
     throw new Error('Colab 多模型去背 connection generation 無效');
@@ -220,6 +226,9 @@ export function VideoTab() {
   const [project, setProject] = useState<VideoProjectState | null>(null);
   const [posters, setPosters] = useState<Uint8Array[]>([]);
   const [activeIndex, setActiveIndex] = useState(0);
+  const [representativeFrames, setRepresentativeFrames] = useState<VideoRepresentativeFrame[]>([]);
+  const [representativeFramesLoading, setRepresentativeFramesLoading] = useState(false);
+  const [representativeFramesError, setRepresentativeFramesError] = useState<string | null>(null);
   const [linePack, setLinePack] = useState<LinePackState | null>(null);
   const [invalidDialogOpen, setInvalidDialogOpen] = useState(false);
   const [commonDurationMs, setCommonDurationMs] = useState<VideoStickerSettings['perLoopDurationMs']>(2000);
@@ -244,6 +253,54 @@ export function VideoTab() {
     });
     setLinePack(null);
   }, [colabGeneration]);
+
+  const activeSettings = project?.settings[activeIndex];
+  const activeMaster = project?.master.stickers[activeIndex];
+  const activeStore = project?.master.store;
+  const activeWholeImagePreview = activeSettings?.background.mode === 'color-key'
+    && activeSettings.background.colorKey.scope === 'whole-image';
+  useEffect(() => {
+    let cancelled = false;
+    if (
+      !activeSettings ||
+      !activeMaster ||
+      !activeStore ||
+      !activeWholeImagePreview ||
+      project?.master.backgroundStage !== 'raw'
+    ) {
+      setRepresentativeFrames([]);
+      setRepresentativeFramesLoading(false);
+      setRepresentativeFramesError(null);
+      return () => { cancelled = true; };
+    }
+    setRepresentativeFramesLoading(true);
+    setRepresentativeFramesError(null);
+    void loadVideoRepresentativeFrames({
+      master: activeMaster,
+      store: activeStore,
+      rangeStartUs: activeSettings.rangeStartUs,
+      rangeEndUs: activeSettings.rangeEndUs,
+      targetFrames: activeSettings.targetFrames,
+    }).then((frames) => {
+      if (!cancelled) setRepresentativeFrames(frames);
+    }, (error) => {
+      if (!cancelled) {
+        setRepresentativeFrames([]);
+        setRepresentativeFramesError(error instanceof Error ? error.message : String(error));
+      }
+    }).finally(() => {
+      if (!cancelled) setRepresentativeFramesLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [
+    activeMaster,
+    activeSettings?.rangeStartUs,
+    activeSettings?.rangeEndUs,
+    activeSettings?.targetFrames,
+    activeWholeImagePreview,
+    activeStore,
+    project?.master.backgroundStage,
+  ]);
 
   function resetSourceCuts(sourceWidth: number, sourceHeight: number, nextCols: number, nextRows: number): void {
     try {
@@ -608,7 +665,7 @@ export function VideoTab() {
         settings: project.settings,
         current: project.current,
       });
-      downloadBytes(`${safeName(project.name)}.video-apng-project-v5.zip`, built.zip, 'application/zip');
+      downloadBytes(`${safeName(project.name)}.video-apng-project-v6.zip`, built.zip, 'application/zip');
     } catch (error) {
       logger.log('err', error instanceof Error ? error.message : String(error));
     } finally {
@@ -668,7 +725,7 @@ export function VideoTab() {
       setLinePack(null);
       logger.log('ok', manifest.legacy
         ? '已以 sampled/baked legacy 限制匯入 V1 Project，未製造缺失 frames 或 raw RGB'
-        : `已恢復 Project V5（${videoTargetLabel(manifest.target)}）的 ${manifest.master.sourceFrameCount} 個 sample refs，未啟動影片 decoder`);
+        : `已恢復 Project V6（${videoTargetLabel(manifest.target)}）的 ${manifest.master.sourceFrameCount} 個 sample refs，未啟動影片 decoder`);
       for (const note of imported.migrationNotes) logger.log('warn', note);
     } catch (error) {
       await imported?.master.store.clear();
@@ -969,6 +1026,9 @@ export function VideoTab() {
               legacyBaked={project.master.backgroundStage === 'baked-legacy'}
               busy={busy}
               dirty={isDirty(activeIndex)}
+              representativeFrames={representativeFrames}
+              representativeFramesLoading={representativeFramesLoading}
+              representativeFramesError={representativeFramesError}
               onChange={(settings) => {
                 setProject((previous) => {
                   if (!previous) return previous;
@@ -983,7 +1043,7 @@ export function VideoTab() {
           </div>
           <div className="run-row">
             <button className="btn primary" disabled={busy || dirtyCount === 0} onClick={() => void rerenderAll()}>依序產生所有 dirty previews</button>
-            <button className="btn" disabled={busy} onClick={() => void downloadProject()}>下載 Project ZIP V5</button>
+            <button className="btn" disabled={busy} onClick={() => void downloadProject()}>下載 Project ZIP V6</button>
             <button className="btn" disabled={busy} onClick={() => void makeLinePack()}>建立 {videoTargetLabel(project.target)} LINE ZIP / 最終驗證</button>
             {busy && <button className="btn" onClick={() => abortRef.current?.abort()}>取消</button>}
             {progress && <span className="model-status">{progress}</span>}

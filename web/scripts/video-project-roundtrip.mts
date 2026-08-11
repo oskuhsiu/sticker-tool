@@ -9,6 +9,7 @@ import {
 import type { MasterApngSet } from '../src/webpipe/masterApng.js';
 import {
   inspectAnimatedBytes,
+  loadVideoRepresentativeFrames,
   processMasterApngSticker,
   validateVideoStickerSettings,
   type VideoRenderSnapshot,
@@ -97,6 +98,19 @@ const master: MasterApngSet = {
   stickers,
   store,
 };
+const representativeFrames = await loadVideoRepresentativeFrames({
+  master: stickers[0]!,
+  store,
+  rangeStartUs: 0,
+  rangeEndUs: 1_000_000,
+  targetFrames: 5,
+});
+assert.deepEqual(
+  representativeFrames.map((item) => item.candidateIndex),
+  [0, 2, 4],
+  'live preview chooses first/middle/last from the initial target-frame candidates',
+);
+assert.deepEqual(representativeFrames.map((item) => item.sourceIndex), [0, 2, 5]);
 const settings: VideoStickerSettings[] = grid.rects.map((rect) => ({
   stickerId: rect.id,
   rangeStartUs: 0,
@@ -108,7 +122,7 @@ const settings: VideoStickerSettings[] = grid.rects.map((rect) => ({
     ? {
         mode: 'color-key',
         color: '#00ff00',
-        colorKey: { edge: 'decontaminate' },
+        colorKey: { scope: 'edge-connected', edge: 'decontaminate' },
       }
     : { mode: 'none' },
   preserveColors: rect.index === 0,
@@ -195,7 +209,7 @@ invalidExportSettings[0] = {
   ...invalidExportSettings[0]!,
   background: {
     mode: 'imgly',
-    colorKey: { edge: 'soft' },
+    colorKey: { scope: 'edge-connected', edge: 'soft' },
   } as unknown as VideoStickerSettings['background'],
 };
 const normalizedExport = await buildVideoProjectZip({ ...projectArgs, settings: invalidExportSettings });
@@ -205,19 +219,20 @@ assert.deepEqual(
   'Project export omits color-key options from semantic modes',
 );
 const restored = await importVideoProjectZip(built.zip);
-assert.equal(restored.manifest.version, 5);
+assert.equal(restored.manifest.version, 6);
 assert.equal(restored.manifest.target, 'animated-sticker');
 assert.equal(restored.manifest.source.embedded, false);
 assert.equal(restored.manifest.frameCoverage, 'all-presentation-frames');
 assert.equal(restored.manifest.backgroundStage, 'raw');
 assert.equal(restored.manifest.master.stickers.length, 8);
-assert.deepEqual(restored.manifest.grid, grid, 'Project V5 must preserve unequal source-pixel grid geometry');
+assert.deepEqual(restored.manifest.grid, grid, 'Project V6 must preserve unequal source-pixel grid geometry');
 assert.equal(restored.current[0]!.settings.targetFrames, 5);
 assert.equal(restored.manifest.settings[0]!.preserveColors, true);
 assert.deepEqual(restored.manifest.settings[0]!.background.colorKey, {
+  scope: 'edge-connected',
   edge: 'decontaminate',
 });
-assert.equal(restored.manifest.versions.removers['color-key'], 'browser-color-key@3');
+assert.equal(restored.manifest.versions.removers['color-key'], 'browser-color-key@4');
 assert.deepEqual(restored.migrationNotes, []);
 assert.equal(restored.current[0]!.info.format, 'png');
 assert.deepEqual(restored.current[0]!.png, current[0]!.png);
@@ -227,7 +242,57 @@ assert.equal(decoded.frames.length, 6);
 assert.deepEqual(decoded.delaysMs, delaysMs);
 assert.equal(restoredChunk.sampleRefs.length, 6);
 assert.equal(restoredChunk.visualRefs.length, 6);
-console.log(`video project V5 streaming round-trip OK (${built.zip.length} bytes)`);
+console.log(`video project V6 streaming round-trip OK (${built.zip.length} bytes)`);
+
+const wholeImageSettings = settings.map((setting, index): VideoStickerSettings => index === 0
+  ? {
+      ...setting,
+      background: {
+        mode: 'color-key',
+        color: '#00ff00',
+        colorKey: { scope: 'whole-image', tolerancePercent: 7.3 },
+      },
+    }
+  : setting);
+const wholeImageProject = await buildVideoProjectZip({ ...projectArgs, settings: wholeImageSettings });
+const restoredWholeImage = await importVideoProjectZip(wholeImageProject.zip);
+assert.deepEqual(restoredWholeImage.manifest.settings[0]!.background.colorKey, {
+  scope: 'whole-image',
+  tolerancePercent: 7.3,
+});
+console.log('Project V6 preserves explicit whole-image tolerance without aliasing legacy all-matching');
+
+const v5Archive = unzipSync(built.zip);
+const v5Manifest = JSON.parse(new TextDecoder().decode(v5Archive['sticker-project.json'])) as {
+  version: number;
+  settings: VideoStickerSettings[];
+  current: Array<{ settings: VideoStickerSettings } | null>;
+  versions: { removers: Record<string, string> };
+};
+v5Manifest.version = 5;
+for (const setting of v5Manifest.settings) {
+  if (setting.background.mode === 'color-key') {
+    setting.background.colorKey = { edge: setting.background.colorKey.scope === 'edge-connected'
+      ? setting.background.colorKey.edge
+      : 'decontaminate' } as unknown as VideoStickerSettings['background']['colorKey'];
+  }
+}
+for (const render of v5Manifest.current) {
+  if (render?.settings.background.mode === 'color-key') {
+    render.settings.background.colorKey = { edge: 'decontaminate' } as unknown as VideoStickerSettings['background']['colorKey'];
+  }
+}
+v5Manifest.versions.removers['color-key'] = 'browser-color-key@3';
+v5Archive['sticker-project.json'] = strToU8(JSON.stringify(v5Manifest));
+const restoredV5 = await importVideoProjectZip(zipSync(v5Archive));
+assert.equal(restoredV5.manifest.version, 6);
+assert.deepEqual(restoredV5.manifest.settings[0]!.background.colorKey, {
+  scope: 'edge-connected',
+  edge: 'decontaminate',
+});
+assert.deepEqual(restoredV5.current[0]!.png, current[0]!.png, 'safe V5 current bytes remain reusable');
+assert.equal(restoredV5.manifest.versions.removers['color-key'], 'browser-color-key@4');
+console.log('Project V5 edge-connected settings migrate losslessly to V6');
 
 const v4SafeArchive = unzipSync(built.zip);
 const v4SafeManifest = JSON.parse(new TextDecoder().decode(v4SafeArchive['sticker-project.json'])) as {
@@ -240,13 +305,13 @@ v4SafeManifest.version = 4;
 (v4SafeManifest.current[0]!.settings.background.colorKey as unknown as Record<string, unknown>).scope = 'edge-connected';
 v4SafeArchive['sticker-project.json'] = strToU8(JSON.stringify(v4SafeManifest));
 const restoredV4Safe = await importVideoProjectZip(zipSync(v4SafeArchive));
-assert.equal(restoredV4Safe.manifest.version, 5);
-assert.deepEqual(restoredV4Safe.manifest.settings[0]!.background.colorKey, { edge: 'decontaminate' });
+assert.equal(restoredV4Safe.manifest.version, 6);
+assert.deepEqual(restoredV4Safe.manifest.settings[0]!.background.colorKey, { scope: 'edge-connected', edge: 'decontaminate' });
 assert.deepEqual(restoredV4Safe.current[0]!.png, current[0]!.png, 'safe V4 current remains even when its newer draft was global');
-assert.equal(restoredV4Safe.manifest.versions.removers['color-key'], 'browser-color-key@3');
+assert.equal(restoredV4Safe.manifest.versions.removers['color-key'], 'browser-color-key@4');
 assert.match(restoredV4Safe.migrationNotes.join('；'), /1 個全圖相近色色鍵草稿.*外框連通/);
 assert.doesNotMatch(restoredV4Safe.migrationNotes.join('；'), /成品預覽已清除/);
-console.log('Project V4 edge-connected renders migrate to V5 based on render provenance, not draft scope');
+console.log('Project V4 edge-connected renders migrate to V6 based on render provenance, not draft scope');
 
 const v4GlobalArchive = unzipSync(built.zip);
 const v4GlobalManifest = JSON.parse(new TextDecoder().decode(v4GlobalArchive['sticker-project.json'])) as {
@@ -265,12 +330,12 @@ v4GlobalManifest.current[0]!.settings.background.colorKey = {
 } as unknown as VideoStickerSettings['background']['colorKey'];
 v4GlobalArchive['sticker-project.json'] = strToU8(JSON.stringify(v4GlobalManifest));
 const restoredV4Global = await importVideoProjectZip(zipSync(v4GlobalArchive));
-assert.equal(restoredV4Global.manifest.version, 5);
-assert.deepEqual(restoredV4Global.manifest.settings[0]!.background.colorKey, { edge: 'soft' });
+assert.equal(restoredV4Global.manifest.version, 6);
+assert.deepEqual(restoredV4Global.manifest.settings[0]!.background.colorKey, { scope: 'edge-connected', edge: 'soft' });
 assert.equal(restoredV4Global.current[0], null, 'unsafe V4 global render is invalidated');
 assert.equal(restoredV4Global.manifest.current[0], null, 'unsafe V4 render metadata is not reusable');
 assert.ok(restoredV4Global.current[1], 'unrelated safe renders remain current');
-assert.equal(restoredV4Global.manifest.versions.removers['color-key'], 'browser-color-key@3');
+assert.equal(restoredV4Global.manifest.versions.removers['color-key'], 'browser-color-key@4');
 assert.match(restoredV4Global.migrationNotes.join('；'), /1 張.*全圖相近色.*重新產生/);
 console.log('Project V4 all-matching renders migrate to edge-connected settings and require rerender');
 
@@ -280,10 +345,10 @@ v2Manifest.version = 2;
 delete v2Manifest.target;
 v2Archive['sticker-project.json'] = strToU8(JSON.stringify(v2Manifest));
 const restoredV2 = await importVideoProjectZip(zipSync(v2Archive));
-assert.equal(restoredV2.manifest.version, 5);
+assert.equal(restoredV2.manifest.version, 6);
 assert.equal(restoredV2.manifest.target, 'animated-sticker');
 assert.equal(restoredV2.current[0], null, 'V2 implicit global color-key render is invalidated');
-console.log('Project V2 migrates explicitly to the Animated Sticker V5 target');
+console.log('Project V2 migrates explicitly to the Animated Sticker V6 target');
 
 const v3Archive = unzipSync(built.zip);
 const v3Manifest = JSON.parse(new TextDecoder().decode(v3Archive['sticker-project.json'])) as {
@@ -296,12 +361,13 @@ delete v3Manifest.settings[0]!.background.colorKey;
 delete v3Manifest.current[0]!.settings.background.colorKey;
 v3Archive['sticker-project.json'] = strToU8(JSON.stringify(v3Manifest));
 const restoredV3 = await importVideoProjectZip(zipSync(v3Archive));
-assert.equal(restoredV3.manifest.version, 5);
+assert.equal(restoredV3.manifest.version, 6);
 assert.deepEqual(restoredV3.manifest.settings[0]!.background.colorKey, {
+  scope: 'edge-connected',
   edge: 'soft',
 });
 assert.equal(restoredV3.current[0], null, 'V3 implicit global render is invalidated');
-assert.equal(restoredV3.manifest.versions.removers['color-key'], 'browser-color-key@3');
+assert.equal(restoredV3.manifest.versions.removers['color-key'], 'browser-color-key@4');
 assert.match(restoredV3.migrationNotes.join('；'), /全圖相近色.*重新產生/);
 console.log('Project V3 color-key settings migrate to edge-connected/soft and require rerender');
 
@@ -310,13 +376,14 @@ const misplacedOptionsManifest = JSON.parse(
   new TextDecoder().decode(misplacedOptionsArchive['sticker-project.json']),
 ) as { settings: VideoStickerSettings[] };
 misplacedOptionsManifest.settings[1]!.background.colorKey = {
+  scope: 'edge-connected',
   edge: 'decontaminate',
 };
 misplacedOptionsArchive['sticker-project.json'] = strToU8(JSON.stringify(misplacedOptionsManifest));
 await assert.rejects(
   importVideoProjectZip(zipSync(misplacedOptionsArchive)),
   /colorKey.*color-key/,
-  'V5 import must reject color-key options on semantic/none modes',
+  'V6 import must reject color-key options on semantic/none modes',
 );
 
 const retiredScopeArchive = unzipSync(built.zip);
@@ -331,7 +398,7 @@ retiredScopeArchive['sticker-project.json'] = strToU8(JSON.stringify(retiredScop
 await assert.rejects(
   importVideoProjectZip(zipSync(retiredScopeArchive)),
   /colorKey.*不支援/,
-  'native V5 projects reject the retired global scope instead of silently aliasing it',
+  'native V6 projects reject the retired global scope instead of silently aliasing it',
 );
 
 const popupSettings: VideoStickerSettings = {
@@ -361,7 +428,7 @@ assert.match(
     ...popupSettings,
     background: {
       mode: 'imgly',
-      colorKey: { edge: 'decontaminate' },
+      colorKey: { scope: 'edge-connected', edge: 'decontaminate' },
     } as unknown as VideoStickerSettings['background'],
   }, 'popup').join('；'),
   /只有單色去背可使用/,
@@ -377,7 +444,7 @@ mismatchedTargetArchive['sticker-project.json'] = strToU8(JSON.stringify(mismatc
 await assert.rejects(
   importVideoProjectZip(zipSync(mismatchedTargetArchive)),
   /canvas .*animated-emoji 目標 180×180 不一致/,
-  'V5 import must reject a target whose baked master canvas does not match',
+  'V6 import must reject a target whose baked master canvas does not match',
 );
 
 const extraEntryArchive = unzipSync(built.zip);
@@ -385,7 +452,7 @@ extraEntryArchive['source/undeclared.mp4'] = new Uint8Array([1, 2, 3]);
 await assert.rejects(
   importVideoProjectZip(zipSync(extraEntryArchive)),
   /未宣告 entry/,
-  'V5 import must reject undeclared source bytes',
+  'V6 import must reject undeclared source bytes',
 );
 
 const corruptArchive = unzipSync(built.zip);
@@ -395,7 +462,7 @@ corruptArchive[corruptPath]![20] ^= 0xff;
 await assert.rejects(
   importVideoProjectZip(zipSync(corruptArchive)),
   /checksum/,
-  'V5 import must reject corrupt master bytes',
+  'V6 import must reject corrupt master bytes',
 );
 
 const legacyMasterPath = 'master/sticker-01/chunk_001.png';
@@ -761,31 +828,53 @@ assert.equal(tinyCache.get('oversize'), null);
 const cleanEdgeCacheKey = VideoFrameRenderCache.key({
   stickerId: 'sticker-01',
   rawFrameHash: 'raw',
-  removerVersion: 'color-key@3',
+  removerVersion: 'color-key@4',
   background: {
     mode: 'color-key',
     color: '#00ff00',
-    colorKey: { edge: 'decontaminate' },
+    colorKey: { scope: 'edge-connected', edge: 'decontaminate' },
   },
 });
 const softEdgeCacheKey = VideoFrameRenderCache.key({
   stickerId: 'sticker-01',
   rawFrameHash: 'raw',
-  removerVersion: 'color-key@3',
+  removerVersion: 'color-key@4',
   background: {
     mode: 'color-key',
     color: '#00ff00',
-    colorKey: { edge: 'soft' },
+    colorKey: { scope: 'edge-connected', edge: 'soft' },
   },
 });
 assert.notEqual(cleanEdgeCacheKey, softEdgeCacheKey, 'color-key edge changes must invalidate rendered frames');
+const exactWholeImageCacheKey = VideoFrameRenderCache.key({
+  stickerId: 'sticker-01',
+  rawFrameHash: 'raw',
+  removerVersion: 'color-key@4',
+  background: {
+    mode: 'color-key',
+    color: '#00ff00',
+    colorKey: { scope: 'whole-image', tolerancePercent: 0 },
+  },
+});
+const tolerantWholeImageCacheKey = VideoFrameRenderCache.key({
+  stickerId: 'sticker-01',
+  rawFrameHash: 'raw',
+  removerVersion: 'color-key@4',
+  background: {
+    mode: 'color-key',
+    color: '#00ff00',
+    colorKey: { scope: 'whole-image', tolerancePercent: 0.1 },
+  },
+});
+assert.notEqual(cleanEdgeCacheKey, exactWholeImageCacheKey, 'whole-image scope must invalidate edge-connected renders');
+assert.notEqual(exactWholeImageCacheKey, tolerantWholeImageCacheKey, 'whole-image tolerance must invalidate rendered frames');
 const irrelevantOptionKey = VideoFrameRenderCache.key({
   stickerId: 'sticker-01',
   rawFrameHash: 'raw',
   removerVersion: 'imgly@1',
   background: {
     mode: 'imgly',
-    colorKey: { edge: 'soft' },
+    colorKey: { scope: 'edge-connected', edge: 'soft' },
   } as unknown as VideoStickerSettings['background'],
 });
 const cleanSemanticKey = VideoFrameRenderCache.key({

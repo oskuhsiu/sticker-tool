@@ -4,6 +4,7 @@ import { useMemo, useRef, useState } from 'react';
 import { BIG_STICKER_SPEC, EMOJI_SPEC, STATIC_SPEC, ZIP_MAX_BYTES, allowedCounts, maxBounds } from '@core/spec.js';
 import { emojiFileName, stickerFileName } from '@core/naming.js';
 import { planGrid } from '@core/grid.js';
+import { parseColor } from '@core/color.js';
 import { DEFAULT_COLOR_KEY_OPTIONS, type ColorKeyOptions } from '@core/colorKey.js';
 import type { GridLayout } from '@core/types.js';
 import { validateEmojiPack, validatePack } from '@core/validate.js';
@@ -46,6 +47,7 @@ export function SheetTab() {
   const [isCharacter, setIsCharacter] = useState(true);
   const [gridText, setGridText] = useState('auto');
   const [removeBgMode, setRemoveBgMode] = useState<WebBackgroundRemovalMode>('color-key');
+  const [backgroundColor, setBackgroundColor] = useState('#00ff00');
   const [colorKeyOptions, setColorKeyOptions] = useState<ColorKeyOptions>(() => ({ ...DEFAULT_COLOR_KEY_OPTIONS }));
   const [strokeOn, setStrokeOn] = useState(false);
   const [strokeWidth, setStrokeWidth] = useState(8);
@@ -104,9 +106,18 @@ export function SheetTab() {
         logger.log('err', `版面需要 ${layout.sheets} 張組圖，但選了 ${ordered.length} 張`);
         return;
       }
+      const parsedBackgroundColor = parseColor(backgroundColor);
+      const wholeImageColor: [number, number, number] = [
+        parsedBackgroundColor.r,
+        parsedBackgroundColor.g,
+        parsedBackgroundColor.b,
+      ];
       removalJob = await createBackgroundRemovalJob({
         mode: removeBgMode,
         signal: abort.signal,
+        pickColor: removeBgMode === 'color-key' && colorKeyOptions.scope === 'whole-image'
+          ? wholeImageColor
+          : null,
         ...(removeBgMode === 'color-key' ? { colorKey: colorKeyOptions } : {}),
         colabConfig: colabConnection?.config,
         onStatus: setModelStatus,
@@ -140,7 +151,11 @@ export function SheetTab() {
           key: semantic
             ? { autoRemove: false, preRemovedLabel: removalJob.label }
             : removeBgMode === 'color-key'
-              ? { autoRemove: true, colorKey: colorKeyOptions }
+              ? {
+                  autoRemove: true,
+                  colorKey: colorKeyOptions,
+                  ...(colorKeyOptions.scope === 'whole-image' ? { pickColor: wholeImageColor } : {}),
+                }
               : { autoRemove: false },
         });
         reportCut(cut, logger);
@@ -308,7 +323,9 @@ export function SheetTab() {
         onChange={setRemoveBgMode}
         disabled={busy}
         inferenceCount={count}
-        colorHelp={<span className="layout-hint">自動偵測綠幕或邊框背景色</span>}
+        color={backgroundColor}
+        onColorChange={setBackgroundColor}
+        colorHelp={<span className="layout-hint">外框模式可自動偵測；全圖模式使用這個色碼</span>}
         colorKeyOptions={colorKeyOptions}
         onColorKeyOptionsChange={setColorKeyOptions}
       />

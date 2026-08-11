@@ -1,5 +1,9 @@
 import { useEffect, useState } from 'react';
-import type { ColorKeyOptions } from '@core/colorKey.js';
+import {
+  DEFAULT_WHOLE_IMAGE_TOLERANCE_PERCENT,
+  type ColorKeyEdge,
+  type ColorKeyOptions,
+} from '@core/colorKey.js';
 import {
   LOCAL_BIREFNET_MODEL_BYTES,
   LOCAL_BIREFNET_PARAMETER_COUNT,
@@ -31,24 +35,78 @@ export interface ColorKeyOptionFieldsProps {
 }
 
 export function ColorKeyOptionFields(props: ColorKeyOptionFieldsProps) {
+  const edgeOptions = props.value.scope === 'edge-connected' ? props.value : null;
+  const wholeImageOptions = props.value.scope === 'whole-image' ? props.value : null;
+  const setTolerance = (value: number) => {
+    const tolerancePercent = Math.round(Math.max(0, Math.min(20, value)) * 10) / 10;
+    props.onChange({ scope: 'whole-image', tolerancePercent });
+  };
   return (
-    <Row>
-      <Field label="邊緣處理">
+    <>
+      <Row>
+        <Field label="去背範圍">
+          <select
+            aria-label="單色色鍵去背範圍"
+            value={props.value.scope}
+            disabled={props.disabled}
+            onChange={(event) => props.onChange(event.target.value === 'whole-image'
+              ? { scope: 'whole-image', tolerancePercent: DEFAULT_WHOLE_IMAGE_TOLERANCE_PERCENT }
+              : { scope: 'edge-connected', edge: 'decontaminate' })}
+          >
+            <option value="edge-connected">外框連通（安全預設）</option>
+            <option value="whole-image">全圖色碼（符合就挖掉）</option>
+          </select>
+        </Field>
+        {edgeOptions && <Field label="邊緣處理">
         <select
           aria-label="單色色鍵邊緣處理"
-          value={props.value.edge}
+          value={edgeOptions.edge}
           disabled={props.disabled}
           onChange={(event) => props.onChange({
-            ...props.value,
-            edge: event.target.value as ColorKeyOptions['edge'],
+            scope: 'edge-connected',
+            edge: event.target.value as ColorKeyEdge,
           })}
         >
           <option value="decontaminate">清除色暈（建議）</option>
           <option value="soft">柔和邊緣（可能留背景圈）</option>
           <option value="hard">硬邊（可能鋸齒）</option>
         </select>
-      </Field>
-    </Row>
+        </Field>}
+      </Row>
+      {wholeImageOptions && (
+        <Row>
+          <Field label="全圖色碼容差">
+            <div className="color-key-tolerance-control">
+              <input
+                aria-label="全圖色碼容差"
+                type="range"
+                min={0}
+                max={20}
+                step={0.1}
+                value={wholeImageOptions.tolerancePercent}
+                disabled={props.disabled}
+                onChange={(event) => setTolerance(Number(event.target.value))}
+              />
+              <output aria-live="polite">{wholeImageOptions.tolerancePercent.toFixed(1)}%</output>
+              <button
+                type="button"
+                className="btn small"
+                aria-label="降低全圖色碼容差 0.1%"
+                disabled={props.disabled || wholeImageOptions.tolerancePercent <= 0}
+                onClick={() => setTolerance(wholeImageOptions.tolerancePercent - 0.1)}
+              >−0.1%</button>
+              <button
+                type="button"
+                className="btn small"
+                aria-label="提高全圖色碼容差 0.1%"
+                disabled={props.disabled || wholeImageOptions.tolerancePercent >= 20}
+                onClick={() => setTolerance(wholeImageOptions.tolerancePercent + 0.1)}
+              >+0.1%</button>
+            </div>
+          </Field>
+        </Row>
+      )}
+    </>
   );
 }
 
@@ -136,8 +194,11 @@ export function BackgroundRemovalControl(props: BackgroundRemovalControlProps) {
       )}
       {props.value === 'color-key' && (
         <div className="ai-local-notice" role="status">
-          <strong>單色色鍵：</strong>速度最快、不下載模型，只清除與外框四向連通的近色背景，以保留被主體包住的
-          同色細節；封閉的背景洞可能保留。清除色暈可減少背景圈；硬邊可能產生鋸齒。
+          {props.colorKeyOptions.scope === 'whole-image' ? (
+            <><strong>全圖色碼：</strong>掃描整張圖，符合指定色碼與容差的像素會直接變透明；主體內同色像素也會被挖掉。</>
+          ) : (
+            <><strong>外框連通：</strong>只清除與外框四向連通的近色背景，以保留被主體包住的同色細節；封閉背景洞可能保留。清除色暈可減少背景圈；硬邊可能產生鋸齒。</>
+          )}
         </div>
       )}
       {props.value === 'imgly' && (

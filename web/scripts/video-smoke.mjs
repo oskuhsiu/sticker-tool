@@ -1,5 +1,5 @@
 /**
- * Focused browser E2E for Video → APNG V5.
+ * Focused browser E2E for Video → APNG V6.
  * Requires ffmpeg and a separately running Vite preview server.
  * Usage: node scripts/video-smoke.mjs http://127.0.0.1:4179/
  */
@@ -83,8 +83,8 @@ async function configureSource(count, cols, rows) {
   const scope = sourceCard.getByLabel('單色色鍵去背範圍');
   const edge = sourceCard.getByLabel('單色色鍵邊緣處理');
   await removal.selectOption('color-key');
-  if (await scope.count() || await edge.inputValue() !== 'decontaminate') {
-    throw new Error('Video 單色色鍵應固定外框連通，且預設清除色暈');
+  if (await scope.inputValue() !== 'edge-connected' || await edge.inputValue() !== 'decontaminate') {
+    throw new Error('Video 單色色鍵應預設外框連通與清除色暈');
   }
   await removal.selectOption('imgly');
   if (await scope.count() || await edge.count()) throw new Error('Video IMG.LY 不應顯示單色色鍵選項');
@@ -281,12 +281,44 @@ async function buildRawMaster(expectedCount) {
   if (items !== expectedCount) throw new Error(`貼圖列表應有 ${expectedCount} 張，實際 ${items}`);
   const editor = page.locator('[data-tab="video"] .video-sticker-editor');
   if (
-    await editor.getByLabel('單色色鍵去背範圍').count()
+    await editor.getByLabel('單色色鍵去背範圍').inputValue() !== 'edge-connected'
     || await editor.getByLabel('單色色鍵邊緣處理').inputValue() !== 'decontaminate'
   ) {
     throw new Error('Video 單張 editor 未繼承專案單色色鍵選項');
   }
   await page.waitForSelector('[data-tab="video"] >> text=12 source samples');
+}
+
+async function assertWholeImageLivePreview() {
+  const editor = page.locator('[data-tab="video"] .video-sticker-editor');
+  const scope = editor.getByLabel('單色色鍵去背範圍');
+  await scope.selectOption('whole-image');
+  const tolerance = editor.getByRole('slider', { name: '全圖色碼容差', exact: true });
+  if (
+    await tolerance.getAttribute('min') !== '0' ||
+    await tolerance.getAttribute('max') !== '20' ||
+    await tolerance.getAttribute('step') !== '0.1' ||
+    await tolerance.inputValue() !== '0'
+  ) throw new Error('Video 全圖色碼容差 contract 錯誤');
+  await editor.getByRole('button', { name: '提高全圖色碼容差 0.1%' }).click();
+  if (await tolerance.inputValue() !== '0.1') throw new Error('Video 全圖色碼 +0.1% 微調失敗');
+  await page.waitForSelector('[data-testid="video-whole-image-preview"]');
+  const frameButtons = editor.getByRole('button', { name: /選擇全圖色碼預覽影格/ });
+  await frameButtons.first().waitFor();
+  if (await frameButtons.count() !== 3) throw new Error('Video 應從目標格數初選候選中提供 3 張代表影格');
+  await frameButtons.nth(1).click();
+  if (await frameButtons.nth(1).getAttribute('aria-pressed') !== 'true') throw new Error('Video 代表影格切換失敗');
+  await tolerance.press('End');
+  await page.waitForFunction(() => document.querySelector('.video-sticker-editor .color-key-tolerance-control output')?.textContent === '20.0%');
+  await page.waitForFunction(() => {
+    const canvas = document.querySelector('canvas[aria-label="全圖色碼即時處理後"]');
+    if (!(canvas instanceof HTMLCanvasElement)) return false;
+    const data = canvas.getContext('2d')?.getImageData(0, 0, canvas.width, canvas.height).data;
+    if (!data) return false;
+    for (let index = 3; index < data.length; index += 4) if (data[index] === 0) return true;
+    return false;
+  });
+  await scope.selectOption('edge-connected');
 }
 
 async function renderAll() {
@@ -321,6 +353,8 @@ try {
   await buildRawMaster(6);
   if (modelRequested) throw new Error('raw ingest 與 color-key 不應下載語意去背模型');
   results.push('✓ 12 個 presentation frames 全數進入 6 張 raw master，沒有固定 20 格取樣器');
+  await assertWholeImageLivePreview();
+  results.push('✓ 全圖色碼 0.0–20.0%/0.1% 微調與 3 張代表影格即時透明預覽通過');
 
   await linePackButton('Animated Sticker').click();
   await page.waitForSelector('[data-tab="video"] >> text=缺少必要成品 bytes');
@@ -354,16 +388,16 @@ try {
   results.push('✓ 單張 hard target=5 從 raw master 重編，controlled player 使用 final decoded timing');
 
   const projectDownloadPromise = page.waitForEvent('download');
-  await page.getByRole('button', { name: '下載 Project ZIP V5' }).click();
+  await page.getByRole('button', { name: '下載 Project ZIP V6' }).click();
   const projectDownload = await projectDownloadPromise;
   const projectPath = await projectDownload.path();
-  if (!projectPath) throw new Error('Project V5 download path unavailable');
+  if (!projectPath) throw new Error('Project V6 download path unavailable');
   const entries = unzipSync(new Uint8Array(readFileSync(projectPath)));
   const manifest = JSON.parse(strFromU8(entries['sticker-project.json']));
-  if (manifest.version !== 5 || manifest.target !== 'animated-sticker' || manifest.frameCoverage !== 'all-presentation-frames' || manifest.backgroundStage !== 'raw') {
-    throw new Error('Project manifest 不是 Animated Sticker all-frame/raw V5');
+  if (manifest.version !== 6 || manifest.target !== 'animated-sticker' || manifest.frameCoverage !== 'all-presentation-frames' || manifest.backgroundStage !== 'raw') {
+    throw new Error('Project manifest 不是 Animated Sticker all-frame/raw V6');
   }
-  if (manifest.versions?.removers?.['color-key'] !== 'browser-color-key@3') throw new Error('Project V5 未記錄安全色鍵版本 @3');
+  if (manifest.versions?.removers?.['color-key'] !== 'browser-color-key@4') throw new Error('Project V6 未記錄全圖色碼版本 @4');
   if (manifest.master.sourceFrameCount !== 12) throw new Error(`Project 應保存 12 source refs，實際 ${manifest.master.sourceFrameCount}`);
   const expectedRects = [];
   for (let row = 0; row < editedGrid.yCuts.length - 1; row++) {
@@ -378,28 +412,28 @@ try {
   }
   const manifestRects = manifest.grid.rects.map((rect) => [rect.left, rect.top, rect.width, rect.height]);
   if (JSON.stringify(manifestRects) !== JSON.stringify(expectedRects)) {
-    throw new Error(`Project V5 未保留 edited source-pixel grid：${JSON.stringify(manifestRects)}`);
+    throw new Error(`Project V6 未保留 edited source-pixel grid：${JSON.stringify(manifestRects)}`);
   }
   for (const sticker of manifest.master.stickers) {
     const samples = sticker.chunks.reduce((sum, chunk) => sum + chunk.sampleRefs.length, 0);
     if (samples !== 12) throw new Error(`${sticker.id} 只保存 ${samples}/12 sample refs`);
   }
   if (Object.keys(entries).some((entry) => entry.startsWith('source/') || entry.startsWith('audio/'))) {
-    throw new Error('Project V5 不得內嵌 source video/audio');
+    throw new Error('Project V6 不得內嵌 source video/audio');
   }
-  results.push('✓ raw ingest 與 Project V5 manifest 保留 edited rects、完整 12 sample refs、checksums，且不含來源影片或音軌');
+  results.push('✓ raw ingest 與 Project V6 manifest 保留 edited rects、完整 12 sample refs、checksums，且不含來源影片或音軌');
 
   await page.setInputFiles('[data-tab="video"] input[type=file][accept^=".zip"]', projectPath);
-  await page.waitForSelector('[data-tab="video"] >> text=已恢復 Project V5（Animated Sticker）的 12 個 sample refs', { timeout: 120_000 });
-  if (await page.getByLabel('目標格數').inputValue() !== '5') throw new Error('V5 re-import 未恢復第 1 張 target=5');
+  await page.waitForSelector('[data-tab="video"] >> text=已恢復 Project V6（Animated Sticker）的 12 個 sample refs', { timeout: 120_000 });
+  if (await page.getByLabel('目標格數').inputValue() !== '5') throw new Error('V6 re-import 未恢復第 1 張 target=5');
   await page.waitForSelector('[data-tab="video"] >> text=final 5/5 格');
-  results.push('✓ Project V5 可在沒有原影片與 decoder 的情況下恢復 target/draft/current/editor');
+  results.push('✓ Project V6 可在沒有原影片與 decoder 的情況下恢復 target/draft/current/editor');
 
   await linePackButton('Animated Sticker').click();
   await page.waitForSelector('[data-tab="video"] >> text=全部符合 LINE 規格', { timeout: 180_000 });
   const lineDownload = page.getByRole('button', { name: /下載 LINE ZIP/ });
   if (!(await lineDownload.isEnabled())) throw new Error('合規 final bytes 未開放一般 LINE ZIP');
-  if (modelRequested) throw new Error('整個 color-key V5 smoke 不應下載語意模型');
+  if (modelRequested) throw new Error('整個 color-key V6 smoke 不應下載語意模型');
   results.push('✓ 8 張 current + cover actual timeline → main/tab/LINE ZIP，final-byte validation 通過');
 
   await uploadVideo();
@@ -443,14 +477,14 @@ try {
     throw new Error('切換 Popup 配對靜態 frame 不應要求重編 APNG');
   }
   const popupProjectDownloadPromise = page.waitForEvent('download');
-  await page.getByRole('button', { name: '下載 Project ZIP V5' }).click();
+  await page.getByRole('button', { name: '下載 Project ZIP V6' }).click();
   const popupProjectDownload = await popupProjectDownloadPromise;
   const popupProjectPath = await popupProjectDownload.path();
-  if (!popupProjectPath) throw new Error('Popup Project V5 download path unavailable');
+  if (!popupProjectPath) throw new Error('Popup Project V6 download path unavailable');
   const popupProjectEntries = unzipSync(new Uint8Array(readFileSync(popupProjectPath)));
   const popupManifest = JSON.parse(strFromU8(popupProjectEntries['sticker-project.json']));
   if (popupManifest.target !== 'popup' || popupManifest.settings[0].staticFrameIndex !== 1) {
-    throw new Error('Popup Project V5 未保存產品或使用者選取的靜態 frame');
+    throw new Error('Popup Project V6 未保存產品或使用者選取的靜態 frame');
   }
   if (popupManifest.master.stickers.some((sticker) => sticker.width !== 480 || sticker.height !== 480)) {
     throw new Error('Popup raw master 必須全部是 480×480');

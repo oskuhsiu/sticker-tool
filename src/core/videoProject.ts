@@ -1,8 +1,8 @@
 import type { SourceFrameTiming } from './videoTimeline.js';
-import type { ColorKeyOptions } from './colorKey.js';
+import { copyColorKeyOptions, type ColorKeyOptions } from './colorKey.js';
 
 export const VIDEO_PROJECT_SCHEMA = 'sticker-tool/video-apng-project' as const;
-export const VIDEO_PROJECT_VERSION = 5 as const;
+export const VIDEO_PROJECT_VERSION = 6 as const;
 
 /**
  * Product selected before raw-master ingest. Canvas geometry is baked into the
@@ -64,7 +64,7 @@ export function cloneVideoStickerDraft(settings: VideoStickerDraftV2): VideoStic
   return {
     ...settings,
     background: settings.background.mode === 'color-key'
-      ? { ...settings.background, colorKey: { ...settings.background.colorKey } }
+      ? { ...settings.background, colorKey: copyColorKeyOptions(settings.background.colorKey) }
       : {
           mode: settings.background.mode,
           ...(settings.background.tolerance === undefined

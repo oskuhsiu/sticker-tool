@@ -33,7 +33,7 @@ assert.notEqual(
   videoRemoverVersion('colab-birefnet', 'Colab 多模型去背', 8),
 );
 assert.equal(videoRemoverVersion('local-birefnet', 'Local BiRefNet', null), 'Local BiRefNet@1');
-assert.equal(videoRemoverVersion('color-key', '單色色鍵', null), '單色色鍵@3');
+assert.equal(videoRemoverVersion('color-key', '單色色鍵', null), '單色色鍵@4');
 assert.throws(
   () => videoRemoverVersion('colab-birefnet', 'Colab 多模型去背', null),
   /generation/,

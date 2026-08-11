@@ -56,7 +56,7 @@ interface RenderManifestV2 {
   errors: string[];
 }
 
-export interface VideoProjectManifestV5 {
+export interface VideoProjectManifestV6 {
   schema: typeof VIDEO_PROJECT_SCHEMA;
   version: typeof VIDEO_PROJECT_VERSION;
   target: VideoOutputTarget;
@@ -99,7 +99,7 @@ export interface VideoProjectManifestV5 {
 }
 
 export interface VideoProjectRuntime {
-  manifest: VideoProjectManifestV5;
+  manifest: VideoProjectManifestV6;
   master: MasterApngSet;
   current: Array<VideoRenderSnapshot | null>;
   migrationNotes: string[];
@@ -250,7 +250,7 @@ export async function buildVideoProjectZip(args: {
   master: MasterApngSet;
   settings: VideoStickerSettings[];
   current: Array<VideoRenderSnapshot | null>;
-}): Promise<{ zip: Uint8Array; manifest: VideoProjectManifestV5 }> {
+}): Promise<{ zip: Uint8Array; manifest: VideoProjectManifestV6 }> {
   if (args.master.stickers.length !== args.current.length || args.current.length !== args.settings.length) {
     throw new Error('Project ZIP 無法建立：master、settings、current 張數不一致');
   }
@@ -299,7 +299,7 @@ export async function buildVideoProjectZip(args: {
       errors: [...snapshot.errors],
     });
   }
-  const manifest: VideoProjectManifestV5 = {
+  const manifest: VideoProjectManifestV6 = {
     schema: VIDEO_PROJECT_SCHEMA,
     version: VIDEO_PROJECT_VERSION,
     target: args.target,
@@ -329,14 +329,14 @@ export async function buildVideoProjectZip(args: {
       decoder: 'mediabunny@1.51.0',
       demuxer: 'mediabunny@1.51.0',
       removers: {
-        'color-key': 'browser-color-key@3',
+        'color-key': 'browser-color-key@4',
         imgly: '@imgly/background-removal@1.4.5',
         'local-birefnet': 'studioludens/birefnet-lite-512@4a3c40c36c94093cc1e724d9ea428b8fa4b57dc7',
         'colab-birefnet': 'user-session',
       },
     },
   };
-  assertV5Manifest(manifest);
+  assertV6Manifest(manifest);
   const report = strToU8(JSON.stringify({
     generatedAt: new Date().toISOString(),
     target: manifest.target,
@@ -648,9 +648,9 @@ function assertGrid(value: unknown, source: Record<string, unknown>): void {
   });
 }
 
-function assertV5Manifest(value: unknown): asserts value is VideoProjectManifestV5 {
+function assertV6Manifest(value: unknown): asserts value is VideoProjectManifestV6 {
   if (!isVideoProjectManifestHeader(value) || value.version !== VIDEO_PROJECT_VERSION) throw new Error('不支援的 Project ZIP schema 或版本');
-  const manifest = value as Partial<VideoProjectManifestV5>;
+  const manifest = value as Partial<VideoProjectManifestV6>;
   if (
     !['animated-sticker', 'animated-emoji', 'popup'].includes(manifest.target ?? '') ||
     manifest.sourceTimingUnit !== 'microseconds' ||
@@ -667,7 +667,7 @@ function assertV5Manifest(value: unknown): asserts value is VideoProjectManifest
     manifest.settings.length !== manifest.master.stickers.length ||
     manifest.current.length !== manifest.master.stickers.length
   ) {
-    throw new Error('Project ZIP V5 manifest 缺少或含有無效的必要欄位');
+    throw new Error('Project ZIP V6 manifest 缺少或含有無效的必要欄位');
   }
   const createdAt = Date.parse(requireString(manifest.createdAt, 'createdAt'));
   if (!Number.isFinite(createdAt)) throw new Error('createdAt 不是有效日期');
@@ -723,8 +723,8 @@ function assertV5Manifest(value: unknown): asserts value is VideoProjectManifest
   requireRecord(versions.removers, 'versions.removers');
 }
 
-async function restoreV5(
-  manifest: VideoProjectManifestV5,
+async function restoreV6(
+  manifest: VideoProjectManifestV6,
   archive: ArchiveContents,
   store: VideoMasterStore,
   invalidatedColorKeyRenders: ReadonlySet<number> = new Set(),
@@ -995,7 +995,7 @@ function upgradeV4(value: unknown): VideoProjectUpgrade {
   return {
     project: {
       ...project,
-      version: VIDEO_PROJECT_VERSION,
+      version: 5,
       settings: Array.isArray(project.settings) ? settings.map((entry) => entry.value) : project.settings,
       current: Array.isArray(project.current) ? current.map((entry) => entry.value) : project.current,
       ...(versions && removers
@@ -1009,6 +1009,63 @@ function upgradeV4(value: unknown): VideoProjectUpgrade {
     },
     invalidatedColorKeyRenders,
     migrationNotes,
+  };
+}
+
+/** V6 adds an intentional whole-image mode; V5 settings were always edge-connected. */
+function upgradeV5(value: unknown): VideoProjectUpgrade {
+  const unchanged: VideoProjectUpgrade = {
+    project: value,
+    invalidatedColorKeyRenders: new Set(),
+    migrationNotes: [],
+  };
+  if (!isVideoProjectManifestHeader(value) || value.version !== 5 || !isRecord(value)) return unchanged;
+  const project = value as Record<string, unknown>;
+  const migrateSettings = (candidate: unknown): unknown => {
+    if (!isRecord(candidate) || !isRecord(candidate.background)) return candidate;
+    const background = candidate.background;
+    if (background.mode !== 'color-key') return candidate;
+    if (!isRecord(background.colorKey)) return candidate;
+    const colorKey = background.colorKey;
+    const keys = Object.keys(colorKey);
+    if (
+      keys.length !== 1 ||
+      keys[0] !== 'edge' ||
+      !['soft', 'decontaminate', 'hard'].includes(String(colorKey.edge))
+    ) {
+      throw new Error('Project V5 colorKey 必須是舊版安全的外框連通設定');
+    }
+    return {
+      ...candidate,
+      background: {
+        ...background,
+        colorKey: { scope: 'edge-connected', edge: colorKey.edge },
+      },
+    };
+  };
+  const versions = isRecord(project.versions) ? project.versions : null;
+  const removers = versions && isRecord(versions.removers) ? versions.removers : null;
+  return {
+    project: {
+      ...project,
+      version: VIDEO_PROJECT_VERSION,
+      settings: Array.isArray(project.settings) ? project.settings.map(migrateSettings) : project.settings,
+      current: Array.isArray(project.current)
+        ? project.current.map((render: unknown) => isRecord(render)
+          ? { ...render, settings: migrateSettings(render.settings) }
+          : render)
+        : project.current,
+      ...(versions && removers
+        ? {
+            versions: {
+              ...versions,
+              removers: { ...removers, 'color-key': 'browser-color-key@4' },
+            },
+          }
+        : {}),
+    },
+    invalidatedColorKeyRenders: new Set(),
+    migrationNotes: [],
   };
 }
 
@@ -1113,7 +1170,7 @@ async function restoreV1(
     frameCount: legacy.master.masterFrameCount,
     averageFps: legacy.master.masterFrameCount / Math.max(0.001, legacy.source.durationMs / 1000),
   };
-  const manifest: VideoProjectManifestV5 = {
+  const manifest: VideoProjectManifestV6 = {
     schema: VIDEO_PROJECT_SCHEMA,
     version: VIDEO_PROJECT_VERSION,
     target: 'animated-sticker',
@@ -1177,14 +1234,18 @@ export async function importVideoProjectZip(zipBytes: Uint8Array): Promise<Video
     const archive = await streamArchive(zipBytes, store);
     const parsed = parseJson(requireRetained(archive.retained, MANIFEST_PATH), 'Project ZIP 的 sticker-project.json');
     if (isV1(parsed)) return restoreV1(parsed, archive.retained, store);
-    const upgraded = upgradeV4(upgradeV3(upgradeV2(parsed)));
-    assertV5Manifest(upgraded.project);
-    return restoreV5(
-      upgraded.project,
+    const upgradedV4 = upgradeV4(upgradeV3(upgradeV2(parsed)));
+    const upgradedV5 = upgradeV5(upgradedV4.project);
+    assertV6Manifest(upgradedV5.project);
+    return restoreV6(
+      upgradedV5.project,
       archive,
       store,
-      upgraded.invalidatedColorKeyRenders,
-      upgraded.migrationNotes,
+      new Set([
+        ...upgradedV4.invalidatedColorKeyRenders,
+        ...upgradedV5.invalidatedColorKeyRenders,
+      ]),
+      [...upgradedV4.migrationNotes, ...upgradedV5.migrationNotes],
     );
   } catch (error) {
     await store.clear();

@@ -300,7 +300,7 @@ an explicit truecolor color-reduction retry. That retry preserves the selected f
 animation's fitted RGBA frames are released immediately after its APNG and final-byte evidence are
 produced instead of being retained for the rest of the pack.
 
-The web app processes image and video pixels locally by default. Build, Sheet, Anim, and Video each expose the same five background choices: preserve the source, solid-color keying, browser-local IMG.LY, browser-local BiRefNet, or one selected model through the user's temporary Colab endpoint. IMG.LY has no Colab branch. All model choices are opt-in and never silently fall back to color keying. Solid-color keying always selects only candidate pixels that are four-way **outer-edge connected**, preserving matching subject details enclosed by non-matching pixels; enclosed background holes may therefore remain. Its edge handling is **decontaminate** by default, retaining a soft alpha edge while removing the keyed color from opaque composite edge pixels; **soft** retains original edge RGB and can leave a background-colored halo; **hard** removes every selected edge pixel and can produce jagged or shrunken contours. Auto-detected green screens use the same fixed connectivity and edge choices with their dedicated greenness matte/despill. The edge control is hidden and ignored for None, IMG.LY, local BiRefNet, and Colab.
+The web app processes image and video pixels locally by default. Build, Sheet, Anim, and Video each expose the same five background choices: preserve the source, solid-color keying, browser-local IMG.LY, browser-local BiRefNet, or one selected model through the user's temporary Colab endpoint. IMG.LY has no Colab branch. All model choices are opt-in and never silently fall back to color keying. Solid-color keying defaults to candidates that are four-way **outer-edge connected**, preserving enclosed matching subject details while possibly leaving enclosed background holes. Its edge handling can decontaminate, retain a soft matte, or use a hard edge. An explicit **whole-image color-code** scope instead scans every pixel and hard-removes RGB values within a `0.0%–20.0%` Chebyshev tolerance; `0.0%` means exact RGB only, and matching subject colors are removed by design. The slider uses `0.1%` steps plus `−/+ 0.1%` buttons. Video editors show up to three representative initial target-frame candidates and update a before/after pixel preview live while the tolerance moves. Color-key controls are hidden and ignored for None, IMG.LY, local BiRefNet, and Colab.
 
 IMG.LY downloads its self-hosted medium model and WASM runtime only when selected. The current model resources total 88,188,479 bytes (about 84 MiB). A clean desktop-Chrome verification completed eight opaque test images in about 116 seconds; this is evidence that the adapter works, not a runtime promise. The UI warns that first use can be slow and that phones may run out of memory or never finish.
 
@@ -344,10 +344,10 @@ bytes match their drafts and target-specific final-byte validation passes. If al
 but a LINE rule fails, the UI lists the errors and can produce an explicitly confirmed
 `NOT-LINE-COMPLIANT` ZIP. Missing required bytes remain a hard stop.
 
-Project ZIP V5 stores the selected product, raw-master sample/visual index, checksummed chunks, drafts,
+Project ZIP V6 stores the selected product, raw-master sample/visual index, checksummed chunks, drafts,
 current renders, selection evidence, and implementation versions. Import uses bounded streaming
-decompression, strict entry/path/schema checks, target/canvas checks, and SHA-256 verification. V5 records
-solid-color edge handling in drafts, current renders, and render-cache identity. V4 imports drop the retired
+decompression, strict entry/path/schema checks, target/canvas checks, and SHA-256 verification. V6 records
+solid-color scope, edge handling or whole-image tolerance in drafts, current renders, and render-cache identity. V5 edge-connected projects migrate losslessly. V4 imports drop the retired
 scope field: edge-connected current renders remain reusable, while renders made with all-matching are cleared
 and reported for rerender with the safe selector. V3 implicit global/soft color-key renders follow the same
 safety migration. V2 projects migrate explicitly to Animated Sticker; V1 projects remain importable as
@@ -359,12 +359,12 @@ requires 8, 16, or 24 Animated Stickers or Pop-up Stickers, or any integer from 
 or row changes update the source-cell count and restore the full-source equal grid immediately; changing only the
 output count preserves edited outer bounds and internal separators. Those shared guides define one row-major layout for
 the entire video, not a moving crop per frame. Solid-color keying is off by
-default because a background-like path reaching the outer edge can still include matching subject details,
-while background areas completely enclosed by the subject may remain.
+default because either deterministic scope can remove intended subject pixels: connected mode when a matching
+subject path touches the background, or whole-image mode anywhere the selected RGB tolerance matches.
 Colab multi-model removal is also off by default and requires an explicit connection. The source step reports the
 actual presentation-frame count, crop-frame count, and an upper-bound RGBA estimate before ingest.
 The beta hard limit is 512 MiB; users must shorten the editable range or reduce the grid when the estimate
-exceeds it. There is no master sampling-count control in V5.
+exceeds it. There is no master sampling-count control in V6.
 
 Pop-up is a complete Video output target because the user explicitly selects one final frame per item
 to generate the required paired static image; changing that selection does not re-encode the APNG. The
@@ -383,7 +383,7 @@ silently mix model generations. RMBG 2.0 additionally requires acceptance of the
 gated `bria-rmbg-2.0` custom license and a `HF_TOKEN` stored in Colab Secrets; this Notebook enables it
 only for noncommercial evaluation, and the token is never printed or sent to this application.
 
-Semantic foreground models can remove small, detached, thin, or low-contrast lettering because the mask is not text-aware. For existing artwork, prefer **None** when the source is already transparent, or use **Solid-color key** when the background is flat: its fixed outer-edge connectivity preserves matching lettering enclosed by non-matching artwork, although enclosed background holes may remain. Auto-detected green screens honor the same four-way connectivity and edge choices through their dedicated greenness matte/despill. For semantic removal, compositing text or a speech bubble after removing the subject remains the safest option. Thick opaque lettering with a strong outline, ideally touching an opaque subject or bubble, is more likely to survive but is not guaranteed. Once a model mask has reduced an entire glyph to zero alpha, thresholding or mask dilation cannot reconstruct it; a future protected-mask or post-removal text-overlay tool would be needed for in-app recovery.
+Semantic foreground models can remove small, detached, thin, or low-contrast lettering because the mask is not text-aware. For existing artwork, prefer **None** when the source is already transparent, or use the safe outer-edge **Solid-color key** when the background is flat; it preserves matching lettering enclosed by non-matching artwork, although enclosed background holes may remain. The opt-in whole-image color-code scope deliberately removes matching lettering anywhere in the raster, so use its representative-frame preview before applying it to animation. Auto-detected green screens use the dedicated greenness matte/despill in edge-connected mode. For semantic removal, compositing text or a speech bubble after removing the subject remains the safest option. Thick opaque lettering with a strong outline, ideally touching an opaque subject or bubble, is more likely to survive but is not guaranteed. Once a model mask has reduced an entire glyph to zero alpha, thresholding or mask dilation cannot reconstruct it; a future protected-mask or post-removal text-overlay tool would be needed for in-app recovery.
 
 ## LINE constraints targeted by the project
 
@@ -419,7 +419,7 @@ verified. PNG density may be reported as unknown; that warning is not converted 
 compliance. Inline meaning, first-frame clarity, rights, and review policy remain manual checks.
 
 Validation success is diagnostic, not proof that LINE will accept a package. Regular Emoji, Popup Sticker,
-and Video V5 paths inspect final delivery bytes for their target-specific evidence; some older CLI and
+and Video V6 paths inspect final delivery bytes for their target-specific evidence; some older CLI and
 browser adapters still provide less complete metadata. The source-grounded
 list of known functional and compliance gaps is [plan/implementation-audit.md](plan/implementation-audit.md).
 

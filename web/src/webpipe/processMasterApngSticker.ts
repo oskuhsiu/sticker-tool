@@ -69,6 +69,46 @@ export interface AnimatedByteEvidence {
   foregroundPixels: number;
 }
 
+export interface VideoRepresentativeFrame {
+  frame: Raster;
+  candidateIndex: number;
+  sourceIndex: number;
+  timestampUs: number;
+}
+
+/** Pick up to three time-uniform frames from the draft's initial target-frame candidates. */
+export async function loadVideoRepresentativeFrames(args: {
+  master: MasterApngSticker;
+  store: VideoMasterStore;
+  rangeStartUs: number;
+  rangeEndUs: number;
+  targetFrames: number;
+}): Promise<VideoRepresentativeFrame[]> {
+  const decoded = await decodeMasterSticker(args.master, args.store, args.rangeStartUs, args.rangeEndUs);
+  if (decoded.length === 0) return [];
+  const timings: SourceFrameTiming[] = decoded.map(({ sampleRef }) => ({
+    sourceIndex: sampleRef.sourceIndex,
+    timestampUs: sampleRef.timestampUs,
+    durationUs: sampleRef.durationUs,
+  }));
+  const candidatePositions = selectTimeUniformIndices(
+    timings,
+    Math.min(Math.max(1, Math.trunc(args.targetFrames)), timings.length),
+  );
+  const candidateTimings = candidatePositions.map((position) => timings[position]!);
+  const maximumPreviews = Math.min(3, candidatePositions.length);
+  return selectTimeUniformIndices(candidateTimings, maximumPreviews).map((candidateIndex) => {
+    const decodedIndex = candidatePositions[candidateIndex]!;
+    const selected = decoded[decodedIndex]!;
+    return {
+      frame: selected.frame,
+      candidateIndex,
+      sourceIndex: selected.sampleRef.sourceIndex,
+      timestampUs: selected.sampleRef.timestampUs,
+    };
+  });
+}
+
 export function inspectAnimatedBytes(
   png: Uint8Array,
   requestedFrames?: number,

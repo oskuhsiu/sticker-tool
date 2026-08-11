@@ -37,16 +37,27 @@ import type { ColorKeyOptions } from './colorKey.js';
 
 export function isColorKeyOptions(value: unknown): value is ColorKeyOptions {
   if (!value || typeof value !== 'object') return false;
-  const options = value as Partial<ColorKeyOptions> & { scope?: unknown };
+  const options = value as Record<string, unknown>;
+  if (options.scope === 'edge-connected') {
+    return (
+      Object.keys(options).length === 2 &&
+      (options.edge === 'soft' || options.edge === 'decontaminate' || options.edge === 'hard')
+    );
+  }
+  if (options.scope !== 'whole-image' || Object.keys(options).length !== 2) return false;
+  const tolerance = options.tolerancePercent;
   return (
-    options.scope === undefined &&
-    (options.edge === 'soft' || options.edge === 'decontaminate' || options.edge === 'hard')
+    typeof tolerance === 'number' &&
+    Number.isFinite(tolerance) &&
+    tolerance >= 0 &&
+    tolerance <= 20 &&
+    Math.abs(tolerance * 10 - Math.round(tolerance * 10)) < 1e-9
   );
 }
 
 export function assertSupportedColorKeyOptions(value: unknown): asserts value is ColorKeyOptions {
   if (!isColorKeyOptions(value)) {
-    throw new Error('單色色鍵不支援全圖相近色去背；請使用外框連通去背');
+    throw new Error('單色色鍵選項無效；全圖色碼容差必須是 0.0–20.0%，step 0.1%');
   }
 }
 

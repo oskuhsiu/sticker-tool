@@ -229,24 +229,35 @@ try {
   if (await buildRemoval.inputValue() !== 'none') throw new Error('本機圖片打包應預設不去背');
   const colorKeyScope = buildTab.getByLabel('單色色鍵去背範圍');
   const colorKeyEdge = buildTab.getByLabel('單色色鍵邊緣處理');
+  const colorKeyTolerance = buildTab.getByRole('slider', { name: '全圖色碼容差', exact: true });
   if (await colorKeyScope.count() || await colorKeyEdge.count()) {
     throw new Error('非單色色鍵模式不應顯示單色色鍵選項');
   }
   await buildRemoval.selectOption('color-key');
-  if (await colorKeyScope.count() || await colorKeyEdge.inputValue() !== 'decontaminate') {
-    throw new Error('單色色鍵應固定外框連通，且預設清除色暈');
+  if (await colorKeyScope.inputValue() !== 'edge-connected' || await colorKeyEdge.inputValue() !== 'decontaminate') {
+    throw new Error('單色色鍵應預設外框連通與清除色暈');
   }
-  await colorKeyEdge.selectOption('hard');
+  await colorKeyScope.selectOption('whole-image');
+  if (
+    await colorKeyTolerance.getAttribute('min') !== '0' ||
+    await colorKeyTolerance.getAttribute('max') !== '20' ||
+    await colorKeyTolerance.getAttribute('step') !== '0.1' ||
+    await colorKeyTolerance.inputValue() !== '0'
+  ) throw new Error('全圖色碼容差應為 0.0–20.0%，step 0.1%');
+  await buildTab.getByRole('button', { name: '提高全圖色碼容差 0.1%' }).click();
+  if (await colorKeyTolerance.inputValue() !== '0.1') throw new Error('全圖色碼 +0.1% 微調失敗');
   await buildRemoval.selectOption('imgly');
-  if (await colorKeyScope.count() || await colorKeyEdge.count()) {
+  if (await colorKeyScope.count() || await colorKeyEdge.count() || await colorKeyTolerance.count()) {
     throw new Error('IMG.LY 不應顯示單色色鍵選項');
   }
   await buildRemoval.selectOption('color-key');
-  if (await colorKeyScope.count() || await colorKeyEdge.inputValue() !== 'hard') {
-    throw new Error('切換去背模式後應保留單色色鍵邊緣選項，但不能套用到其他模式');
+  if (await colorKeyScope.inputValue() !== 'whole-image' || await colorKeyTolerance.inputValue() !== '0.1') {
+    throw new Error('切換去背模式後應保留全圖色碼容差，但不能套用到其他模式');
   }
+  await colorKeyScope.selectOption('edge-connected');
+  await colorKeyEdge.selectOption('hard');
   await buildRemoval.selectOption('none');
-  results.push('✓ 單色色鍵固定外框連通；邊緣選項只在該模式顯示且切換後保留');
+  results.push('✓ 單色色鍵可選外框連通／全圖色碼；0.0–20.0% slider 與 0.1% 微調只在該模式顯示');
   await page.click('text=開始打包');
   await expectText('build', '全部符合 LINE 規格');
   const nImgs = await page.locator('[data-tab="build"] .sticker-grid img').count();

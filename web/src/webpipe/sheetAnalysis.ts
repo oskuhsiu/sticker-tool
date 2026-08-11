@@ -1,7 +1,8 @@
 /**
  * 組圖切格（瀏覽器版）：偵測背景 → 去背成透明 → 由前景占用剖面規劃「參照」切線
  * → 元件式抽格（@core/cells：格線僅參照、逐格偵測實際範圍、越線不切斷、空格回報）。
- * 綠幕門檻與 CLI 版一致；瀏覽器色鍵只處理外框四向連通的背景區域。
+ * 綠幕門檻與 CLI 版一致；瀏覽器色鍵預設只處理外框四向連通背景，
+ * 使用者也可明確選擇以色差容差掃描全圖並硬挖符合像素。
  * 切線規劃與抽格直接重用 @core 的純函式。
  *
  * 去背一律走色鍵（綠幕／單色），不用 @imgly 語意模型——sheet 流程曾卡在 ~80MB
@@ -12,6 +13,7 @@ import { inferAxisCells, planCutsFromProfile, type CutPlan } from '@core/sheet.j
 import { extractCells, type CellMeta } from '@core/cells.js';
 import {
   DEFAULT_COLOR_KEY_OPTIONS,
+  type EdgeConnectedColorKeyOptions,
   type ColorKeyOptions,
 } from '@core/colorKey.js';
 import { assertSupportedColorKeyOptions } from '@core/validate.js';
@@ -44,7 +46,7 @@ export interface KeyOptions {
   preRemovedLabel?: string;
   /** 使用者點選的背景色：指定時用此色做單色色鍵（蓋過自動偵測） */
   pickColor?: [number, number, number] | null;
-  /** 僅供單色色鍵使用的範圍與邊緣策略。 */
+  /** 僅供單色色鍵使用的範圍、容差與邊緣策略。 */
   colorKey?: ColorKeyOptions;
 }
 
@@ -144,7 +146,7 @@ function selectEdgeConnected(
  * 綠幕色鍵。greenness 候選只選取外框 4 向連通區；soft 保留 RGB，
  * decontaminate 套用既有綠色 despill，hard 則把候選直接設為透明。
  */
-export function chromaKeyGreen(src: Raster, options: ColorKeyOptions): Raster {
+export function chromaKeyGreen(src: Raster, options: EdgeConnectedColorKeyOptions): Raster {
   assertSupportedColorKeyOptions(options);
   const { data, width: W, height: H } = src;
   const out = new Uint8ClampedArray(data);
@@ -176,8 +178,8 @@ export function chromaKeyGreen(src: Raster, options: ColorKeyOptions): Raster {
 }
 
 /**
- * 單色色鍵：候選是與背景色 Chebyshev 距離 < HI、且與外框 4 向連通的像素。
- * edge 決定 soft matte、去色暈或 hard alpha。
+ * 單色色鍵：外框模式以固定候選距離 flood fill，edge 決定 soft matte／去色暈／hard alpha；
+ * 全圖模式則依使用者的 0–20% Chebyshev 容差，把每個符合像素直接設為透明。
  */
 const SOLID_LO = 20;
 const SOLID_HI = 64;
@@ -201,6 +203,13 @@ export function chromaKeySolid(
       Math.abs(data[i + 2]! - b0),
     );
   };
+  if (options.scope === 'whole-image') {
+    const maximumDistance = options.tolerancePercent * 255 / 100;
+    for (let p = 0; p < pixels; p++) {
+      if (distance(p) <= maximumDistance) out[p * 4 + 3] = 0;
+    }
+    return { data: out, width: W, height: H };
+  }
   const selected = selectEdgeConnected(W, H, (pixel) => distance(pixel) < SOLID_HI);
   for (let p = 0; p < pixels; p++) {
     if (selected[p] !== 2) continue;
@@ -234,6 +243,13 @@ export function keyBackground(src: Raster, bg: Background, opts: KeyOptions = {}
   const colorKey = opts.colorKey ?? DEFAULT_COLOR_KEY_OPTIONS;
   if (opts.pickColor) return chromaKeySolid(src, opts.pickColor, colorKey);
   if (bg.kind === 'transparent') return src;
+  if (colorKey.scope === 'whole-image') {
+    return chromaKeySolid(src, [
+      Math.round(bg.color[0]),
+      Math.round(bg.color[1]),
+      Math.round(bg.color[2]),
+    ], colorKey);
+  }
   if (bg.kind === 'green') return chromaKeyGreen(src, colorKey);
   return chromaKeySolid(src, [
     Math.round(bg.color[0]),
@@ -267,6 +283,7 @@ export async function analyzeSheet(
   const { cols, rows } = grid;
   const warnings: string[] = [];
   const background = detectBackground(src);
+  const colorKey = key.colorKey ?? DEFAULT_COLOR_KEY_OPTIONS;
   const keyed = keyBackground(src, background, key);
   const { colOcc, rowOcc } = foregroundProfiles(keyed);
 
@@ -287,11 +304,21 @@ export async function analyzeSheet(
     warnings.push(`已由 ${key.preRemovedLabel} 完成語意去背，再以完整 alpha mask 分析縫隙與跨格元件。`);
   } else if (key.autoRemove === false) {
     warnings.push('已關閉自動去背：直接使用原圖 alpha（圖須已是透明底，否則切格會失敗）。');
+  } else if (key.pickColor && colorKey.scope === 'whole-image') {
+    const [r, g, b] = key.pickColor;
+    warnings.push(
+      `以點選色 rgb(${r},${g},${b}) 掃描全圖，硬挖色差容差 ${colorKey.tolerancePercent.toFixed(1)}% 內的像素。`,
+    );
   } else if (key.pickColor) {
     const [r, g, b] = key.pickColor;
     warnings.push(
       `以點選色 rgb(${r},${g},${b}) 做外框連通單色色鍵去背；` +
         '被非背景色完整包住的同色細節會保留，封閉的背景洞也可能保留。',
+    );
+  } else if (background.kind !== 'transparent' && colorKey.scope === 'whole-image') {
+    const [r, g, b] = background.color;
+    warnings.push(
+      `以偵測色 rgb(${r | 0},${g | 0},${b | 0}) 掃描全圖，硬挖色差容差 ${colorKey.tolerancePercent.toFixed(1)}% 內的像素。`,
     );
   } else if (background.kind === 'opaque') {
     const [r, g, b] = background.color;
