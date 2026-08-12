@@ -202,7 +202,9 @@ export function SheetTab() {
               ? {
                   autoRemove: true,
                   colorKey: colorKeyOptions,
-                  ...(colorKeyOptions.scope === 'whole-image' ? { pickColor: wholeImageColor } : {}),
+                  ...((colorKeyOptions.scope === 'whole-image' || !backgroundColorAutomatic)
+                    ? { pickColor: wholeImageColor }
+                    : {}),
                   preparedResult: {
                     raster: removal!.corrected,
                     sessionIdentity: removal!.sessionIdentity,

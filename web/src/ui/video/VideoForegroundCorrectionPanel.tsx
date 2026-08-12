@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ColorKeyCalibrationDiagnostics } from '../../webpipe/preparedColorKey.js';
 import type { KeepMask } from '../../webpipe/foregroundCorrection.js';
 import type { VideoRawVisualFrame } from '../../webpipe/processMasterApngSticker.js';
@@ -42,6 +42,7 @@ export function VideoForegroundCorrectionPanel(props: {
   onCopyToRange: () => void;
   onClearSticker: () => void;
 }) {
+  const [selectorOpen, setSelectorOpen] = useState(true);
   const selectedIndex = props.visuals.findIndex((visual) => visual.visualFrameId === props.selectedVisualFrameId);
   return (
     <section className="video-key-preview" data-testid="video-foreground-correction">
@@ -53,7 +54,15 @@ export function VideoForegroundCorrectionPanel(props: {
       {props.loading && <div role="status">正在載入並校準 raw visuals…</div>}
       {props.error && <div className="video-inline-error">Raw visual 載入失敗：{props.error}</div>}
       {!props.loading && props.visuals.length > 0 && (
-        <>
+        <details
+          className="video-raw-visual-selector"
+          data-testid="video-raw-visual-selector"
+          open={selectorOpen}
+          onToggle={(event) => setSelectorOpen(event.currentTarget.open)}
+        >
+          <summary>
+            選取 raw visual（{props.visuals.length} 格；{props.editedVisualIds.size} 格有修正）
+          </summary>
           <div className="video-key-frame-selector" role="group" aria-label="Raw visual 選擇">
             {props.visuals.map((visual, index) => {
               const edited = props.editedVisualIds.has(visual.visualFrameId);
@@ -86,7 +95,7 @@ export function VideoForegroundCorrectionPanel(props: {
               {props.editedVisualIds.size} 個 visual 有修正
             </span>
           </div>
-        </>
+        </details>
       )}
       {props.mode === 'none' && (
         <p className="tab-desc">目前是「不去背」；既有保留修正會保留，但不需要套用。</p>

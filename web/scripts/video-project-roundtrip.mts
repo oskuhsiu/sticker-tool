@@ -579,6 +579,28 @@ assert.deepEqual(restoredWholeImage.manifest.settings[0]!.background.colorKey, {
 });
 console.log('Project V7 preserves explicit whole-image tolerance without aliasing legacy all-matching');
 
+const combinedSettings = settings.map((setting, index): VideoStickerSettings => index === 0
+  ? {
+      ...setting,
+      background: {
+        mode: 'color-key',
+        colorKey: {
+          scope: 'edge-and-whole-image',
+          edge: 'decontaminate',
+          tolerancePercent: 1.2,
+        },
+      },
+    }
+  : setting);
+const combinedProject = await buildVideoProjectZip({ ...projectArgs, settings: combinedSettings });
+const restoredCombined = await importVideoProjectZip(combinedProject.zip);
+assert.deepEqual(restoredCombined.manifest.settings[0]!.background.colorKey, {
+  scope: 'edge-and-whole-image',
+  edge: 'decontaminate',
+  tolerancePercent: 1.2,
+});
+console.log('Project V7 preserves the composed edge-connected plus whole-image color-key mode');
+
 const v5Archive = unzipSync(built.zip);
 const v5Manifest = JSON.parse(new TextDecoder().decode(v5Archive['sticker-project.json'])) as {
   version: number;
@@ -1200,6 +1222,18 @@ const tolerantWholeImageCacheKey = VideoFrameRenderCache.key({
 });
 assert.notEqual(cleanEdgeCacheKey, exactWholeImageCacheKey, 'whole-image scope must invalidate edge-connected renders');
 assert.notEqual(exactWholeImageCacheKey, tolerantWholeImageCacheKey, 'whole-image tolerance must invalidate rendered frames');
+const combinedColorKeyCacheKey = VideoFrameRenderCache.key({
+  stickerId: 'sticker-01',
+  ...strongCacheIdentity,
+  removerVersion: 'color-key@4',
+  background: {
+    mode: 'color-key',
+    color: '#00ff00',
+    colorKey: { scope: 'edge-and-whole-image', edge: 'decontaminate', tolerancePercent: 0.1 },
+  },
+});
+assert.notEqual(cleanEdgeCacheKey, combinedColorKeyCacheKey, 'combined scope must invalidate edge-only renders');
+assert.notEqual(tolerantWholeImageCacheKey, combinedColorKeyCacheKey, 'combined scope must invalidate whole-image-only renders');
 const irrelevantOptionKey = VideoFrameRenderCache.key({
   stickerId: 'sticker-01',
   ...strongCacheIdentity,

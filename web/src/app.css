@@ -1032,6 +1032,14 @@ textarea {
 .video-key-preview h4 {
   margin: 0 0 0.35rem;
 }
+.video-raw-visual-selector > summary {
+  margin-bottom: 0.55rem;
+  cursor: pointer;
+  font-weight: 650;
+}
+.video-raw-visual-selector:not([open]) > summary {
+  margin-bottom: 0;
+}
 .video-key-frame-selector {
   display: flex;
   gap: 0.5rem;

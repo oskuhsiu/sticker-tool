@@ -1,5 +1,7 @@
 import {
   DEFAULT_COLOR_KEY_OPTIONS,
+  colorKeyUsesEdge,
+  colorKeyUsesWholeImage,
   copyColorKeyOptions,
   type ColorKeyOptions,
 } from '@core/colorKey.js';
@@ -491,6 +493,14 @@ function renderWholeImage(input: Raster, center: Rgb | null, tolerancePercent: n
   return { data: output, width: input.width, height: input.height };
 }
 
+function countRemovedSourcePixels(source: Raster, output: Raster): number {
+  let removed = 0;
+  for (let pixel = 0; pixel < source.width * source.height; pixel++) {
+    if (source.data[pixel * 4 + 3]! > 0 && output.data[pixel * 4 + 3] === 0) removed++;
+  }
+  return removed;
+}
+
 function renderEdgeConnected(
   input: Raster,
   cluster: BackgroundCluster,
@@ -717,16 +727,15 @@ export async function prepareColorKeySession(
       let raster = input;
       let backgroundPixelCount = 0;
       let unknownPixelCount = 0;
-      if (colorKey.scope === 'whole-image') {
-        raster = renderWholeImage(input, detectedColor, colorKey.tolerancePercent);
-        for (let pixel = 0; pixel < input.width * input.height; pixel++) {
-          if (input.data[pixel * 4 + 3]! > 0 && raster.data[pixel * 4 + 3] === 0) backgroundPixelCount++;
-        }
-      } else if (cluster !== null) {
+      if (colorKeyUsesEdge(colorKey) && cluster !== null) {
         const rendered = renderEdgeConnected(input, cluster, colorKey.edge);
         raster = rendered.raster;
         backgroundPixelCount = rendered.backgroundPixelCount;
         unknownPixelCount = rendered.unknownPixelCount;
+      }
+      if (colorKeyUsesWholeImage(colorKey)) {
+        raster = renderWholeImage(raster, detectedColor, colorKey.tolerancePercent);
+        backgroundPixelCount = countRemovedSourcePixels(input, raster);
       }
       const renderDiagnostics: ColorKeyRenderDiagnostics = Object.freeze({
         ...diagnostics,

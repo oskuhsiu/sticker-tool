@@ -183,6 +183,35 @@ async function main(): Promise<void> {
   assert.ok(pinkResult.diagnostics.unknownPixelCount > 0, 'render diagnostics count trimap unknown pixels');
   assert.ok(pinkResult.diagnostics.changedPixelCount > 0, 'render diagnostics count changed pixels');
 
+  const combinedPinkSession = await prepareColorKeySession([pinkFixture], {
+    manualColor: [207, 86, 123],
+    colorKey: {
+      scope: 'edge-and-whole-image',
+      edge: 'decontaminate',
+      tolerancePercent: 0,
+    },
+  });
+  const combinedPinkResult = combinedPinkSession.render(pinkFixture).raster;
+  assert.equal(
+    alphaAt(combinedPinkResult, 1, 0),
+    0,
+    'combined mode removes clustered background connected to the outer edge',
+  );
+  assert.equal(
+    alphaAt(combinedPinkResult, 5, 5),
+    0,
+    'combined mode also removes an enclosed exact whole-image color-code match',
+  );
+  const combinedEdge = [...combinedPinkResult.data.slice(edgeOffset, edgeOffset + 4)];
+  assert.ok(
+    combinedEdge[3]! > 0 && combinedEdge[3]! < 255,
+    'combined mode retains the decontaminated fractional outline matte',
+  );
+  assert.ok(
+    Math.max(...combinedEdge.slice(0, 3)) - Math.min(...combinedEdge.slice(0, 3)) <= 4,
+    'combined mode removes pink spill from the retained white outline',
+  );
+
   const colorManagedPink = solid(11, 11, [191, 94, 122, 255]);
   for (let y = 3; y <= 7; y++) {
     for (let x = 3; x <= 7; x++) setPixel(colorManagedPink, x, y, [255, 255, 255, 255]);

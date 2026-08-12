@@ -35,6 +35,16 @@ import {
 import type { ValidationIssue, ValidationResult } from './types.js';
 import type { ColorKeyOptions } from './colorKey.js';
 
+function isWholeImageTolerance(value: unknown): value is number {
+  return (
+    typeof value === 'number' &&
+    Number.isFinite(value) &&
+    value >= 0 &&
+    value <= 20 &&
+    Math.abs(value * 10 - Math.round(value * 10)) < 1e-9
+  );
+}
+
 export function isColorKeyOptions(value: unknown): value is ColorKeyOptions {
   if (!value || typeof value !== 'object') return false;
   const options = value as Record<string, unknown>;
@@ -44,14 +54,14 @@ export function isColorKeyOptions(value: unknown): value is ColorKeyOptions {
       (options.edge === 'soft' || options.edge === 'decontaminate' || options.edge === 'hard')
     );
   }
-  if (options.scope !== 'whole-image' || Object.keys(options).length !== 2) return false;
-  const tolerance = options.tolerancePercent;
+  if (options.scope === 'whole-image') {
+    return Object.keys(options).length === 2 && isWholeImageTolerance(options.tolerancePercent);
+  }
   return (
-    typeof tolerance === 'number' &&
-    Number.isFinite(tolerance) &&
-    tolerance >= 0 &&
-    tolerance <= 20 &&
-    Math.abs(tolerance * 10 - Math.round(tolerance * 10)) < 1e-9
+    options.scope === 'edge-and-whole-image' &&
+    Object.keys(options).length === 3 &&
+    (options.edge === 'soft' || options.edge === 'decontaminate' || options.edge === 'hard') &&
+    isWholeImageTolerance(options.tolerancePercent)
   );
 }
 

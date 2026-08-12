@@ -1,5 +1,5 @@
 import type { VideoGridPlan } from '@core/videoCrop.js';
-import type { ColorKeyOptions } from '@core/colorKey.js';
+import { colorKeyUsesEdge, type ColorKeyOptions } from '@core/colorKey.js';
 import type { VideoBackgroundMode, VideoOutputTarget } from '@core/videoProject.js';
 import type { VideoMetadata } from '../../webpipe/videoSource.js';
 import { Field, Row } from '../common.jsx';
@@ -67,7 +67,7 @@ export function VideoSourceStep(props: {
             <option value="colab-birefnet">Colab 多模型去背（實驗性）</option>
           </select>
         </Field>
-        {props.defaultBackground === 'color-key' && props.colorKeyOptions.scope === 'edge-connected' && (
+        {props.defaultBackground === 'color-key' && colorKeyUsesEdge(props.colorKeyOptions) && (
           <Field label="背景中心"><label><input
             type="checkbox"
             checked={props.colorAutomatic}
@@ -76,7 +76,7 @@ export function VideoSourceStep(props: {
           />自動取樣外框</label></Field>
         )}
         {props.defaultBackground === 'color-key' && <Field label="背景色"><input
-          disabled={props.busy || (props.colorKeyOptions.scope === 'edge-connected' && props.colorAutomatic)}
+          disabled={props.busy || (colorKeyUsesEdge(props.colorKeyOptions) && props.colorAutomatic)}
           type="color"
           value={props.color}
           onChange={(event) => { props.onColor(event.target.value); props.onColorAutomatic(false); }}

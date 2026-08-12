@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { emojiFileName, stickerFileName } from '@core/naming.js';
 import {
   DEFAULT_COLOR_KEY_OPTIONS,
+  colorKeyOptionsEqual,
+  colorKeyUsesEdge,
   copyColorKeyOptions,
   type ColorKeyOptions,
 } from '@core/colorKey.js';
@@ -157,10 +159,7 @@ function settingsEqual(a: VideoStickerSettings, b: VideoStickerSettings): boolea
     a.background.tolerance === b.background.tolerance &&
     (a.background.mode !== 'color-key' || (
       b.background.mode === 'color-key' &&
-      a.background.colorKey.scope === b.background.colorKey.scope &&
-      (a.background.colorKey.scope === 'edge-connected'
-        ? b.background.colorKey.scope === 'edge-connected' && a.background.colorKey.edge === b.background.colorKey.edge
-        : b.background.colorKey.scope === 'whole-image' && a.background.colorKey.tolerancePercent === b.background.colorKey.tolerancePercent)
+      colorKeyOptionsEqual(a.background.colorKey, b.background.colorKey)
     ))
   );
 }
@@ -1412,13 +1411,13 @@ export function VideoTab() {
                   <option value="colab-birefnet">Colab 多模型去背</option>
                 </select>
               </label>
-              {commonBackground === 'color-key' && colorKeyOptions.scope === 'edge-connected' && (
+              {commonBackground === 'color-key' && colorKeyUsesEdge(colorKeyOptions) && (
                 <label><input type="checkbox" checked={backgroundColorAutomatic} onChange={(event) => setBackgroundColorAutomatic(event.target.checked)} />自動取樣外框</label>
               )}
               {commonBackground === 'color-key' && <label>共同背景色<input
                 type="color"
                 value={backgroundColor}
-                disabled={colorKeyOptions.scope === 'edge-connected' && backgroundColorAutomatic}
+                disabled={colorKeyUsesEdge(colorKeyOptions) && backgroundColorAutomatic}
                 onChange={(event) => { setBackgroundColor(event.target.value); setBackgroundColorAutomatic(false); }}
               /></label>}
               <button className="btn small" disabled={busy} onClick={applyCommonSettings}>套用共同設定到所有貼圖</button>

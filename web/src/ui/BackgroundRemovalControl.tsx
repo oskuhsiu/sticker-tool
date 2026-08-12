@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import {
   DEFAULT_WHOLE_IMAGE_TOLERANCE_PERCENT,
+  colorKeyUsesEdge,
+  colorKeyUsesWholeImage,
   type ColorKeyEdge,
   type ColorKeyOptions,
 } from '@core/colorKey.js';
@@ -37,11 +39,20 @@ export interface ColorKeyOptionFieldsProps {
 }
 
 export function ColorKeyOptionFields(props: ColorKeyOptionFieldsProps) {
-  const edgeOptions = props.value.scope === 'edge-connected' ? props.value : null;
-  const wholeImageOptions = props.value.scope === 'whole-image' ? props.value : null;
+  const edgeOptions = colorKeyUsesEdge(props.value) ? props.value : null;
+  const wholeImageOptions = colorKeyUsesWholeImage(props.value) ? props.value : null;
   const setTolerance = (value: number) => {
     const tolerancePercent = Math.round(Math.max(0, Math.min(20, value)) * 10) / 10;
-    props.onChange({ scope: 'whole-image', tolerancePercent });
+    props.onChange(props.value.scope === 'edge-and-whole-image'
+      ? { ...props.value, tolerancePercent }
+      : { scope: 'whole-image', tolerancePercent });
+  };
+  const setScope = (scope: ColorKeyOptions['scope']): void => {
+    const edge = edgeOptions?.edge ?? 'decontaminate';
+    const tolerancePercent = wholeImageOptions?.tolerancePercent ?? DEFAULT_WHOLE_IMAGE_TOLERANCE_PERCENT;
+    if (scope === 'edge-connected') props.onChange({ scope, edge });
+    else if (scope === 'whole-image') props.onChange({ scope, tolerancePercent });
+    else props.onChange({ scope, edge, tolerancePercent });
   };
   return (
     <>
@@ -51,11 +62,10 @@ export function ColorKeyOptionFields(props: ColorKeyOptionFieldsProps) {
             aria-label="單色色鍵去背範圍"
             value={props.value.scope}
             disabled={props.disabled}
-            onChange={(event) => props.onChange(event.target.value === 'whole-image'
-              ? { scope: 'whole-image', tolerancePercent: DEFAULT_WHOLE_IMAGE_TOLERANCE_PERCENT }
-              : { scope: 'edge-connected', edge: 'decontaminate' })}
+            onChange={(event) => setScope(event.target.value as ColorKeyOptions['scope'])}
           >
             <option value="edge-connected">外框連通（安全預設）</option>
+            <option value="edge-and-whole-image">外框連通＋全圖色碼</option>
             <option value="whole-image">全圖色碼（符合就挖掉）</option>
           </select>
         </Field>
@@ -64,10 +74,9 @@ export function ColorKeyOptionFields(props: ColorKeyOptionFieldsProps) {
           aria-label="單色色鍵邊緣處理"
           value={edgeOptions.edge}
           disabled={props.disabled}
-          onChange={(event) => props.onChange({
-            scope: 'edge-connected',
-            edge: event.target.value as ColorKeyEdge,
-          })}
+          onChange={(event) => props.onChange(props.value.scope === 'edge-and-whole-image'
+            ? { ...props.value, edge: event.target.value as ColorKeyEdge }
+            : { scope: 'edge-connected', edge: event.target.value as ColorKeyEdge })}
         >
           <option value="decontaminate">清除色暈（建議）</option>
           <option value="soft">柔和邊緣（可能留背景圈）</option>
@@ -153,6 +162,7 @@ export function BackgroundRemovalControl(props: BackgroundRemovalControlProps) {
   const countText = props.inferenceCount && props.inferenceCount > 0
     ? `這次約 ${props.inferenceCount} 次推論。`
     : '';
+  const usesConnectedPass = colorKeyUsesEdge(props.colorKeyOptions);
 
   return (
     <>
@@ -170,7 +180,7 @@ export function BackgroundRemovalControl(props: BackgroundRemovalControlProps) {
             <option value="colab-birefnet">Colab 多模型去背</option>
           </select>
         </Field>
-        {props.value === 'color-key' && props.colorKeyOptions.scope === 'edge-connected' && props.onColorAutomaticChange && (
+        {props.value === 'color-key' && usesConnectedPass && props.onColorAutomaticChange && (
           <Field label="背景中心">
             <label>
               <input
@@ -188,7 +198,7 @@ export function BackgroundRemovalControl(props: BackgroundRemovalControlProps) {
             <input
               type="color"
               value={props.color}
-              disabled={props.disabled || (props.colorKeyOptions.scope === 'edge-connected' && (props.colorAutomatic ?? false))}
+              disabled={props.disabled || (usesConnectedPass && (props.colorAutomatic ?? false))}
               onChange={(event) => {
                 props.onColorAutomaticChange?.(false);
                 props.onColorChange?.(event.target.value);
@@ -212,7 +222,9 @@ export function BackgroundRemovalControl(props: BackgroundRemovalControlProps) {
       )}
       {props.value === 'color-key' && (
         <div className="ai-local-notice" role="status">
-          {props.colorKeyOptions.scope === 'whole-image' ? (
+          {props.colorKeyOptions.scope === 'edge-and-whole-image' ? (
+            <><strong>外框連通＋全圖色碼：</strong>先以四向外框連通與所選邊緣處理清背景，再用同一背景中心和容差掃描全圖，補清封閉區域；全圖符合的主體色也會被挖掉。</>
+          ) : props.colorKeyOptions.scope === 'whole-image' ? (
             <><strong>全圖色碼：</strong>掃描整張圖，符合指定色碼與容差的像素會直接變透明；主體內同色像素也會被挖掉。</>
           ) : (
             <><strong>外框連通：</strong>{props.colorAutomatic ?? false ? '自動學習外框的主要背景色；' : '使用指定背景中心並保留外框取樣到的色差；'}只清除與外框四向連通的近色背景，以保留被主體包住的同色細節；封閉背景洞可能保留。清除色暈可減少背景圈；硬邊可能產生鋸齒。</>

@@ -11,8 +11,18 @@ export interface WholeImageColorKeyOptions {
   tolerancePercent: number;
 }
 
+export interface EdgeAndWholeImageColorKeyOptions {
+  scope: 'edge-and-whole-image';
+  edge: ColorKeyEdge;
+  /** Maximum RGB Chebyshev distance for the whole-image cleanup pass, normalized to 0–100%. */
+  tolerancePercent: number;
+}
+
 /** Options that only apply to deterministic browser color-key removal. */
-export type ColorKeyOptions = EdgeConnectedColorKeyOptions | WholeImageColorKeyOptions;
+export type ColorKeyOptions =
+  | EdgeConnectedColorKeyOptions
+  | WholeImageColorKeyOptions
+  | EdgeAndWholeImageColorKeyOptions;
 
 /** New color-key jobs favor subject safety while removing composite color halos. */
 export const DEFAULT_COLOR_KEY_OPTIONS: Readonly<ColorKeyOptions> = Object.freeze({
@@ -29,7 +39,45 @@ export const LEGACY_COLOR_KEY_OPTIONS = Object.freeze({
 } as const);
 
 export function copyColorKeyOptions(options: Readonly<ColorKeyOptions>): ColorKeyOptions {
-  return options.scope === 'whole-image'
-    ? { scope: options.scope, tolerancePercent: options.tolerancePercent }
-    : { scope: options.scope, edge: options.edge };
+  if (options.scope === 'whole-image') {
+    return { scope: options.scope, tolerancePercent: options.tolerancePercent };
+  }
+  if (options.scope === 'edge-and-whole-image') {
+    return {
+      scope: options.scope,
+      edge: options.edge,
+      tolerancePercent: options.tolerancePercent,
+    };
+  }
+  return { scope: options.scope, edge: options.edge };
+}
+
+export function colorKeyUsesEdge(
+  options: Readonly<ColorKeyOptions>,
+): options is EdgeConnectedColorKeyOptions | EdgeAndWholeImageColorKeyOptions {
+  return options.scope === 'edge-connected' || options.scope === 'edge-and-whole-image';
+}
+
+export function colorKeyUsesWholeImage(
+  options: Readonly<ColorKeyOptions>,
+): options is WholeImageColorKeyOptions | EdgeAndWholeImageColorKeyOptions {
+  return options.scope === 'whole-image' || options.scope === 'edge-and-whole-image';
+}
+
+export function colorKeyOptionsEqual(
+  left: Readonly<ColorKeyOptions>,
+  right: Readonly<ColorKeyOptions>,
+): boolean {
+  if (left.scope !== right.scope) return false;
+  if (left.scope === 'edge-connected') {
+    return right.scope === 'edge-connected' && left.edge === right.edge;
+  }
+  if (left.scope === 'whole-image') {
+    return right.scope === 'whole-image' && left.tolerancePercent === right.tolerancePercent;
+  }
+  return (
+    right.scope === 'edge-and-whole-image' &&
+    left.edge === right.edge &&
+    left.tolerancePercent === right.tolerancePercent
+  );
 }

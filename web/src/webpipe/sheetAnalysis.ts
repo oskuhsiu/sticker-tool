@@ -2,7 +2,7 @@
  * 組圖切格（瀏覽器版）：偵測背景 → 去背成透明 → 由前景占用剖面規劃「參照」切線
  * → 元件式抽格（@core/cells：格線僅參照、逐格偵測實際範圍、越線不切斷、空格回報）。
  * 綠幕門檻與 CLI 版一致；瀏覽器色鍵預設只處理外框四向連通背景，
- * 使用者也可明確選擇以色差容差掃描全圖並硬挖符合像素。
+ * 使用者也可明確選擇以色差容差掃描全圖，或接在外框連通後補清封閉背景。
  * 切線規劃與抽格直接重用 @core 的純函式。
  *
  * 去背一律走色鍵（綠幕／單色），不用 @imgly 語意模型——sheet 流程曾卡在 ~80MB
@@ -172,6 +172,11 @@ export async function analyzeSheet(
     warnings.push(`已由 ${key.preRemovedLabel} 完成語意去背，再以完整 alpha mask 分析縫隙與跨格元件。`);
   } else if (key.autoRemove === false) {
     warnings.push('已關閉自動去背：直接使用原圖 alpha（圖須已是透明底，否則切格會失敗）。');
+  } else if (key.pickColor && colorKey.scope === 'edge-and-whole-image') {
+    const [r, g, b] = key.pickColor;
+    warnings.push(
+      `以點選色 rgb(${r},${g},${b}) 先做外框連通去背，再以 ${colorKey.tolerancePercent.toFixed(1)}% 容差掃描全圖補清。`,
+    );
   } else if (key.pickColor && colorKey.scope === 'whole-image') {
     const [r, g, b] = key.pickColor;
     warnings.push(
@@ -182,6 +187,11 @@ export async function analyzeSheet(
     warnings.push(
       `以點選色 rgb(${r},${g},${b}) 做外框連通單色色鍵去背；` +
         '被非背景色完整包住的同色細節會保留，封閉的背景洞也可能保留。',
+    );
+  } else if (background.kind !== 'transparent' && colorKey.scope === 'edge-and-whole-image') {
+    const [r, g, b] = background.color;
+    warnings.push(
+      `以偵測色 rgb(${r | 0},${g | 0},${b | 0}) 先做外框連通去背，再以 ${colorKey.tolerancePercent.toFixed(1)}% 容差掃描全圖補清。`,
     );
   } else if (background.kind !== 'transparent' && colorKey.scope === 'whole-image') {
     const [r, g, b] = background.color;

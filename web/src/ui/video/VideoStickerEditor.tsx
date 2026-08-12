@@ -1,7 +1,7 @@
 import { useMemo, type ReactNode } from 'react';
 import { emojiFileName, stickerFileName } from '@core/naming.js';
 import { ANIMATED_EMOJI_SPEC, ANIMATED_SPEC, POPUP_STICKER_SPEC } from '@core/spec.js';
-import { DEFAULT_COLOR_KEY_OPTIONS, copyColorKeyOptions } from '@core/colorKey.js';
+import { DEFAULT_COLOR_KEY_OPTIONS, colorKeyUsesEdge, copyColorKeyOptions } from '@core/colorKey.js';
 import type { VideoBackgroundMode, VideoOutputTarget } from '@core/videoProject.js';
 import {
   validateVideoStickerSettings,
@@ -101,7 +101,7 @@ export function VideoStickerEditor(props: {
       </Row>
       <Row>
         <Field label="去背模式"><select disabled={props.legacyBaked} value={settings.background.mode} onChange={(event) => setBackgroundMode(event.target.value as VideoBackgroundMode)}><option value="none">不去背</option><option value="color-key">單色色鍵</option><option value="imgly">IMG.LY（本機）</option><option value="local-birefnet">本機 BiRefNet</option><option value="colab-birefnet">Colab 多模型去背</option></select></Field>
-        {settings.background.mode === 'color-key' && settings.background.colorKey.scope === 'edge-connected' && (
+        {settings.background.mode === 'color-key' && colorKeyUsesEdge(settings.background.colorKey) && (
           <Field label="背景中心"><label><input
             type="checkbox"
             checked={settings.background.color === undefined}
@@ -119,7 +119,7 @@ export function VideoStickerEditor(props: {
         {settings.background.mode === 'color-key' && <Field label="背景色"><input
           type="color"
           value={settings.background.color ?? '#00ff00'}
-          disabled={props.legacyBaked || (settings.background.colorKey.scope === 'edge-connected' && settings.background.color === undefined)}
+          disabled={props.legacyBaked || (colorKeyUsesEdge(settings.background.colorKey) && settings.background.color === undefined)}
           onChange={(event) => {
             if (settings.background.mode !== 'color-key') return;
             props.onChange({ ...settings, background: { ...settings.background, color: event.target.value } });

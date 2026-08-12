@@ -292,6 +292,13 @@ async function buildRawMaster(expectedCount) {
 async function assertWholeImageCorrectionPreview() {
   const editor = page.locator('[data-tab="video"] .video-sticker-editor');
   const scope = editor.getByLabel('單色色鍵去背範圍');
+  await scope.selectOption('edge-and-whole-image');
+  if (await editor.getByLabel('單色色鍵邊緣處理').inputValue() !== 'decontaminate') {
+    throw new Error('Video 外框＋全圖模式應保留清除色暈邊緣處理');
+  }
+  if (await editor.getByRole('slider', { name: '全圖色碼容差', exact: true }).count() !== 1) {
+    throw new Error('Video 外框＋全圖模式應顯示全圖色碼容差');
+  }
   await scope.selectOption('whole-image');
   const tolerance = editor.getByRole('slider', { name: '全圖色碼容差', exact: true });
   if (
@@ -307,6 +314,13 @@ async function assertWholeImageCorrectionPreview() {
   const frameButtons = panel.getByRole('button', { name: /選擇 raw visual/ });
   await frameButtons.first().waitFor();
   if (await frameButtons.count() !== 12) throw new Error('Video 應提供時間範圍內全部 12 個唯一 raw visuals');
+  const selector = panel.getByTestId('video-raw-visual-selector');
+  await selector.locator('summary').click();
+  if (await selector.getAttribute('open') !== null || await frameButtons.first().isVisible()) {
+    throw new Error('Raw visual 分格選取區應可收合');
+  }
+  await selector.locator('summary').click();
+  await frameButtons.first().waitFor();
   await frameButtons.nth(1).click();
   if (await frameButtons.nth(1).getAttribute('aria-pressed') !== 'true') throw new Error('Video raw visual 切換失敗');
   await panel.getByRole('button', { name: 'Restore Original', exact: true }).waitFor();
