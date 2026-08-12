@@ -2,7 +2,14 @@ import type { SourceFrameTiming } from './videoTimeline.js';
 import { copyColorKeyOptions, type ColorKeyOptions } from './colorKey.js';
 
 export const VIDEO_PROJECT_SCHEMA = 'sticker-tool/video-apng-project' as const;
-export const VIDEO_PROJECT_VERSION = 6 as const;
+export const VIDEO_PROJECT_VERSION = 7 as const;
+
+export const VIDEO_CORRECTION_LIMITS = {
+  maxEdits: 10_000,
+  maxAssetBytes: 4_000_000,
+  maxAggregateAssetBytes: 64_000_000,
+  maxDecodedPixels: 100_000_000,
+} as const;
 
 /**
  * Product selected before raw-master ingest. Canvas geometry is baked into the
@@ -22,6 +29,51 @@ export interface RawVisualFrameRef {
   rgbaHash: string;
   chunkId: string;
   frameInChunk: number;
+}
+
+export interface VideoCorrectionTarget {
+  stickerId: string;
+  visualFrameId: string;
+}
+
+/** Runtime/export form. The mask is one byte per source pixel and is never embedded in JSON. */
+export interface VideoForegroundCorrection extends VideoCorrectionTarget {
+  sourceWidth: number;
+  sourceHeight: number;
+  sourceContentHash: string;
+  mask: Uint8Array;
+}
+
+export interface VideoCorrectionAssetManifest {
+  format: 'keep-mask-u8-crop-v1';
+  id: string;
+  path: string;
+  sha256: string;
+  bytes: number;
+  width: number;
+  height: number;
+}
+
+export interface VideoCorrectionTargetManifest extends VideoCorrectionTarget {
+  sourceWidth: number;
+  sourceHeight: number;
+  sourceContentHash: string;
+  bounds: { left: number; top: number; width: number; height: number };
+  assetId: string;
+}
+
+export interface VideoCorrectionManifest {
+  targets: VideoCorrectionTargetManifest[];
+  assets: VideoCorrectionAssetManifest[];
+}
+
+/** Complete exact-render identity persisted for every non-null V7 current. */
+export interface VideoRenderProvenance {
+  removerVersion: string;
+  configurationIdentity: string;
+  calibrationIdentity: string;
+  correctionSetHash: string;
+  sourceSetHash: string;
 }
 
 export type VideoBackgroundMode = 'none' | 'color-key' | 'imgly' | 'local-birefnet' | 'colab-birefnet';

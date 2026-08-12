@@ -1,6 +1,6 @@
 import {
   AsyncUnzipInflate,
-  AsyncZipDeflate,
+  ZipDeflate,
   strFromU8,
   strToU8,
   Unzip,
@@ -15,12 +15,16 @@ import { ANIMATED_EMOJI_SPEC, ANIMATED_SPEC, POPUP_STICKER_SPEC } from '@core/sp
 import {
   VIDEO_PROJECT_SCHEMA,
   VIDEO_PROJECT_VERSION,
+  VIDEO_CORRECTION_LIMITS,
   cloneVideoStickerDraft,
   isVideoProjectManifestHeader,
   type VideoBackgroundStage,
   type VideoFrameCoverage,
   type VideoOutputTarget,
   type VideoSelectionPlanV2,
+  type VideoCorrectionManifest,
+  type VideoForegroundCorrection,
+  type VideoRenderProvenance,
 } from '@core/videoProject.js';
 import {
   type MasterApngChunk,
@@ -29,17 +33,39 @@ import {
 } from './masterApng.js';
 import {
   inspectAnimatedBytes,
+  videoSourceSetIdentity,
   type VideoRenderMetrics,
   type VideoRenderSnapshot,
   type VideoStickerSettings,
 } from './processMasterApngSticker.js';
+import { backgroundRemovalConfigurationIdentity } from './backgroundRemovalJob.js';
 import type { VideoMetadata } from './videoSource.js';
 import { createVideoMasterStore, type VideoMasterStore } from './videoMasterStore.js';
+import {
+  decodeCroppedKeepMask,
+  encodeCroppedKeepMask,
+  hashCroppedKeepMask,
+  hashRasterContent,
+  type CroppedKeepMask,
+} from './foregroundCorrection.js';
 
 const MANIFEST_PATH = 'sticker-project.json';
 const REPORT_PATH = 'reports/metrics.json';
-const MAX_ARCHIVE_ENTRIES = 700;
-const MAX_UNCOMPRESSED_BYTES = 600_000_000;
+export const VIDEO_PROJECT_ARCHIVE_LIMITS = {
+  maxEntries: 700,
+  maxUncompressedBytes: 600_000_000,
+  maxManifestBytes: 16_000_000,
+} as const;
+
+export function assertVideoProjectArchiveBudget(entryCount: number, uncompressedBytes: number): void {
+  if (entryCount > VIDEO_PROJECT_ARCHIVE_LIMITS.maxEntries) {
+    throw new Error(`Project ZIP 檔案數超過 ${VIDEO_PROJECT_ARCHIVE_LIMITS.maxEntries}`);
+  }
+  if (uncompressedBytes > VIDEO_PROJECT_ARCHIVE_LIMITS.maxUncompressedBytes) {
+    throw new Error(`Project ZIP 解壓後超過 ${VIDEO_PROJECT_ARCHIVE_LIMITS.maxUncompressedBytes / 1_000_000}MB 安全上限`);
+  }
+}
+const CORRECTION_PATH_PREFIX = 'corrections/assets/';
 
 interface ChunkManifestV2 extends Omit<MasterApngChunk, 'storeKey'> {
   path: string;
@@ -54,9 +80,10 @@ interface RenderManifestV2 {
   selection: VideoSelectionPlanV2;
   notes: string[];
   errors: string[];
+  provenance?: VideoRenderProvenance;
 }
 
-export interface VideoProjectManifestV6 {
+export interface VideoProjectManifestV7 {
   schema: typeof VIDEO_PROJECT_SCHEMA;
   version: typeof VIDEO_PROJECT_VERSION;
   target: VideoOutputTarget;
@@ -86,6 +113,7 @@ export interface VideoProjectManifestV6 {
   };
   settings: VideoStickerSettings[];
   current: Array<RenderManifestV2 | null>;
+  corrections: VideoCorrectionManifest;
   versions: {
     app: string;
     decoder: string;
@@ -99,9 +127,11 @@ export interface VideoProjectManifestV6 {
 }
 
 export interface VideoProjectRuntime {
-  manifest: VideoProjectManifestV6;
+  manifest: VideoProjectManifestV7;
   master: MasterApngSet;
   current: Array<VideoRenderSnapshot | null>;
+  currentProvenance: Array<VideoRenderProvenance | null>;
+  corrections: VideoForegroundCorrection[];
   migrationNotes: string[];
 }
 
@@ -209,7 +239,7 @@ async function sha256(bytes: Uint8Array): Promise<string> {
 }
 
 function addZipFile(zip: Zip, path: string, bytes: Uint8Array, compress: boolean): void {
-  const file = compress ? new AsyncZipDeflate(path, { level: 6 }) : new ZipPassThrough(path);
+  const file = compress ? new ZipDeflate(path, { level: 6 }) : new ZipPassThrough(path);
   zip.add(file);
   file.push(bytes, true);
 }
@@ -250,9 +280,24 @@ export async function buildVideoProjectZip(args: {
   master: MasterApngSet;
   settings: VideoStickerSettings[];
   current: Array<VideoRenderSnapshot | null>;
-}): Promise<{ zip: Uint8Array; manifest: VideoProjectManifestV6 }> {
-  if (args.master.stickers.length !== args.current.length || args.current.length !== args.settings.length) {
-    throw new Error('Project ZIP 無法建立：master、settings、current 張數不一致');
+  corrections?: Iterable<VideoForegroundCorrection>;
+  currentProvenance: Array<VideoRenderProvenance | null>;
+}): Promise<{ zip: Uint8Array; manifest: VideoProjectManifestV7 }> {
+  if (
+    args.master.stickers.length !== args.current.length
+    || args.current.length !== args.settings.length
+    || args.current.length !== args.currentProvenance.length
+  ) {
+    throw new Error('Project ZIP 無法建立：master、settings、current、provenance 張數不一致');
+  }
+  for (let index = 0; index < args.current.length; index++) {
+    if ((args.current[index] === null) !== (args.currentProvenance[index] === null)) {
+      throw new Error(`Project ZIP current[${index}] 與 provenance 必須同時存在或同時為 null`);
+    }
+  }
+  const requestedCorrections = [...(args.corrections ?? [])];
+  if (requestedCorrections.length > VIDEO_CORRECTION_LIMITS.maxEdits) {
+    throw new Error(`Project correction 數量超過 ${VIDEO_CORRECTION_LIMITS.maxEdits}`);
   }
   const masterStickers = args.master.stickers.map((sticker) => ({
     id: sticker.id,
@@ -272,6 +317,95 @@ export async function buildVideoProjectZip(args: {
       sha256: chunk.sha256,
     })),
   }));
+  const exportVisuals = new Map<string, { width: number; height: number; sourceContentHash: string }>();
+  for (const sticker of args.master.stickers) {
+    for (const chunk of sticker.chunks) {
+      const bytes = await args.master.store.get(chunk.storeKey);
+      const decoded = inspectAnimatedBytes(bytes);
+      if (decoded.frames.length !== chunk.visualRefs.length) throw new Error(`${chunk.storeKey} visual index 不一致`);
+      for (const [index, visual] of chunk.visualRefs.entries()) {
+        const key = `${sticker.id}\0${visual.visualFrameId}`;
+        const raster = decoded.frames[index]!;
+        const source = {
+          width: raster.width,
+          height: raster.height,
+          sourceContentHash: await hashRasterContent(raster),
+        };
+        const existing = exportVisuals.get(key);
+        if (existing) {
+          if (
+            existing.width !== source.width
+            || existing.height !== source.height
+            || existing.sourceContentHash !== source.sourceContentHash
+          ) {
+            throw new Error(`raw visual target 身分衝突：${sticker.id}/${visual.visualFrameId}`);
+          }
+          continue;
+        }
+        exportVisuals.set(key, source);
+      }
+    }
+  }
+  const correctionAssets = new Map<string, Uint8Array>();
+  const correctionTargets: VideoCorrectionManifest['targets'] = [];
+  const targetKeys = new Set<string>();
+  let correctionPixels = 0;
+  let correctionBytes = 0;
+  for (const correction of requestedCorrections) {
+    const key = `${correction.stickerId}\0${correction.visualFrameId}`;
+    if (targetKeys.has(key)) throw new Error(`Project correction target 重複：${correction.stickerId}/${correction.visualFrameId}`);
+    targetKeys.add(key);
+    const source = exportVisuals.get(key);
+    if (!source) throw new Error(`Project correction target 不存在：${correction.stickerId}/${correction.visualFrameId}`);
+    if (!/^[0-9a-f]{64}$/.test(correction.sourceContentHash)) throw new Error(`Project correction sourceContentHash 無效：${key}`);
+    if (!Number.isSafeInteger(correction.sourceWidth) || !Number.isSafeInteger(correction.sourceHeight)
+      || correction.sourceWidth < 1 || correction.sourceHeight < 1
+      || correction.mask.length !== correction.sourceWidth * correction.sourceHeight) {
+      throw new Error(`Project correction geometry 無效：${key}`);
+    }
+    if (source.width !== correction.sourceWidth || source.height !== correction.sourceHeight) {
+      throw new Error(`Project correction source geometry 不一致：${key}`);
+    }
+    if (source.sourceContentHash !== correction.sourceContentHash) {
+      throw new Error(`Project correction sourceContentHash 不一致：${key}`);
+    }
+    const encoded = encodeCroppedKeepMask({
+      width: correction.sourceWidth,
+      height: correction.sourceHeight,
+      data: new Uint8Array(correction.mask),
+    }, correction.sourceContentHash);
+    if (!encoded) continue;
+    if (encoded.data.length > VIDEO_CORRECTION_LIMITS.maxAssetBytes) throw new Error(`Project correction asset 超過單筆上限：${key}`);
+    correctionPixels += correction.sourceWidth * correction.sourceHeight;
+    if (correctionPixels > VIDEO_CORRECTION_LIMITS.maxDecodedPixels) throw new Error('Project correction decoded pixels 超過安全上限');
+    const assetId = await hashCroppedKeepMask(encoded);
+    if (!correctionAssets.has(assetId)) {
+      correctionBytes += encoded.data.length;
+      if (correctionBytes > VIDEO_CORRECTION_LIMITS.maxAggregateAssetBytes) throw new Error('Project correction aggregate bytes 超過安全上限');
+      correctionAssets.set(assetId, encoded.data);
+    }
+    correctionTargets.push({
+      stickerId: correction.stickerId,
+      visualFrameId: correction.visualFrameId,
+      sourceWidth: correction.sourceWidth,
+      sourceHeight: correction.sourceHeight,
+      sourceContentHash: correction.sourceContentHash,
+      bounds: { ...encoded.bounds },
+      assetId,
+    });
+  }
+  const correctionManifest: VideoCorrectionManifest = {
+    targets: correctionTargets,
+    assets: await Promise.all([...correctionAssets].map(async ([assetId, bytes]) => ({
+      format: 'keep-mask-u8-crop-v1',
+      id: assetId,
+      path: `${CORRECTION_PATH_PREFIX}${assetId}.bin`,
+      sha256: await sha256(bytes),
+      bytes: bytes.length,
+      width: correctionTargets.find((target) => target.assetId === assetId)!.bounds.width,
+      height: correctionTargets.find((target) => target.assetId === assetId)!.bounds.height,
+    }))),
+  };
   const current: Array<RenderManifestV2 | null> = [];
   for (let index = 0; index < args.current.length; index++) {
     const snapshot = args.current[index];
@@ -297,9 +431,10 @@ export async function buildVideoProjectZip(args: {
       },
       notes: [...snapshot.notes],
       errors: [...snapshot.errors],
+      provenance: { ...args.currentProvenance[index]! },
     });
   }
-  const manifest: VideoProjectManifestV6 = {
+  const manifest: VideoProjectManifestV7 = {
     schema: VIDEO_PROJECT_SCHEMA,
     version: VIDEO_PROJECT_VERSION,
     target: args.target,
@@ -324,19 +459,20 @@ export async function buildVideoProjectZip(args: {
     },
     settings: args.settings.map(cloneVideoStickerDraft),
     current,
+    corrections: correctionManifest,
     versions: {
       app: '0.2.0-beta',
       decoder: 'mediabunny@1.51.0',
       demuxer: 'mediabunny@1.51.0',
       removers: {
-        'color-key': 'browser-color-key@4',
+        'color-key': 'browser-color-key@5',
         imgly: '@imgly/background-removal@1.4.5',
         'local-birefnet': 'studioludens/birefnet-lite-512@4a3c40c36c94093cc1e724d9ea428b8fa4b57dc7',
         'colab-birefnet': 'user-session',
       },
     },
   };
-  assertV6Manifest(manifest);
+  assertV7Manifest(manifest);
   const report = strToU8(JSON.stringify({
     generatedAt: new Date().toISOString(),
     target: manifest.target,
@@ -349,6 +485,15 @@ export async function buildVideoProjectZip(args: {
     } : null),
   }, null, 2));
   const manifestBytes = strToU8(JSON.stringify(manifest, null, 2));
+  const masterEntryCount = args.master.stickers.reduce((sum, sticker) => sum + sticker.chunks.length, 0);
+  const currentEntryCount = args.current.filter((snapshot) => snapshot !== null).length;
+  const entryCount = 2 + masterEntryCount + currentEntryCount + manifest.corrections.assets.length;
+  const masterBytes = args.master.stickers.reduce((sum, sticker) => (
+    sum + sticker.chunks.reduce((chunkSum, chunk) => chunkSum + chunk.bytes, 0)
+  ), 0);
+  const currentBytes = args.current.reduce((sum, snapshot) => sum + (snapshot?.png.length ?? 0), 0);
+  const uncompressedBytes = manifestBytes.length + report.length + masterBytes + currentBytes + correctionBytes;
+  assertVideoProjectArchiveBudget(entryCount, uncompressedBytes);
   const zip = await finishZip(async (writer) => {
     addZipFile(writer, MANIFEST_PATH, manifestBytes, true);
     addZipFile(writer, REPORT_PATH, report, true);
@@ -365,6 +510,11 @@ export async function buildVideoProjectZip(args: {
       const snapshot = args.current[index];
       if (snapshot) addZipFile(writer, renderPath(index), snapshot.png, false);
     }
+    // These assets are already tightly cropped. Store them verbatim: fflate's
+    // synchronous streaming deflater can emit a valid stream for small,
+    // highly repetitive masks that its own inflater rejects as an invalid
+    // distance. A stored entry remains lossless and interoperable.
+    for (const asset of manifest.corrections.assets) addZipFile(writer, asset.path, correctionAssets.get(asset.id)!, false);
   });
   return { zip, manifest };
 }
@@ -375,49 +525,86 @@ async function streamArchive(zipBytes: Uint8Array, store: VideoMasterStore): Pro
   const writes: Promise<void>[] = [];
   let entryCount = 0;
   let totalBytes = 0;
+  let correctionBytes = 0;
   let streamError: Error | null = null;
   let pendingFiles = 0;
   let pushFinished = false;
   let settle: (() => void) | null = null;
-  let fail: ((error: Error) => void) | null = null;
-  const completed = new Promise<void>((resolve, reject) => {
+  const completed = new Promise<void>((resolve) => {
     settle = resolve;
-    fail = reject;
   });
   const maybeSettle = () => {
     if (pushFinished && pendingFiles === 0) settle?.();
   };
   const unzip = new Unzip((file) => {
-    if (streamError) return;
+    if (streamError) {
+      file.terminate();
+      return;
+    }
     entryCount++;
-    if (entryCount > MAX_ARCHIVE_ENTRIES) {
-      streamError = new Error(`Project ZIP 檔案數超過 ${MAX_ARCHIVE_ENTRIES}`);
-      fail?.(streamError);
+    try {
+      assertVideoProjectArchiveBudget(entryCount, totalBytes);
+    } catch (error) {
+      streamError = error as Error;
       file.terminate();
       return;
     }
     if (!safeEntryPath(file.name) || paths.has(file.name)) {
       streamError = new Error(`Project ZIP 含不安全或重複路徑：${file.name}`);
-      fail?.(streamError);
       file.terminate();
       return;
     }
     paths.add(file.name);
     pendingFiles++;
+    let fileSettled = false;
+    const finishFile = () => {
+      if (fileSettled) return;
+      fileSettled = true;
+      pendingFiles--;
+      maybeSettle();
+    };
     const chunks: Uint8Array[] = [];
     let entryBytes = 0;
     file.ondata = (error, chunk, final) => {
       if (error) {
         streamError = error;
-        fail?.(error);
+        finishFile();
+        return;
+      }
+      if (streamError) {
+        file.terminate();
+        finishFile();
         return;
       }
       entryBytes += chunk.length;
       totalBytes += chunk.length;
-      if (totalBytes > MAX_UNCOMPRESSED_BYTES) {
-        streamError = new Error('Project ZIP 解壓後超過 600MB 安全上限');
-        fail?.(streamError);
+      if (file.name.startsWith(CORRECTION_PATH_PREFIX)) {
+        correctionBytes += chunk.length;
+        if (entryBytes > VIDEO_CORRECTION_LIMITS.maxAssetBytes) {
+          streamError = new Error('Project correction asset 解壓後超過單筆安全上限');
+          file.terminate();
+          finishFile();
+          return;
+        }
+        if (correctionBytes > VIDEO_CORRECTION_LIMITS.maxAggregateAssetBytes) {
+          streamError = new Error('Project correction assets 解壓後超過 aggregate 安全上限');
+          file.terminate();
+          finishFile();
+          return;
+        }
+      }
+      if (file.name === MANIFEST_PATH && entryBytes > VIDEO_PROJECT_ARCHIVE_LIMITS.maxManifestBytes) {
+        streamError = new Error('Project manifest 解壓後超過安全上限');
         file.terminate();
+        finishFile();
+        return;
+      }
+      try {
+        assertVideoProjectArchiveBudget(entryCount, totalBytes);
+      } catch (error) {
+        streamError = error as Error;
+        file.terminate();
+        finishFile();
         return;
       }
       chunks.push(chunk);
@@ -425,18 +612,26 @@ async function streamArchive(zipBytes: Uint8Array, store: VideoMasterStore): Pro
       const bytes = concatChunks(chunks, entryBytes);
       if (file.name.startsWith('master/')) writes.push(store.put(file.name, bytes));
       else retained.set(file.name, bytes);
-      pendingFiles--;
-      maybeSettle();
+      finishFile();
     };
     file.start();
   });
-  unzip.register(UnzipInflate);
-  unzip.register(AsyncUnzipInflate);
-  unzip.push(zipBytes, true);
+  // Browser decompression runs in fflate's worker-backed inflater; Node
+  // contracts use the synchronous implementation because Worker is absent.
+  unzip.register(typeof Worker === 'undefined' ? UnzipInflate : AsyncUnzipInflate);
+  try {
+    unzip.push(zipBytes, true);
+  } catch (error) {
+    streamError = error instanceof Error ? error : new Error(String(error));
+  }
   pushFinished = true;
   maybeSettle();
   await completed;
-  await Promise.all(writes);
+  const writeResults = await Promise.allSettled(writes);
+  const failedWrite = writeResults.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+  if (failedWrite && !streamError) {
+    streamError = failedWrite.reason instanceof Error ? failedWrite.reason : new Error(String(failedWrite.reason));
+  }
   if (streamError) throw streamError;
   return { retained, paths };
 }
@@ -648,9 +843,9 @@ function assertGrid(value: unknown, source: Record<string, unknown>): void {
   });
 }
 
-function assertV6Manifest(value: unknown): asserts value is VideoProjectManifestV6 {
+function assertV7Manifest(value: unknown): asserts value is VideoProjectManifestV7 {
   if (!isVideoProjectManifestHeader(value) || value.version !== VIDEO_PROJECT_VERSION) throw new Error('不支援的 Project ZIP schema 或版本');
-  const manifest = value as Partial<VideoProjectManifestV6>;
+  const manifest = value as Partial<VideoProjectManifestV7>;
   if (
     !['animated-sticker', 'animated-emoji', 'popup'].includes(manifest.target ?? '') ||
     manifest.sourceTimingUnit !== 'microseconds' ||
@@ -663,11 +858,14 @@ function assertV6Manifest(value: unknown): asserts value is VideoProjectManifest
     !Array.isArray(manifest.master.stickers) ||
     !Array.isArray(manifest.settings) ||
     !Array.isArray(manifest.current) ||
+    !manifest.corrections ||
+    !Array.isArray(manifest.corrections.targets) ||
+    !Array.isArray(manifest.corrections.assets) ||
     manifest.master.stickers.length < 1 ||
     manifest.settings.length !== manifest.master.stickers.length ||
     manifest.current.length !== manifest.master.stickers.length
   ) {
-    throw new Error('Project ZIP V6 manifest 缺少或含有無效的必要欄位');
+    throw new Error('Project ZIP V7 manifest 缺少或含有無效的必要欄位');
   }
   const createdAt = Date.parse(requireString(manifest.createdAt, 'createdAt'));
   if (!Number.isFinite(createdAt)) throw new Error('createdAt 不是有效日期');
@@ -714,6 +912,10 @@ function assertV6Manifest(value: unknown): asserts value is VideoProjectManifest
       assertSelection(renderRecord.selection, `current[${stickerIndex}].selection`);
       requireStringArray(renderRecord.notes, `current[${stickerIndex}].notes`);
       requireStringArray(renderRecord.errors, `current[${stickerIndex}].errors`);
+      const provenance = requireRecord(renderRecord.provenance, `current[${stickerIndex}].provenance`);
+      for (const field of ['removerVersion', 'configurationIdentity', 'calibrationIdentity', 'correctionSetHash', 'sourceSetHash'] as const) {
+        requireString(provenance[field], `current[${stickerIndex}].provenance.${field}`);
+      }
     }
   });
   const versions = requireRecord(manifest.versions, 'versions');
@@ -721,10 +923,59 @@ function assertV6Manifest(value: unknown): asserts value is VideoProjectManifest
   requireString(versions.decoder, 'versions.decoder');
   requireString(versions.demuxer, 'versions.demuxer');
   requireRecord(versions.removers, 'versions.removers');
+  if (manifest.corrections.targets.length > VIDEO_CORRECTION_LIMITS.maxEdits) throw new Error('corrections.targets 超過 edit 上限');
+  if (manifest.corrections.assets.length > VIDEO_PROJECT_ARCHIVE_LIMITS.maxEntries) {
+    throw new Error('corrections.assets 超過宣告數量上限');
+  }
+  const assetIds = new Set<string>();
+  const assetPaths = new Set<string>();
+  let aggregateBytes = 0;
+  for (const [index, assetValue] of manifest.corrections.assets.entries()) {
+    const asset = requireRecord(assetValue, `corrections.assets[${index}]`);
+    if (asset.format !== 'keep-mask-u8-crop-v1') throw new Error(`corrections.assets[${index}].format 不支援`);
+    const id = requireString(asset.id, `corrections.assets[${index}].id`, /^[0-9a-f]{64}$/);
+    const path = requireString(asset.path, `corrections.assets[${index}].path`);
+    if (assetIds.has(id) || assetPaths.has(path) || path !== `${CORRECTION_PATH_PREFIX}${id}.bin`) throw new Error('correction asset id/path 重複或非 canonical');
+    assetIds.add(id); assetPaths.add(path);
+    requireString(asset.sha256, `corrections.assets[${index}].sha256`, /^[0-9a-f]{64}$/);
+    const bytes = requireInteger(asset.bytes, `corrections.assets[${index}].bytes`, 1);
+    if (bytes > VIDEO_CORRECTION_LIMITS.maxAssetBytes) throw new Error('correction asset 超過單筆上限');
+    const width = requireInteger(asset.width, `corrections.assets[${index}].width`, 1);
+    const height = requireInteger(asset.height, `corrections.assets[${index}].height`, 1);
+    if (width * height !== bytes) throw new Error('correction asset geometry/length 不一致');
+    aggregateBytes += bytes;
+    if (aggregateBytes > VIDEO_CORRECTION_LIMITS.maxAggregateAssetBytes) throw new Error('correction asset aggregate bytes 超過上限');
+  }
+  const targetKeys = new Set<string>();
+  const referencedAssets = new Set<string>();
+  let decodedPixels = 0;
+  for (const [index, targetValue] of manifest.corrections.targets.entries()) {
+    const target = requireRecord(targetValue, `corrections.targets[${index}]`);
+    const stickerId = requireString(target.stickerId, `corrections.targets[${index}].stickerId`);
+    const visualFrameId = requireString(target.visualFrameId, `corrections.targets[${index}].visualFrameId`);
+    const key = `${stickerId}\0${visualFrameId}`;
+    if (targetKeys.has(key)) throw new Error(`correction target 重複或衝突：${stickerId}/${visualFrameId}`);
+    targetKeys.add(key);
+    const sourceWidth = requireInteger(target.sourceWidth, `corrections.targets[${index}].sourceWidth`, 1);
+    const sourceHeight = requireInteger(target.sourceHeight, `corrections.targets[${index}].sourceHeight`, 1);
+    requireString(target.sourceContentHash, `corrections.targets[${index}].sourceContentHash`, /^[0-9a-f]{64}$/);
+    const bounds = requireRecord(target.bounds, `corrections.targets[${index}].bounds`);
+    const left = requireInteger(bounds.left, `corrections.targets[${index}].bounds.left`);
+    const top = requireInteger(bounds.top, `corrections.targets[${index}].bounds.top`);
+    const width = requireInteger(bounds.width, `corrections.targets[${index}].bounds.width`, 1);
+    const height = requireInteger(bounds.height, `corrections.targets[${index}].bounds.height`, 1);
+    if (left + width > sourceWidth || top + height > sourceHeight) throw new Error('correction target bounds 超出 source geometry');
+    decodedPixels += sourceWidth * sourceHeight;
+    if (decodedPixels > VIDEO_CORRECTION_LIMITS.maxDecodedPixels) throw new Error('correction decoded pixels 超過上限');
+    const assetId = requireString(target.assetId, `corrections.targets[${index}].assetId`, /^[0-9a-f]{64}$/);
+    if (!assetIds.has(assetId)) throw new Error(`correction target 引用未宣告 asset：${assetId}`);
+    referencedAssets.add(assetId);
+  }
+  if ([...assetIds].some((id) => !referencedAssets.has(id))) throw new Error('correction manifest 含未引用 asset');
 }
 
-async function restoreV6(
-  manifest: VideoProjectManifestV6,
+async function restoreV7(
+  manifest: VideoProjectManifestV7,
   archive: ArchiveContents,
   store: VideoMasterStore,
   invalidatedColorKeyRenders: ReadonlySet<number> = new Set(),
@@ -737,6 +988,7 @@ async function restoreV6(
   let sampleCount: number | null = null;
   let canonicalTimeline: Array<{ sourceIndex: number; timestampUs: number; durationUs: number }> | null = null;
   let visualFrameCount = 0;
+  const sourceVisuals = new Map<string, { width: number; height: number; sourceContentHash: string }>();
   for (const [stickerIndex, sticker] of manifest.master.stickers.entries()) {
     const chunks: MasterApngChunk[] = [];
     let stickerSamples = 0;
@@ -783,6 +1035,27 @@ async function restoreV6(
       if (decoded.frames.length !== chunk.visualRefs.length || decoded.info.width !== chunk.width || decoded.info.height !== chunk.height) {
         throw new Error(`${chunk.path} decoded visual count/size 與 manifest 不一致`);
       }
+      for (const [visualIndex, visual] of chunk.visualRefs.entries()) {
+        const key = `${sticker.id}\0${visual.visualFrameId}`;
+        const raster = decoded.frames[visualIndex]!;
+        const source = {
+          width: raster.width,
+          height: raster.height,
+          sourceContentHash: await hashRasterContent(raster),
+        };
+        const existing = sourceVisuals.get(key);
+        if (existing) {
+          if (
+            existing.width !== source.width
+            || existing.height !== source.height
+            || existing.sourceContentHash !== source.sourceContentHash
+          ) {
+            throw new Error(`Project ZIP raw visual target 身分衝突：${sticker.id}/${visual.visualFrameId}`);
+          }
+          continue;
+        }
+        sourceVisuals.set(key, source);
+      }
       chunk.sampleRefs.forEach((sampleValue, sampleIndex) => {
         const sample = requireRecord(sampleValue, `${path}.sampleRefs[${sampleIndex}]`);
         const sourceIndex = requireInteger(sample.sourceIndex, `${path}.sampleRefs[${sampleIndex}].sourceIndex`);
@@ -811,6 +1084,56 @@ async function restoreV6(
   }
   if (sampleCount !== manifest.master.sourceFrameCount) throw new Error('Project ZIP sourceFrameCount 與 sample index 不一致');
   if (visualFrameCount !== manifest.master.visualFrameCount) throw new Error('Project ZIP visualFrameCount 與 visual index 不一致');
+  const correctionAssetBytes = new Map<string, Uint8Array>();
+  for (const asset of manifest.corrections.assets) {
+    if (!safeEntryPath(asset.path) || declaredPaths.has(asset.path)) throw new Error(`correction asset 路徑無效：${asset.path}`);
+    declaredPaths.add(asset.path);
+    const bytes = requireRetained(retained, asset.path);
+    if (bytes.length !== asset.bytes || await sha256(bytes) !== asset.sha256) throw new Error(`${asset.path} checksum/length 不一致`);
+    correctionAssetBytes.set(asset.id, bytes);
+  }
+  const corrections: VideoForegroundCorrection[] = [];
+  for (const target of manifest.corrections.targets) {
+    const key = `${target.stickerId}\0${target.visualFrameId}`;
+    const source = sourceVisuals.get(key);
+    if (!source) throw new Error(`correction target 不存在：${target.stickerId}/${target.visualFrameId}`);
+    if (source.width !== target.sourceWidth || source.height !== target.sourceHeight) throw new Error(`correction source geometry 不一致：${key}`);
+    if (source.sourceContentHash !== target.sourceContentHash) throw new Error(`correction sourceContentHash 不一致：${key}`);
+    const asset = manifest.corrections.assets.find((candidate) => candidate.id === target.assetId)!;
+    if (asset.width !== target.bounds.width || asset.height !== target.bounds.height) throw new Error(`correction asset bounds/geometry 不一致：${key}`);
+    const data = correctionAssetBytes.get(target.assetId)!;
+    let nonzero = false;
+    let canonicalTop = false; let canonicalBottom = false; let canonicalLeft = false; let canonicalRight = false;
+    for (let y = 0; y < target.bounds.height; y++) {
+      for (let x = 0; x < target.bounds.width; x++) {
+        if (data[y * target.bounds.width + x] === 0) continue;
+        nonzero = true;
+        if (y === 0) canonicalTop = true;
+        if (y === target.bounds.height - 1) canonicalBottom = true;
+        if (x === 0) canonicalLeft = true;
+        if (x === target.bounds.width - 1) canonicalRight = true;
+      }
+    }
+    if (!nonzero || !canonicalTop || !canonicalBottom || !canonicalLeft || !canonicalRight) throw new Error(`correction crop 為全零或非 canonical：${key}`);
+    const encoded: CroppedKeepMask = {
+      format: 'keep-mask-u8-crop-v1',
+      sourceWidth: target.sourceWidth,
+      sourceHeight: target.sourceHeight,
+      sourceContentHash: target.sourceContentHash,
+      bounds: { ...target.bounds },
+      data: new Uint8Array(data),
+    };
+    if (await hashCroppedKeepMask(encoded) !== target.assetId) throw new Error(`correction asset content address 不一致：${key}`);
+    const mask = decodeCroppedKeepMask(encoded);
+    corrections.push({
+      stickerId: target.stickerId,
+      visualFrameId: target.visualFrameId,
+      sourceWidth: target.sourceWidth,
+      sourceHeight: target.sourceHeight,
+      sourceContentHash: target.sourceContentHash,
+      mask: mask.data,
+    });
+  }
   const current: Array<VideoRenderSnapshot | null> = [];
   for (const [renderIndex, render] of manifest.current.entries()) {
     if (!render) {
@@ -818,6 +1141,23 @@ async function restoreV6(
       continue;
     }
     if (!safeEntryPath(render.path) || declaredPaths.has(render.path)) throw new Error(`render 路徑無效：${render.path}`);
+    if (render.provenance?.sourceSetHash === 'pending-v6-source-identity') {
+      const activeVisualIds = new Set<string>();
+      for (const chunk of manifest.master.stickers[renderIndex]!.chunks) {
+        for (const sample of chunk.sampleRefs) {
+          if (sample.timestampUs < render.settings.rangeEndUs
+            && sample.timestampUs + sample.durationUs > render.settings.rangeStartUs) {
+            activeVisualIds.add(sample.visualFrameId);
+          }
+        }
+      }
+      const sourceEntries = [...activeVisualIds].map((visualFrameId) => {
+        const source = sourceVisuals.get(`${manifest.master.stickers[renderIndex]!.id}\0${visualFrameId}`);
+        if (!source) throw new Error(`V6 current source visual 不存在：${visualFrameId}`);
+        return { visualFrameId, sourceContentHash: source.sourceContentHash };
+      });
+      render.provenance = { ...render.provenance, sourceSetHash: await videoSourceSetIdentity(sourceEntries) };
+    }
     declaredPaths.add(render.path);
     const png = requireRetained(retained, render.path);
     if (png.length !== render.bytes || await sha256(png) !== render.sha256) throw new Error(`${render.path} checksum 不一致`);
@@ -873,6 +1213,8 @@ async function restoreV6(
       store,
     },
     current,
+    currentProvenance: runtimeManifest.current.map((render) => render?.provenance ? { ...render.provenance } : null),
+    corrections,
     migrationNotes,
   };
 }
@@ -1048,7 +1390,7 @@ function upgradeV5(value: unknown): VideoProjectUpgrade {
   return {
     project: {
       ...project,
-      version: VIDEO_PROJECT_VERSION,
+      version: 6,
       settings: Array.isArray(project.settings) ? project.settings.map(migrateSettings) : project.settings,
       current: Array.isArray(project.current)
         ? project.current.map((render: unknown) => isRecord(render)
@@ -1066,6 +1408,80 @@ function upgradeV5(value: unknown): VideoProjectUpgrade {
     },
     invalidatedColorKeyRenders: new Set(),
     migrationNotes: [],
+  };
+}
+
+/** V7 adds correction assets and retires browser-color-key@4 render provenance. */
+function upgradeV6(value: unknown): VideoProjectUpgrade {
+  const unchanged: VideoProjectUpgrade = { project: value, invalidatedColorKeyRenders: new Set(), migrationNotes: [] };
+  if (!isVideoProjectManifestHeader(value) || value.version !== 6 || !isRecord(value)) return unchanged;
+  const project = value as Record<string, unknown>;
+  const current: unknown[] = Array.isArray(project.current) ? project.current : [];
+  const invalidatedColorKeyRenders = new Set<number>();
+  current.forEach((render, index) => {
+    if (isRecord(render) && isRecord(render.settings) && isRecord(render.settings.background)
+      && (render.settings.background.mode === 'color-key' || render.settings.background.mode === 'colab-birefnet')) {
+      invalidatedColorKeyRenders.add(index);
+    }
+  });
+  const migratedCurrent = current.map((render, index) => {
+    if (!isRecord(render) || !isRecord(render.settings) || !isRecord(render.settings.background)) return render;
+    const mode = render.settings.background.mode;
+    if (invalidatedColorKeyRenders.has(index)) {
+      const obsoleteIdentity = mode === 'color-key'
+        ? 'browser-color-key@4'
+        : 'colab-birefnet@legacy-unreproducible';
+      return {
+        ...render,
+        // Authentic V2–V6 archives predate render provenance. Supply a
+        // complete tombstone only so V7 structural validation can verify the
+        // archived bytes before restoreV7 deliberately clears this current.
+        provenance: {
+          removerVersion: obsoleteIdentity,
+          configurationIdentity: obsoleteIdentity,
+          calibrationIdentity: obsoleteIdentity,
+          correctionSetHash: 'video-keep-set@1:0:cbf29ce484222325',
+          sourceSetHash: 'pending-v6-source-identity',
+        },
+      };
+    }
+    const identity = mode === 'none'
+      ? { removerVersion: 'none@1', configurationIdentity: 'background-none@1', calibrationIdentity: 'background-none@1' }
+      : mode === 'imgly'
+        ? { removerVersion: 'imgly-medium@1.4.5', configurationIdentity: 'imgly-medium@1.4.5', calibrationIdentity: 'imgly-medium@1' }
+        : mode === 'local-birefnet'
+          ? {
+              removerVersion: 'local-birefnet@1',
+              configurationIdentity: backgroundRemovalConfigurationIdentity({ mode: 'local-birefnet' }),
+              calibrationIdentity: backgroundRemovalConfigurationIdentity({ mode: 'local-birefnet' }),
+            }
+          : null;
+    if (!identity) return render;
+    return {
+      ...render,
+      provenance: {
+        ...identity,
+        correctionSetHash: 'video-keep-set@1:0:cbf29ce484222325',
+        sourceSetHash: 'pending-v6-source-identity',
+      },
+    };
+  });
+  const versions = isRecord(project.versions) ? project.versions : null;
+  const removers = versions && isRecord(versions.removers) ? versions.removers : null;
+  return {
+    project: {
+      ...project,
+      version: VIDEO_PROJECT_VERSION,
+      corrections: { targets: [], assets: [] },
+      current: migratedCurrent,
+      ...(versions && removers ? {
+        versions: { ...versions, removers: { ...removers, 'color-key': 'browser-color-key@5' } },
+      } : {}),
+    },
+    invalidatedColorKeyRenders,
+    migrationNotes: invalidatedColorKeyRenders.size > 0
+      ? [`舊 Project 中 ${invalidatedColorKeyRenders.size} 張 browser-color-key@4 或 Colab 成品預覽已清除，請以可重現的新版去背重新產生。`]
+      : [],
   };
 }
 
@@ -1170,7 +1586,7 @@ async function restoreV1(
     frameCount: legacy.master.masterFrameCount,
     averageFps: legacy.master.masterFrameCount / Math.max(0.001, legacy.source.durationMs / 1000),
   };
-  const manifest: VideoProjectManifestV6 = {
+  const manifest: VideoProjectManifestV7 = {
     schema: VIDEO_PROJECT_SCHEMA,
     version: VIDEO_PROJECT_VERSION,
     target: 'animated-sticker',
@@ -1198,6 +1614,7 @@ async function restoreV1(
     },
     settings,
     current: current.map(() => null),
+    corrections: { targets: [], assets: [] },
     versions: { app: 'legacy-v1', decoder: 'html-video-seek', demuxer: 'none', removers: {} },
     legacy: {
       importedFromVersion: 1,
@@ -1221,6 +1638,8 @@ async function restoreV1(
       store,
     },
     current,
+    currentProvenance: current.map(() => null),
+    corrections: [],
     migrationNotes: [],
   };
 }
@@ -1236,16 +1655,18 @@ export async function importVideoProjectZip(zipBytes: Uint8Array): Promise<Video
     if (isV1(parsed)) return restoreV1(parsed, archive.retained, store);
     const upgradedV4 = upgradeV4(upgradeV3(upgradeV2(parsed)));
     const upgradedV5 = upgradeV5(upgradedV4.project);
-    assertV6Manifest(upgradedV5.project);
-    return restoreV6(
-      upgradedV5.project,
+    const upgradedV6 = upgradeV6(upgradedV5.project);
+    assertV7Manifest(upgradedV6.project);
+    return restoreV7(
+      upgradedV6.project,
       archive,
       store,
       new Set([
         ...upgradedV4.invalidatedColorKeyRenders,
         ...upgradedV5.invalidatedColorKeyRenders,
+        ...upgradedV6.invalidatedColorKeyRenders,
       ]),
-      [...upgradedV4.migrationNotes, ...upgradedV5.migrationNotes],
+      [...upgradedV4.migrationNotes, ...upgradedV5.migrationNotes, ...upgradedV6.migrationNotes],
     );
   } catch (error) {
     await store.clear();

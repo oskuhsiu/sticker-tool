@@ -16,6 +16,7 @@ export function VideoSourceStep(props: {
   cover: number;
   defaultBackground: VideoBackgroundMode;
   color: string;
+  colorAutomatic: boolean;
   colorKeyOptions: ColorKeyOptions;
   grid: VideoGridPlan | null;
   range: React.ComponentProps<typeof VideoCutRangeStep>;
@@ -28,6 +29,7 @@ export function VideoSourceStep(props: {
   onCover: (value: number) => void;
   onBackground: (value: VideoBackgroundMode) => void;
   onColor: (value: string) => void;
+  onColorAutomatic: (value: boolean) => void;
   onColorKeyOptions: (value: ColorKeyOptions) => void;
   onBuild: () => void;
 }) {
@@ -65,7 +67,20 @@ export function VideoSourceStep(props: {
             <option value="colab-birefnet">Colab 多模型去背（實驗性）</option>
           </select>
         </Field>
-        {props.defaultBackground === 'color-key' && <Field label="背景色"><input disabled={props.busy} type="color" value={props.color} onChange={(event) => props.onColor(event.target.value)} /></Field>}
+        {props.defaultBackground === 'color-key' && props.colorKeyOptions.scope === 'edge-connected' && (
+          <Field label="背景中心"><label><input
+            type="checkbox"
+            checked={props.colorAutomatic}
+            disabled={props.busy}
+            onChange={(event) => props.onColorAutomatic(event.target.checked)}
+          />自動取樣外框</label></Field>
+        )}
+        {props.defaultBackground === 'color-key' && <Field label="背景色"><input
+          disabled={props.busy || (props.colorKeyOptions.scope === 'edge-connected' && props.colorAutomatic)}
+          type="color"
+          value={props.color}
+          onChange={(event) => { props.onColor(event.target.value); props.onColorAutomatic(false); }}
+        /></Field>}
       </Row>
       {props.defaultBackground === 'color-key' && (
         <ColorKeyOptionFields

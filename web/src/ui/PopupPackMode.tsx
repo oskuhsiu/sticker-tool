@@ -1,16 +1,27 @@
-import { useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { POPUP_STICKER_SPEC, STATIC_SPEC, ZIP_MAX_BYTES, maxBounds } from '@core/spec.js';
 import { DEFAULT_COLOR_KEY_OPTIONS, type ColorKeyOptions } from '@core/colorKey.js';
 import { validatePopupPack } from '@core/validate.js';
 import { inspectAnimatedBytes } from '../webpipe/apng.js';
 import { processAnimated } from '../webpipe/processAnimated.js';
 import { processStatic, type ProcessedSticker } from '../webpipe/processStatic.js';
-import { createBackgroundRemovalJob, type BackgroundRemovalJob, type WebBackgroundRemovalMode } from '../webpipe/backgroundRemovalJob.js';
+import {
+  backgroundRemovalConfigurationIdentity,
+  createBackgroundRemovalJob,
+  type BackgroundRemovalJob,
+  type WebBackgroundRemovalMode,
+} from '../webpipe/backgroundRemovalJob.js';
+import {
+  removeWithForegroundCorrection,
+  type ForegroundCorrectionRecord,
+} from '../webpipe/backgroundCorrection.js';
 import { decodeBlob, yieldToUI } from '../webpipe/raster.js';
 import { buildMainTab } from '../webpipe/mainTab.js';
 import { buildPopupPackZip, downloadBytes, safeName } from '../webpipe/zip.js';
 import { Field, FilePick, LogPane, PngPreview, Row, ValidationView, kb, sortFiles, useLogger } from './common.jsx';
 import { BackgroundRemovalControl } from './BackgroundRemovalControl.jsx';
+import { ForegroundCorrectionWorkspace } from './ForegroundCorrectionWorkspace.jsx';
+import { fileCorrectionSource, fileSourceIdentity } from './correctionSources.js';
 import { useColabBirefnetConnection } from './colabBirefnetConnection.jsx';
 import { makeAnimation } from './defaults.js';
 import type { ImageInfo } from '@core/validate.js';
@@ -35,6 +46,13 @@ type PopupPackResult = {
 
 const POPUP_BOUNDS = maxBounds('popup');
 
+function stratified<T>(values: readonly T[], maximum = 3): T[] {
+  if (values.length <= maximum) return [...values];
+  return Array.from({ length: maximum }, (_, index) => (
+    values[Math.round(index * (values.length - 1) / (maximum - 1))]!
+  ));
+}
+
 export function PopupPackMode() {
   const [count, setCount] = useState(8);
   const [staticFiles, setStaticFiles] = useState<File[]>([]);
@@ -47,13 +65,45 @@ export function PopupPackMode() {
   const [reduceColors, setReduceColors] = useState(false);
   const [removeBgMode, setRemoveBgMode] = useState<WebBackgroundRemovalMode>('none');
   const [backgroundColor, setBackgroundColor] = useState('#00ff00');
+  const [backgroundColorAutomatic, setBackgroundColorAutomatic] = useState(true);
   const [colorKeyOptions, setColorKeyOptions] = useState<ColorKeyOptions>(() => ({ ...DEFAULT_COLOR_KEY_OPTIONS }));
   const [busy, setBusy] = useState(false);
   const [modelStatus, setModelStatus] = useState<string | null>(null);
   const [result, setResult] = useState<PopupPackResult | null>(null);
+  const [corrections, setCorrections] = useState<Map<string, ForegroundCorrectionRecord>>(() => new Map());
   const abortRef = useRef<AbortController | null>(null);
   const logger = useLogger();
   const { connection: colabConnection, registerActiveRemoval } = useColabBirefnetConnection();
+  const manualColor = hexToRgb(backgroundColor);
+  const removalConfigurationIdentity = backgroundRemovalConfigurationIdentity({
+    mode: removeBgMode,
+    pickColor: removeBgMode === 'color-key' && (colorKeyOptions.scope === 'whole-image' || !backgroundColorAutomatic)
+      ? manualColor
+      : null,
+    ...(removeBgMode === 'color-key' ? { colorKey: colorKeyOptions } : {}),
+    colabGeneration: colabConnection?.generation,
+  });
+  const correctionItems = useMemo(() => [
+    ...sortFiles(staticFiles).slice(0, count).map((file, index) => (
+      fileCorrectionSource(file, `靜態 ${index + 1} · ${file.name}`)
+    )),
+    ...frameSets.slice(0, count).flatMap((files, stickerIndex) => (
+      sortFiles(files).map((file, frameIndex) => fileCorrectionSource(
+        file,
+        `Pop-up ${stickerIndex + 1} · 格 ${frameIndex + 1} · ${file.name}`,
+      ))
+    )),
+  ], [staticFiles, frameSets, count]);
+  const createRemovalJob = (signal: AbortSignal) => createBackgroundRemovalJob({
+    mode: removeBgMode,
+    signal,
+    pickColor: removeBgMode === 'color-key' && (colorKeyOptions.scope === 'whole-image' || !backgroundColorAutomatic)
+      ? manualColor
+      : null,
+    ...(removeBgMode === 'color-key' ? { colorKey: colorKeyOptions } : {}),
+    colabConfig: colabConnection?.config,
+    onStatus: setModelStatus,
+  });
 
   const loopOptions = Array.from({ length: POPUP_STICKER_SPEC.maxLoops }, (_, index) => index + 1)
     .filter((value) => duration * value <= POPUP_STICKER_SPEC.maxDurationSec);
@@ -118,15 +168,13 @@ export function PopupPackMode() {
       }
 
       const abortSignal = abort.signal;
-      const parsedColor = hexToRgb(backgroundColor);
-      removalJob = await createBackgroundRemovalJob({
-        mode: removeBgMode,
-        signal: abortSignal,
-        pickColor: removeBgMode === 'color-key' ? parsedColor : null,
-        ...(removeBgMode === 'color-key' ? { colorKey: colorKeyOptions } : {}),
-        colabConfig: colabConnection?.config,
-        onStatus: setModelStatus,
-      });
+      removalJob = await createRemovalJob(abortSignal);
+      const sharedPreparedSession = removeBgMode === 'none'
+        ? null
+        : await removalJob.prepare(
+            await Promise.all(stratified(correctionItems).map((item) => item.load())),
+            abortSignal,
+          );
 
       const staticProcessed: ProcessedSticker[] = [];
       for (let index = 0; index < pickedStatic.length; index++) {
@@ -134,7 +182,18 @@ export function PopupPackMode() {
         const source = pickedStatic[index]!;
         logger.log('step', `處理靜態貼圖 ${index + 1}/${count}：${source.name}`);
         const decoded = await decodeBlob(source);
-        const removed = await removalJob.remove(decoded, abortSignal);
+        const sourceIdentity = fileSourceIdentity(source);
+        const removed = removeBgMode === 'none'
+          ? decoded
+          : (await removeWithForegroundCorrection({
+              input: decoded,
+              sourceIdentity,
+              configurationIdentity: removalConfigurationIdentity,
+              job: removalJob,
+              record: corrections.get(sourceIdentity),
+              preparedSession: sharedPreparedSession!,
+              signal: abortSignal,
+            })).corrected;
         const processed = await processStatic(removed, {
           bounds: maxBounds('static'),
           removeBackground: false,
@@ -163,10 +222,22 @@ export function PopupPackMode() {
         logger.log('step', `處理 Pop-up ${index + 1}/${count}（${files.length} 格）…`);
         const frames = [];
         for (const source of files) frames.push(await decodeBlob(source));
+        const frameIdentities = files.map(fileSourceIdentity);
         const processed = await processAnimated(frames, {
           bounds: POPUP_BOUNDS,
           removeBackground: false,
-          removeBackgroundRaster: removalJob.remove,
+          frameIdentities,
+          prepareBackgroundRaster: removeBgMode === 'none' ? undefined : async (input, frame, signal) => (
+            await removeWithForegroundCorrection({
+              input,
+              sourceIdentity: frame.sourceIdentity,
+              configurationIdentity: removalConfigurationIdentity,
+              job: removalJob!,
+              record: corrections.get(frame.sourceIdentity),
+              preparedSession: sharedPreparedSession!,
+              signal,
+            })
+          ).corrected,
           signal: abortSignal,
           onBackgroundProgress: (done, total) => setModelStatus(
             `${removalJob!.label}：Pop-up ${index + 1}/${count}，影格 ${done}/${total}`,
@@ -303,8 +374,21 @@ export function PopupPackMode() {
         inferenceCount={removalInferenceCount}
         color={backgroundColor}
         onColorChange={(color) => { setBackgroundColor(color); setResult(null); }}
+        colorAutomatic={backgroundColorAutomatic}
+        onColorAutomaticChange={(automatic) => { setBackgroundColorAutomatic(automatic); setResult(null); }}
         colorKeyOptions={colorKeyOptions}
         onColorKeyOptionsChange={(options) => { setColorKeyOptions(options); setResult(null); }}
+      />
+      <ForegroundCorrectionWorkspace
+        mode={removeBgMode}
+        configurationIdentity={removalConfigurationIdentity}
+        items={correctionItems}
+        records={corrections}
+        onRecordsChange={setCorrections}
+        createJob={createRemovalJob}
+        sharedCalibration
+        disabled={busy}
+        onDirty={() => setResult(null)}
       />
       <div className="popup-frame-sets">
         {Array.from({ length: count }, (_, index) => (

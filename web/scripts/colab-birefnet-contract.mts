@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   COLAB_BIREFNET_MAX_INPUT_PIXELS,
+  applyColabMaskToSource,
   createColabBirefnetConnectionConfig,
   planColabBirefnetUploadSize,
   removeBackgroundWithColabBirefnet,
@@ -190,7 +191,10 @@ globalThis.fetch = async (_url, init) => {
       },
     }), { headers: { 'content-type': 'image/png' } });
   }
-  const bytes = encodePng(mask);
+  const requestMask = fetchCall === 3
+    ? { width: 2048, height: 1, data: new Uint8ClampedArray(2048 * 4).fill(255) }
+    : mask;
+  const bytes = encodePng(requestMask);
   const body = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
   return new Response(body, { headers: { 'content-type': 'image/png' } });
 };
@@ -207,6 +211,22 @@ try {
   await assert.rejects(
     () => removeBackgroundWithColabBirefnet(input, config),
     /超過允許大小/,
+  );
+  const oversizedInput: Raster = {
+    width: 2049,
+    height: 1,
+    data: new Uint8ClampedArray(2049 * 4).fill(255),
+  };
+  const uploadedMask: Raster = {
+    width: 2048,
+    height: 1,
+    data: new Uint8ClampedArray(2048 * 4).fill(255),
+  };
+  const restoredGeometry = applyColabMaskToSource(oversizedInput, uploadedMask);
+  assert.deepEqual(
+    [restoredGeometry.width, restoredGeometry.height],
+    [oversizedInput.width, oversizedInput.height],
+    'a downscaled Colab request returns source geometry for correction composition',
   );
 } finally {
   globalThis.fetch = originalFetch;

@@ -11,7 +11,7 @@ import { applyBackgroundRemoval } from './removeBackground.js';
 import { fitCanvas } from './fitCanvas.js';
 import { applyStroke } from './stroke.js';
 import { overlayText } from './text.js';
-import { autoLadder, encodeApngAutoFit, inspectAnimatedBytes, subsampleFrames } from './apng.js';
+import { autoLadder, encodeApngAutoFit, inspectAnimatedBytes, subsampleIndices } from './apng.js';
 import { stabilizeFrames } from './stabilize.js';
 import { cropRaster, resizeRaster, trimBounds, yieldToUI, type Raster } from './raster.js';
 
@@ -19,8 +19,14 @@ export interface ProcessAnimatedOptions {
   /** 動態畫布上限，預設 320×270 */
   bounds?: Bounds;
   removeBackground: RemoveBgMode;
-  /** Browser-only injected remover (IMG.LY/BiRefNet/Colab); runs after frame subsampling and before stabilization. */
-  removeBackgroundRaster?: (input: Raster, signal?: AbortSignal) => Promise<Raster>;
+  /** Stable source identities aligned with frameInputs, retained through subsampling. */
+  frameIdentities?: readonly string[];
+  /** Combined automatic removal + foreground correction seam, before stabilization/fit. */
+  prepareBackgroundRaster?: (
+    input: Raster,
+    frame: { sourceIdentity: string; sourceIndex: number; retainedIndex: number },
+    signal?: AbortSignal,
+  ) => Promise<Raster>;
   signal?: AbortSignal;
   onBackgroundProgress?: (completed: number, total: number) => void;
   stroke?: StrokeSpec;
@@ -88,8 +94,13 @@ export async function processAnimated(
   }
   if (opts.requireConsistentFrameSize) assertConsistentFrameSizes(frameInputs);
   let frames = frameInputs;
+  let retainedSourceIndices = frameInputs.map((_, index) => index);
+  if (opts.frameIdentities && opts.frameIdentities.length !== frameInputs.length) {
+    throw new Error('動畫影格 identity 數量與來源影格不一致');
+  }
   if (frames.length > limits.maxFrames) {
-    frames = subsampleFrames(frames, limits.maxFrames);
+    retainedSourceIndices = subsampleIndices(frames.length, limits.maxFrames);
+    frames = retainedSourceIndices.map((index) => frames[index]!);
     const suffix = limits.label ? `（${limits.label} 上限）` : '（LINE 上限）';
     notes.push(`影格 ${frameInputs.length}→${limits.maxFrames}${suffix}`);
   }
@@ -102,14 +113,16 @@ export async function processAnimated(
   for (let index = 0; index < frames.length; index++) {
     const f = frames[index]!;
     if (opts.signal?.aborted) throw new DOMException('動畫處理已取消', 'AbortError');
-    let r = opts.requireConsistentFrameSize || (f.width === W && f.height === H)
-      ? f
-      : resizeRaster(f, W, H);
-    if (opts.removeBackgroundRaster) {
-      r = await opts.removeBackgroundRaster(r, opts.signal);
+    let r = f;
+    const sourceIndex = retainedSourceIndices[index]!;
+    const sourceIdentity = opts.frameIdentities?.[sourceIndex] ?? `frame-${sourceIndex}`;
+    if (opts.prepareBackgroundRaster) {
+      r = await opts.prepareBackgroundRaster(r, { sourceIdentity, sourceIndex, retainedIndex: index }, opts.signal);
     } else if (opts.removeBackground !== false) {
       r = (await applyBackgroundRemoval(r, opts.removeBackground)).raster;
     }
+    // Corrections are authored in immutable source coordinates. Normalize
+    // geometry only after automatic removal and Keep composition.
     if (r.width !== W || r.height !== H) {
       if (opts.requireConsistentFrameSize) {
         throw new Error(

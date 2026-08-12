@@ -26,14 +26,14 @@ assert.deepEqual(invalidateColabVideoCurrent([colabRender]), [null]);
 
 assert.equal(
   videoRemoverVersion('colab-birefnet', 'Colab 多模型去背', 7),
-  'Colab 多模型去背@1:connection-7',
+  'colab-birefnet@1:connection-7',
 );
 assert.notEqual(
   videoRemoverVersion('colab-birefnet', 'Colab 多模型去背', 7),
   videoRemoverVersion('colab-birefnet', 'Colab 多模型去背', 8),
 );
-assert.equal(videoRemoverVersion('local-birefnet', 'Local BiRefNet', null), 'Local BiRefNet@1');
-assert.equal(videoRemoverVersion('color-key', '單色色鍵', null), '單色色鍵@4');
+assert.equal(videoRemoverVersion('local-birefnet', 'Local BiRefNet', null), 'local-birefnet@1');
+assert.equal(videoRemoverVersion('color-key', '單色色鍵', null), 'browser-color-key@5');
 assert.throws(
   () => videoRemoverVersion('colab-birefnet', 'Colab 多模型去背', null),
   /generation/,

@@ -10,10 +10,16 @@ import type { GridLayout } from '@core/types.js';
 import { validateEmojiPack, validatePack } from '@core/validate.js';
 import { decodeBlob, yieldToUI, type Raster } from '../webpipe/raster.js';
 import {
+  backgroundRemovalConfigurationIdentity,
   createBackgroundRemovalJob,
   type BackgroundRemovalJob,
   type WebBackgroundRemovalMode,
 } from '../webpipe/backgroundRemovalJob.js';
+import {
+  backgroundRemovalRenderFromRaster,
+  removeWithForegroundCorrection,
+  type ForegroundCorrectionRecord,
+} from '../webpipe/backgroundCorrection.js';
 import { removeSheetBackgroundByCells } from '../webpipe/sheetBackgroundRemoval.js';
 import { cutSheet } from '../webpipe/sheetAnalysis.js';
 import { processStatic, type ProcessedSticker } from '../webpipe/processStatic.js';
@@ -33,6 +39,8 @@ import {
 } from './defaults.js';
 import { reportCut } from './cutReport.js';
 import { BackgroundRemovalControl } from './BackgroundRemovalControl.jsx';
+import { ForegroundCorrectionWorkspace } from './ForegroundCorrectionWorkspace.jsx';
+import { fileCorrectionSource, fileSourceIdentity } from './correctionSources.js';
 import { useColabBirefnetConnection } from './colabBirefnetConnection.jsx';
 import { SheetCutPreview } from './SheetCutPreview.jsx';
 
@@ -48,6 +56,7 @@ export function SheetTab() {
   const [gridText, setGridText] = useState('auto');
   const [removeBgMode, setRemoveBgMode] = useState<WebBackgroundRemovalMode>('color-key');
   const [backgroundColor, setBackgroundColor] = useState('#00ff00');
+  const [backgroundColorAutomatic, setBackgroundColorAutomatic] = useState(true);
   const [colorKeyOptions, setColorKeyOptions] = useState<ColorKeyOptions>(() => ({ ...DEFAULT_COLOR_KEY_OPTIONS }));
   const [strokeOn, setStrokeOn] = useState(false);
   const [strokeWidth, setStrokeWidth] = useState(8);
@@ -61,10 +70,39 @@ export function SheetTab() {
   const [busy, setBusy] = useState(false);
   const [modelStatus, setModelStatus] = useState<string | null>(null);
   const [result, setResult] = useState<PackResultData | null>(null);
+  const [corrections, setCorrections] = useState<Map<string, ForegroundCorrectionRecord>>(() => new Map());
   const [zipOverBudget, setZipOverBudget] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const logger = useLogger();
   const { connection: colabConnection, registerActiveRemoval } = useColabBirefnetConnection();
+  const parsedBackgroundColor = parseColor(backgroundColor);
+  const wholeImageColor: [number, number, number] = [
+    parsedBackgroundColor.r,
+    parsedBackgroundColor.g,
+    parsedBackgroundColor.b,
+  ];
+  const baseRemovalConfigurationIdentity = backgroundRemovalConfigurationIdentity({
+    mode: removeBgMode,
+    pickColor: removeBgMode === 'color-key' && (colorKeyOptions.scope === 'whole-image' || !backgroundColorAutomatic)
+      ? wholeImageColor
+      : null,
+    ...(removeBgMode === 'color-key' ? { colorKey: colorKeyOptions } : {}),
+    colabGeneration: colabConnection?.generation,
+  });
+  const correctionItems = useMemo(
+    () => sortFiles(sheets).map((file, index) => fileCorrectionSource(file, `組圖 ${index + 1}：${file.name}`)),
+    [sheets],
+  );
+  const createRemovalJob = (signal: AbortSignal) => createBackgroundRemovalJob({
+    mode: removeBgMode,
+    signal,
+    pickColor: removeBgMode === 'color-key' && (colorKeyOptions.scope === 'whole-image' || !backgroundColorAutomatic)
+      ? wholeImageColor
+      : null,
+    ...(removeBgMode === 'color-key' ? { colorKey: colorKeyOptions } : {}),
+    colabConfig: colabConnection?.config,
+    onStatus: setModelStatus,
+  });
 
   async function run(reduceColorsOverride = reduceColors) {
     logger.clear();
@@ -106,22 +144,7 @@ export function SheetTab() {
         logger.log('err', `版面需要 ${layout.sheets} 張組圖，但選了 ${ordered.length} 張`);
         return;
       }
-      const parsedBackgroundColor = parseColor(backgroundColor);
-      const wholeImageColor: [number, number, number] = [
-        parsedBackgroundColor.r,
-        parsedBackgroundColor.g,
-        parsedBackgroundColor.b,
-      ];
-      removalJob = await createBackgroundRemovalJob({
-        mode: removeBgMode,
-        signal: abort.signal,
-        pickColor: removeBgMode === 'color-key' && colorKeyOptions.scope === 'whole-image'
-          ? wholeImageColor
-          : null,
-        ...(removeBgMode === 'color-key' ? { colorKey: colorKeyOptions } : {}),
-        colabConfig: colabConnection?.config,
-        onStatus: setModelStatus,
-      });
+      removalJob = await createRemovalJob(abort.signal);
 
       // 2) 逐張組圖切格
       const cells: Raster[] = [];
@@ -133,28 +156,58 @@ export function SheetTab() {
         const semantic = removeBgMode === 'imgly'
           || removeBgMode === 'local-birefnet'
           || removeBgMode === 'colab-birefnet';
-        const prepared = semantic
-          ? await removeSheetBackgroundByCells(raster, {
-              cols: layout.cols,
-              rows: layout.rows,
-              remove: removalJob.remove,
+        const sourceIdentity = fileSourceIdentity(ordered[s]!);
+        const removal = removeBgMode === 'none'
+          ? null
+          : await removeWithForegroundCorrection({
+              input: raster,
+              sourceIdentity,
+              configurationIdentity: correctionConfigurationIdentity,
+              job: removalJob,
+              record: corrections.get(sourceIdentity),
               signal: abort.signal,
-              onProgress: (done, total) => setModelStatus(
-                `${removalJob!.label}：組圖 ${s + 1}/${layout.sheets}，crop ${done}/${total}`,
-              ),
-            })
-          : raster;
-        const cut = await cutSheet(prepared, {
+              ...(semantic ? {
+                removeAutomatic: async () => {
+                  const cellSession = await removalJob!.prepare([raster], abort.signal);
+                  return backgroundRemovalRenderFromRaster(
+                  await removeSheetBackgroundByCells(raster, {
+                    cols: layout.cols,
+                    rows: layout.rows,
+                    remove: async (crop, signal) => (await cellSession.remove(crop, signal)).raster,
+                    signal: abort.signal,
+                    onProgress: (done, total) => setModelStatus(
+                      `${removalJob!.label}：組圖 ${s + 1}/${layout.sheets}，crop ${done}/${total}`,
+                    ),
+                  }),
+                  `${correctionConfigurationIdentity}:sheet-cells`,
+                );
+                },
+              } : {}),
+            });
+        const cut = await cutSheet(raster, {
           cols: layout.cols,
           rows: layout.rows,
           count: thisCount,
           key: semantic
-            ? { autoRemove: false, preRemovedLabel: removalJob.label }
+            ? {
+                autoRemove: false,
+                preRemovedLabel: removalJob.label,
+                preparedResult: {
+                  raster: removal!.corrected,
+                  sessionIdentity: removal!.sessionIdentity,
+                  diagnostics: removal!.diagnostics,
+                },
+              }
             : removeBgMode === 'color-key'
               ? {
                   autoRemove: true,
                   colorKey: colorKeyOptions,
                   ...(colorKeyOptions.scope === 'whole-image' ? { pickColor: wholeImageColor } : {}),
+                  preparedResult: {
+                    raster: removal!.corrected,
+                    sessionIdentity: removal!.sessionIdentity,
+                    diagnostics: removal!.diagnostics,
+                  },
                 }
               : { autoRemove: false },
         });
@@ -306,6 +359,7 @@ export function SheetTab() {
     }
   }, [count, gridText, isCharacter]);
   const previewLayout = previewState.layout;
+  const correctionConfigurationIdentity = `${baseRemovalConfigurationIdentity}:sheet-grid:${previewLayout?.cols ?? 0}x${previewLayout?.rows ?? 0}`;
   const layoutHint = previewLayout
     ? `版面：${previewLayout.cols}×${previewLayout.rows}${previewLayout.sheets > 1 ? ` × ${previewLayout.sheets} 張組圖` : ''}`
     : previewState.issue ?? '';
@@ -325,9 +379,39 @@ export function SheetTab() {
         inferenceCount={count}
         color={backgroundColor}
         onColorChange={setBackgroundColor}
+        colorAutomatic={backgroundColorAutomatic}
+        onColorAutomaticChange={setBackgroundColorAutomatic}
         colorHelp={<span className="layout-hint">外框模式可自動偵測；全圖模式使用這個色碼</span>}
         colorKeyOptions={colorKeyOptions}
         onColorKeyOptionsChange={setColorKeyOptions}
+      />
+      <ForegroundCorrectionWorkspace
+        mode={removeBgMode}
+        configurationIdentity={correctionConfigurationIdentity}
+        items={correctionItems}
+        records={corrections}
+        onRecordsChange={setCorrections}
+        createJob={createRemovalJob}
+        disabled={busy || !previewLayout}
+        onDirty={() => setResult(null)}
+        prepareAutomatic={async ({ source, job, session, signal, onProgress }) => {
+          const semantic = removeBgMode === 'imgly'
+            || removeBgMode === 'local-birefnet'
+            || removeBgMode === 'colab-birefnet';
+          if (!semantic) return session.remove(source, signal);
+          if (!previewLayout) throw new Error('請先設定有效的組圖網格');
+          const raster = await removeSheetBackgroundByCells(source, {
+            cols: previewLayout.cols,
+            rows: previewLayout.rows,
+            remove: async (crop, cropSignal) => (await session.remove(crop, cropSignal)).raster,
+            signal,
+            onProgress: (done, total) => onProgress(`${job.label}：crop ${done}/${total}`),
+          });
+          return backgroundRemovalRenderFromRaster(
+            raster,
+            `${correctionConfigurationIdentity}:sheet-cells`,
+          );
+        }}
       />
       <Row>
         <Field label="輸出規格">

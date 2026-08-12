@@ -11,12 +11,14 @@ export function VideoStickerList(props: {
   activeIndex: number;
   onSelect: (index: number) => void;
   isDirty: (index: number) => boolean;
+  editedVisualCount?: (stickerId: string) => number;
 }) {
   return (
     <div className="video-sticker-list">
       {props.settings.map((settings, index) => {
         const current = props.current[index];
         const dirty = props.isDirty(index);
+        const editedVisuals = props.editedVisualCount?.(settings.stickerId) ?? 0;
         return (
           <button
             type="button"
@@ -31,6 +33,7 @@ export function VideoStickerList(props: {
                 ? `popup/${stickerFileName(index + 1)}`
                 : stickerFileName(index + 1)}</strong></span>
             <span>{current ? `${current.metrics.outputFrames} 格 · ${kb(current.png.length)}` : '尚未產生成品'}</span>
+            {editedVisuals > 0 && <span>● {editedVisuals} 個 raw visuals 有保留修正</span>}
             <span>{dirty ? '● draft' : current?.errors.length ? '⚠ 不合規' : '✓ current'}</span>
           </button>
         );

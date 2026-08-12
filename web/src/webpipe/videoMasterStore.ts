@@ -94,8 +94,13 @@ class IndexedDbVideoMasterStore implements VideoMasterStore {
   }
 
   async put(key: string, bytes: Uint8Array): Promise<void> {
-    await this.transaction('readwrite', (store) => store.put(bytes.slice().buffer, this.scoped(key)));
     this.keys.add(key);
+    try {
+      await this.transaction('readwrite', (store) => store.put(bytes.slice().buffer, this.scoped(key)));
+    } catch (error) {
+      this.keys.delete(key);
+      throw error;
+    }
   }
 
   async get(key: string): Promise<Uint8Array> {

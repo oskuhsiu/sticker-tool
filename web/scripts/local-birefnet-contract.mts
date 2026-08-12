@@ -11,6 +11,7 @@ import {
   probeLocalBirefnetWebgpu,
 } from '../src/webpipe/localBirefnetContract.js';
 import { localBirefnetProgressText } from '../src/webpipe/localBirefnet.js';
+import { createBackgroundRemovalJob } from '../src/webpipe/backgroundRemovalJob.js';
 
 assert.equal(LOCAL_BIREFNET_MODEL_ID, 'studioludens/birefnet-lite-512');
 assert.equal(LOCAL_BIREFNET_MODEL_REVISION.length, 40);
@@ -87,5 +88,18 @@ fetchHandler({
   respondWith: () => { corsWasProxied = true; },
 });
 assert.equal(corsWasProxied, false, 'large CORS model downloads bypass the COI response proxy');
+
+const lazyJob = await createBackgroundRemovalJob({ mode: 'local-birefnet' });
+await lazyJob.prepare([{
+  width: 1,
+  height: 1,
+  data: new Uint8ClampedArray([0, 0, 0, 255]),
+}]);
+await lazyJob.dispose();
+assert.equal(
+  typeof globalThis.Worker,
+  'undefined',
+  'creating/preparing a cached local-model job does not initialize a Worker before an actual cache miss',
+);
 
 console.log('local BiRefNet contract OK (pinned model, alpha, progress, Firefox-safe CORS download)');

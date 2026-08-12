@@ -240,6 +240,33 @@ function applyMask(original: Raster, mask: Raster): Raster {
   return { data: out, width: original.width, height: original.height };
 }
 
+function restoreMaskGeometry(mask: Raster, width: number, height: number): Raster {
+  if (mask.width === width && mask.height === height) return mask;
+  const data = new Uint8ClampedArray(width * height * 4);
+  for (let y = 0; y < height; y++) {
+    const sourceY = (y + 0.5) * mask.height / height - 0.5;
+    const y0 = Math.max(0, Math.min(mask.height - 1, Math.floor(sourceY)));
+    const y1 = Math.min(mask.height - 1, y0 + 1);
+    const fy = Math.max(0, Math.min(1, sourceY - y0));
+    for (let x = 0; x < width; x++) {
+      const sourceX = (x + 0.5) * mask.width / width - 0.5;
+      const x0 = Math.max(0, Math.min(mask.width - 1, Math.floor(sourceX)));
+      const x1 = Math.min(mask.width - 1, x0 + 1);
+      const fx = Math.max(0, Math.min(1, sourceX - x0));
+      const sample = (sx: number, sy: number): number => mask.data[(sy * mask.width + sx) * 4]!;
+      const top = sample(x0, y0) * (1 - fx) + sample(x1, y0) * fx;
+      const bottom = sample(x0, y1) * (1 - fx) + sample(x1, y1) * fx;
+      const value = Math.round(top * (1 - fy) + bottom * fy);
+      data.set([value, value, value, 255], (y * width + x) * 4);
+    }
+  }
+  return { width, height, data };
+}
+
+export function applyColabMaskToSource(input: Raster, uploadedMask: Raster): Raster {
+  return applyMask(input, restoreMaskGeometry(uploadedMask, input.width, input.height));
+}
+
 export async function removeBackgroundWithColabBirefnet(
   input: Raster,
   config: ColabBirefnetConnectionConfig,
@@ -255,5 +282,5 @@ export async function removeBackgroundWithColabBirefnet(
   });
   const bytes = await postCrop(config, prepared.png, options.signal);
   assertExpectedMaskPng(bytes, prepared.raster.width, prepared.raster.height);
-  return applyMask(prepared.raster, decodePng(bytes));
+  return applyColabMaskToSource(input, decodePng(bytes));
 }

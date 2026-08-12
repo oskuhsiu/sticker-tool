@@ -1134,3 +1134,136 @@ textarea {
     grid-template-columns: 1fr;
   }
 }
+
+/* Reusable foreground correction editor */
+.foreground-correction-editor {
+  min-width: 0;
+  display: grid;
+  gap: 0.55rem;
+}
+
+.foreground-correction-toolbar,
+.foreground-correction-tool-group,
+.foreground-correction-history {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.foreground-correction-toolbar {
+  justify-content: space-between;
+}
+
+.foreground-correction-range {
+  display: grid;
+  grid-template-columns: auto minmax(6rem, 10rem) 3.5rem;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.82rem;
+}
+
+.foreground-correction-range output {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.foreground-correction-toggle,
+.foreground-correction-select {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.82rem;
+}
+
+.foreground-correction-viewport {
+  width: 100%;
+  max-width: 100%;
+  max-height: min(70vh, 720px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.foreground-correction-viewport[data-background='checkerboard'] {
+  background:
+    repeating-conic-gradient(#cfcfcf 0% 25%, #fff 0% 50%) 0 0 / 16px 16px;
+}
+
+.foreground-correction-viewport[data-background='black'] {
+  background: #000;
+}
+
+.foreground-correction-viewport[data-background='white'] {
+  background: #fff;
+}
+
+.foreground-correction-media {
+  position: relative;
+  max-width: none;
+  line-height: 0;
+}
+
+.foreground-correction-media canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-width: none;
+  image-rendering: auto;
+}
+
+.foreground-correction-media canvas + canvas {
+  position: absolute;
+  inset: 0;
+  touch-action: none;
+  cursor: crosshair;
+}
+
+.foreground-correction-viewport[data-tool='pan'] .foreground-correction-media canvas + canvas {
+  cursor: grab;
+}
+
+.foreground-correction-viewport[data-tool='pan'] .foreground-correction-media canvas + canvas:active {
+  cursor: grabbing;
+}
+
+.foreground-correction-overlay-hidden {
+  opacity: 0;
+}
+
+.foreground-correction-status,
+.foreground-correction-diagnostics {
+  margin: 0;
+  color: var(--fg);
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
+.foreground-correction-diagnostics {
+  color: var(--muted);
+}
+
+@media (max-width: 700px) {
+  .foreground-correction-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .foreground-correction-range {
+    grid-template-columns: auto minmax(5rem, 1fr) 3.5rem;
+  }
+}
+
+.foreground-correction-workspace {
+  margin: 0.8rem 0;
+  padding: 0.8rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--card);
+}
+
+.foreground-correction-workspace h3 {
+  margin: 0 0 0.35rem;
+}

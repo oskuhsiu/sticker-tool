@@ -20,14 +20,6 @@ function rgbaHash(raster: Raster): string {
   return (hash >>> 0).toString(16).padStart(8, '0');
 }
 
-function equalRaster(a: Raster, b: Raster): boolean {
-  if (a.width !== b.width || a.height !== b.height || a.data.length !== b.data.length) return false;
-  for (let index = 0; index < a.data.length; index++) {
-    if (a.data[index] !== b.data[index]) return false;
-  }
-  return true;
-}
-
 async function sha256(bytes: Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', bytes.slice().buffer as ArrayBuffer);
   return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, '0')).join('');
@@ -35,6 +27,25 @@ async function sha256(bytes: Uint8Array): Promise<string> {
 
 interface PendingStickerChunk {
   samples: Array<Omit<SourceFrameRef, 'chunkId' | 'visualFrameId'> & { raster: Raster }>;
+}
+
+export interface RawVisualIdentityRegistry {
+  resolve(raster: Raster): Promise<{ id: string; hash: string }>;
+}
+
+/** Sticker-wide logical IDs remain stable when physical APNG chunks flush. */
+export function createRawVisualIdentityRegistry(stickerId: string): RawVisualIdentityRegistry {
+  return {
+    async resolve(raster) {
+      const hash = rgbaHash(raster);
+      const geometry = new Uint8Array(8 + raster.data.byteLength);
+      const view = new DataView(geometry.buffer);
+      view.setUint32(0, raster.width, false);
+      view.setUint32(4, raster.height, false);
+      geometry.set(new Uint8Array(raster.data.buffer, raster.data.byteOffset, raster.data.byteLength), 8);
+      return { id: `${stickerId}-visual-${await sha256(geometry)}`, hash };
+    },
+  };
 }
 
 /** Build an all-presentation-frame, target-fitted raw-color master and stream it into the store. */
@@ -66,6 +77,7 @@ export async function buildRawVideoMaster(args: {
     return { id: rect.id, index: rect.index, width: canvas.width, height: canvas.height, chunks: [] };
   });
   const pending: PendingStickerChunk[] = stickers.map(() => ({ samples: [] }));
+  const logicalVisuals = stickers.map((sticker) => createRawVisualIdentityRegistry(sticker.id));
   let processedFrames = 0;
   let processedCrops = 0;
   let writtenChunks = 0;
@@ -82,10 +94,10 @@ export async function buildRawVideoMaster(args: {
       const visualRefs: RawVisualFrameRef[] = [];
       const sampleRefs: SourceFrameRef[] = [];
       for (const sample of samples) {
-        const hash = rgbaHash(sample.raster);
+        const logical = await logicalVisuals[stickerIndex]!.resolve(sample.raster);
         let frameInChunk = -1;
         for (let index = 0; index < visualFrames.length; index++) {
-          if (visualRefs[index]!.rgbaHash === hash && equalRaster(visualFrames[index]!, sample.raster)) {
+          if (visualRefs[index]!.visualFrameId === logical.id) {
             frameInChunk = index;
             break;
           }
@@ -94,8 +106,8 @@ export async function buildRawVideoMaster(args: {
           frameInChunk = visualFrames.length;
           visualFrames.push(sample.raster);
           visualRefs.push({
-            visualFrameId: `${chunkId}-visual-${String(frameInChunk + 1).padStart(3, '0')}`,
-            rgbaHash: hash,
+            visualFrameId: logical.id,
+            rgbaHash: logical.hash,
             chunkId,
             frameInChunk,
           });

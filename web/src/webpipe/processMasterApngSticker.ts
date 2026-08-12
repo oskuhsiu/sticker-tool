@@ -21,10 +21,17 @@ import {
   type ImageInfo,
 } from '@core/validate.js';
 import { decodeApngFrames, encodeApngExactFrames } from './apng.js';
+import type { PreparedBackgroundRemovalSession } from './backgroundRemovalJob.js';
+import { hashRasterContent } from './foregroundCorrection.js';
 import { decodeMasterSticker, type MasterApngSticker } from './masterApng.js';
 import { pngImageInfo } from './png.js';
 import type { Raster } from './raster.js';
 import { VideoFrameRenderCache } from './videoFrameRenderCache.js';
+import {
+  applyVideoFrameCorrection,
+  videoCorrectionTargetKey,
+  type VideoFrameCorrectionMap,
+} from './videoForegroundCorrection.js';
 import type { VideoMasterStore } from './videoMasterStore.js';
 
 export type VideoStickerSettings = VideoStickerDraftV2;
@@ -56,6 +63,18 @@ export interface VideoRenderSnapshot {
   selection: VideoSelectionPlanV2;
   notes: string[];
   errors: string[];
+  /** Complete provenance used to reject stale current bytes before packaging. */
+  renderIdentity?: VideoRenderIdentity;
+}
+
+export interface VideoRenderIdentity {
+  readonly version: 'video-render-identity@1';
+  readonly removerVersion: string;
+  readonly configurationIdentity: string;
+  readonly calibrationIdentity: string;
+  readonly correctionIdentity: string;
+  readonly sourceIdentity: string;
+  readonly digest: string;
 }
 
 export interface AnimatedByteEvidence {
@@ -74,6 +93,87 @@ export interface VideoRepresentativeFrame {
   candidateIndex: number;
   sourceIndex: number;
   timestampUs: number;
+  visualFrameId?: string;
+  sourceContentHash: string;
+}
+
+export interface VideoRawVisualFrame {
+  frame: Raster;
+  visualFrameId: string;
+  rawFrameHash: string;
+  sourceContentHash: string;
+  sourceIndex: number;
+  timestampUs: number;
+  durationUs: number;
+}
+
+async function sha256Text(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+export function activeVideoVisualFrameIds(
+  master: MasterApngSticker,
+  rangeStartUs: number,
+  rangeEndUs: number,
+): string[] {
+  const samples = master.chunks.flatMap((chunk) => chunk.sampleRefs).filter((sample) => (
+    sample.timestampUs < rangeEndUs
+    && sample.timestampUs + sample.durationUs > rangeStartUs
+  ));
+  samples.sort((a, b) => a.timestampUs - b.timestampUs || a.sourceIndex - b.sourceIndex);
+  return [...new Set(samples.map((sample) => sample.visualFrameId))];
+}
+
+/** Load every unique raw visual in range. Repeated presentation samples share one result. */
+export async function loadVideoRawVisualFrames(args: {
+  master: MasterApngSticker;
+  store: VideoMasterStore;
+  rangeStartUs: number;
+  rangeEndUs: number;
+}): Promise<VideoRawVisualFrame[]> {
+  const decoded = await decodeMasterSticker(args.master, args.store, args.rangeStartUs, args.rangeEndUs);
+  const unique = new Map<string, VideoRawVisualFrame>();
+  for (const item of decoded) {
+    const visualFrameId = item.sampleRef.visualFrameId;
+    if (unique.has(visualFrameId)) continue;
+    unique.set(visualFrameId, {
+      frame: item.frame,
+      visualFrameId,
+      rawFrameHash: item.rawFrameHash,
+      sourceContentHash: await hashRasterContent(item.frame),
+      sourceIndex: item.sampleRef.sourceIndex,
+      timestampUs: item.sampleRef.timestampUs,
+      durationUs: item.sampleRef.durationUs,
+    });
+  }
+  return [...unique.values()];
+}
+
+/** Calibration is independent of targetFrames and covers the active raw-visual timeline. */
+export function selectVideoCalibrationFrames(
+  visuals: readonly VideoRawVisualFrame[],
+  maximum = 3,
+): VideoRawVisualFrame[] {
+  if (!Number.isSafeInteger(maximum) || maximum < 1) throw new RangeError('Calibration frame count must be positive');
+  if (visuals.length <= maximum) return [...visuals];
+  const timings: SourceFrameTiming[] = visuals.map((visual) => ({
+    sourceIndex: visual.sourceIndex,
+    timestampUs: visual.timestampUs,
+    durationUs: visual.durationUs,
+  }));
+  return selectTimeUniformIndices(timings, maximum).map((index) => visuals[index]!);
+}
+
+export async function videoSourceSetIdentity(
+  visuals: readonly Pick<VideoRawVisualFrame, 'visualFrameId' | 'sourceContentHash'>[],
+): Promise<string> {
+  const parts = [...visuals]
+    .sort((a, b) => a.visualFrameId.localeCompare(b.visualFrameId))
+    .map((visual) => `${visual.visualFrameId}:${visual.sourceContentHash}`);
+  return sha256Text(parts.join('\n'));
 }
 
 /** Pick up to three time-uniform frames from the draft's initial target-frame candidates. */
@@ -97,7 +197,7 @@ export async function loadVideoRepresentativeFrames(args: {
   );
   const candidateTimings = candidatePositions.map((position) => timings[position]!);
   const maximumPreviews = Math.min(3, candidatePositions.length);
-  return selectTimeUniformIndices(candidateTimings, maximumPreviews).map((candidateIndex) => {
+  return Promise.all(selectTimeUniformIndices(candidateTimings, maximumPreviews).map(async (candidateIndex) => {
     const decodedIndex = candidatePositions[candidateIndex]!;
     const selected = decoded[decodedIndex]!;
     return {
@@ -105,8 +205,10 @@ export async function loadVideoRepresentativeFrames(args: {
       candidateIndex,
       sourceIndex: selected.sampleRef.sourceIndex,
       timestampUs: selected.sampleRef.timestampUs,
+      visualFrameId: selected.sampleRef.visualFrameId,
+      sourceContentHash: await hashRasterContent(selected.frame),
     };
-  });
+  }));
 }
 
 export function inspectAnimatedBytes(
@@ -203,11 +305,71 @@ export function validateVideoStickerSettings(
     if (!/^#[0-9a-f]{6}$/i.test(settings.background.color)) errors.push('單色色鍵必須是 #RRGGBB');
   }
   if (settings.background.mode === 'color-key') {
-    if (!isColorKeyOptions(settings.background.colorKey)) errors.push('單色去背選項無效');
+    const validColorKey = isColorKeyOptions(settings.background.colorKey);
+    if (!validColorKey) errors.push('單色去背選項無效');
+    if (validColorKey && settings.background.colorKey.scope === 'whole-image' && settings.background.color === undefined) {
+      errors.push('全圖色碼去背必須指定背景色');
+    }
   } else if (settings.background.colorKey !== undefined) {
     errors.push('只有單色去背可使用單色去背選項');
   }
   return errors;
+}
+
+export interface VideoFramePreparationResult {
+  readonly automatic: Raster;
+  readonly corrected: Raster;
+  readonly sourceContentHash: string;
+  readonly sessionIdentity: string;
+  readonly automaticCacheHit: boolean;
+}
+
+/** Automatic removal is cached independently; Keep-mask edits only re-compose pixels. */
+export async function prepareVideoFrame(args: {
+  stickerId: string;
+  visualFrameId: string;
+  source: Raster;
+  sourceContentHash: string;
+  settings: VideoStickerSettings;
+  cache: VideoFrameRenderCache;
+  removerVersion: string;
+  preparedBackground?: PreparedBackgroundRemovalSession;
+  corrections?: VideoFrameCorrectionMap;
+  signal?: AbortSignal;
+}): Promise<VideoFramePreparationResult> {
+  if (args.signal?.aborted) throw new DOMException('動畫處理已取消', 'AbortError');
+  const sourceContentHash = args.sourceContentHash;
+  let automatic = args.source;
+  let automaticCacheHit = false;
+  let sessionIdentity = 'background-none@1';
+  if (args.settings.background.mode !== 'none') {
+    if (!args.preparedBackground) throw new Error(`${args.settings.background.mode} prepared 去背 session 未啟用`);
+    sessionIdentity = args.preparedBackground.identity;
+    const key = VideoFrameRenderCache.key({
+      stickerId: args.stickerId,
+      visualFrameId: args.visualFrameId,
+      sourceContentHash,
+      removerVersion: args.removerVersion,
+      calibrationIdentity: sessionIdentity,
+      background: args.settings.background,
+    });
+    const cached = args.cache.get(key);
+    if (cached) {
+      automatic = cached;
+      automaticCacheHit = true;
+    } else {
+      automatic = (await args.preparedBackground.remove(args.source, args.signal)).raster;
+      args.cache.set(key, automatic);
+    }
+  }
+  const correction = args.corrections?.get(videoCorrectionTargetKey(args.stickerId, args.visualFrameId));
+  return {
+    automatic,
+    corrected: applyVideoFrameCorrection(args.source, automatic, correction, sourceContentHash),
+    sourceContentHash,
+    sessionIdentity,
+    automaticCacheHit,
+  };
 }
 
 /** Render one draft from raw master frames without changing its requested target frame count. */
@@ -218,7 +380,11 @@ export async function processMasterApngSticker(args: {
   settings: VideoStickerSettings;
   cache: VideoFrameRenderCache;
   removerVersion: string;
-  removeBackground?: (input: Raster, signal?: AbortSignal) => Promise<Raster>;
+  configurationIdentity?: string;
+  correctionIdentity?: string;
+  preparedBackground?: PreparedBackgroundRemovalSession;
+  sourceContentHashes?: ReadonlyMap<string, string>;
+  corrections?: VideoFrameCorrectionMap;
   signal?: AbortSignal;
   onProgress?: (stage: string) => void;
 }): Promise<VideoRenderSnapshot> {
@@ -228,6 +394,18 @@ export async function processMasterApngSticker(args: {
   if (settingErrors.length > 0) throw new Error(settingErrors.join('；'));
   const decoded = await decodeMasterSticker(master, args.store, settings.rangeStartUs, settings.rangeEndUs);
   if (decoded.length === 0) throw new Error(`${master.id} 在目前 range 沒有 raw master frame`);
+  const sourceContentHashes = new Map(args.sourceContentHashes);
+  for (const raw of decoded) {
+    if (!sourceContentHashes.has(raw.sampleRef.visualFrameId)) {
+      sourceContentHashes.set(raw.sampleRef.visualFrameId, await hashRasterContent(raw.frame));
+    }
+  }
+  const sourceIdentity = await videoSourceSetIdentity(
+    [...new Set(decoded.map((raw) => raw.sampleRef.visualFrameId))].map((visualFrameId) => ({
+      visualFrameId,
+      sourceContentHash: sourceContentHashes.get(visualFrameId)!,
+    })),
+  );
   const timings: SourceFrameTiming[] = decoded.map(({ sampleRef }) => ({
     sourceIndex: sampleRef.sourceIndex,
     timestampUs: sampleRef.timestampUs,
@@ -256,23 +434,19 @@ export async function processMasterApngSticker(args: {
     args.onProgress?.(expansionIndex < initialCount
       ? `初選畫格 ${expansionIndex + 1}/${initialCount}`
       : `補選畫格 ${expansionIndex - initialCount + 1}/${expansion.length - initialCount}`);
-    let frame = raw.frame;
-    if (settings.background.mode !== 'none') {
-      if (!args.removeBackground) throw new Error(`${settings.background.mode} 去背 adapter 未啟用`);
-      const key = VideoFrameRenderCache.key({
-        stickerId: settings.stickerId,
-        rawFrameHash: raw.rawFrameHash,
-        removerVersion: args.removerVersion,
-        background: settings.background,
-      });
-      const cached = args.cache.get(key);
-      if (cached) {
-        frame = cached;
-      } else {
-        frame = await args.removeBackground(frame, args.signal);
-        args.cache.set(key, frame);
-      }
-    }
+    const prepared = await prepareVideoFrame({
+      stickerId: settings.stickerId,
+      visualFrameId: raw.sampleRef.visualFrameId,
+      source: raw.frame,
+      sourceContentHash: sourceContentHashes.get(raw.sampleRef.visualFrameId)!,
+      settings,
+      cache: args.cache,
+      removerVersion: args.removerVersion,
+      preparedBackground: args.preparedBackground,
+      corrections: args.corrections,
+      signal: args.signal,
+    });
+    const frame = prepared.corrected;
     transformed.set(localIndex, frame);
     candidateIndices.push(localIndex);
 
@@ -401,6 +575,26 @@ export async function processMasterApngSticker(args: {
     sourceDurationsUs: [...bestAttempt.selectedDurationsUs],
     finalDelaysMs: [...evidence.delaysMs],
   };
+  const calibrationIdentity = args.preparedBackground?.identity ?? args.removerVersion;
+  const correctionIdentity = args.correctionIdentity ?? 'video-keep-set@1:0:cbf29ce484222325';
+  const configurationIdentity = args.configurationIdentity ?? args.removerVersion;
+  const identityInput = JSON.stringify({
+    version: 'video-render-identity@1',
+    removerVersion: args.removerVersion,
+    configurationIdentity,
+    calibrationIdentity,
+    correctionIdentity,
+    sourceIdentity,
+  });
+  const renderIdentity: VideoRenderIdentity = {
+    version: 'video-render-identity@1',
+    removerVersion: args.removerVersion,
+    configurationIdentity,
+    calibrationIdentity,
+    correctionIdentity,
+    sourceIdentity,
+    digest: await sha256Text(identityInput),
+  };
   return {
     png: bestAttempt.png,
     info: evidence.info,
@@ -408,6 +602,7 @@ export async function processMasterApngSticker(args: {
     selection,
     notes,
     errors,
+    renderIdentity,
     metrics: {
       masterFramesInRange: decoded.length,
       requestedFrames: settings.targetFrames,

@@ -14,12 +14,18 @@ import {
   type VideoGridPlan,
 } from '@core/videoCrop.js';
 import {
+  VIDEO_CORRECTION_LIMITS,
   cloneVideoStickerDraft,
   type VideoBackgroundMode,
   type VideoOutputTarget,
 } from '@core/videoProject.js';
 import { mergeResults, validateEmojiPack, validatePack, validatePopupPack, type ImageInfo } from '@core/validate.js';
-import { createBackgroundRemovalJob, type BackgroundRemovalJob } from '../webpipe/backgroundRemovalJob.js';
+import {
+  backgroundRemovalConfigurationIdentity,
+  createBackgroundRemovalJob,
+  type BackgroundRemovalJob,
+  type PreparedBackgroundRemovalSession,
+} from '../webpipe/backgroundRemovalJob.js';
 import { colabBirefnetEndpointHost } from '../webpipe/colabBirefnet.js';
 import { decodeApngFrames } from '../webpipe/apng.js';
 import { buildAnimatedMainFromTimeline, buildMainTab, buildTab } from '../webpipe/mainTab.js';
@@ -27,9 +33,13 @@ import { decodeMasterPoster, type MasterApngSet } from '../webpipe/masterApng.js
 import { encodePng } from '../webpipe/png.js';
 import {
   inspectAnimatedBytes,
-  loadVideoRepresentativeFrames,
+  activeVideoVisualFrameIds,
+  loadVideoRawVisualFrames,
+  prepareVideoFrame,
   processMasterApngSticker,
-  type VideoRepresentativeFrame,
+  selectVideoCalibrationFrames,
+  videoSourceSetIdentity,
+  type VideoRawVisualFrame,
   type VideoRenderSnapshot,
   type VideoStickerSettings,
 } from '../webpipe/processMasterApngSticker.js';
@@ -41,7 +51,11 @@ import {
 } from '../webpipe/videoSource.js';
 import { VideoFrameRenderCache } from '../webpipe/videoFrameRenderCache.js';
 import { createVideoMasterStore, type VideoMasterStore } from '../webpipe/videoMasterStore.js';
-import { buildVideoProjectZip, importVideoProjectZip } from '../webpipe/videoProjectZip.js';
+import {
+  VIDEO_PROJECT_ARCHIVE_LIMITS,
+  buildVideoProjectZip,
+  importVideoProjectZip,
+} from '../webpipe/videoProjectZip.js';
 import { buildEmojiPackZip } from '../webpipe/emojiZip.js';
 import { processStatic, type ProcessedSticker } from '../webpipe/processStatic.js';
 import { buildPackZip, buildPopupPackZip, downloadBytes, safeName } from '../webpipe/zip.js';
@@ -52,6 +66,16 @@ import { VideoIngestProgress, type VideoIngestProgressValue } from './video/Vide
 import { VideoSourceStep } from './video/VideoSourceStep.jsx';
 import { VideoStickerEditor } from './video/VideoStickerEditor.jsx';
 import { VideoStickerList } from './video/VideoStickerList.jsx';
+import {
+  assertVideoCorrectionBudget,
+  countEditedVideoVisuals,
+  createVideoFrameCorrection,
+  videoCorrectionSetIdentity,
+  videoCorrectionTargetKey,
+  type VideoFrameCorrectionRecord,
+} from '../webpipe/videoForegroundCorrection.js';
+import { createKeepMask, type KeepMask } from '../webpipe/foregroundCorrection.js';
+import { VideoForegroundCorrectionPanel, type VideoCorrectionPreview } from './video/VideoForegroundCorrectionPanel.jsx';
 
 interface VideoProjectState {
   target: VideoOutputTarget;
@@ -65,6 +89,23 @@ interface VideoProjectState {
   master: MasterApngSet;
   settings: VideoStickerSettings[];
   current: Array<VideoRenderSnapshot | null>;
+  corrections: Map<string, VideoFrameCorrectionRecord>;
+}
+
+interface VideoRemovalContext {
+  readonly key: string;
+  readonly configurationIdentity: string;
+  readonly removerVersion: string;
+  readonly visuals: readonly VideoRawVisualFrame[];
+  readonly sourceContentHashes: ReadonlyMap<string, string>;
+  readonly job: BackgroundRemovalJob;
+  readonly session: PreparedBackgroundRemovalSession;
+}
+
+interface VideoRemovalContextSlot {
+  readonly key: string;
+  readonly promise: Promise<VideoRemovalContext>;
+  lastUsed: number;
 }
 
 interface LinePackState {
@@ -78,6 +119,8 @@ interface LinePackState {
 
 const PREFLIGHT_HARD_BYTES = 512 * 1024 * 1024;
 const RENDER_CACHE_BYTES = 96 * 1024 * 1024;
+const MAX_VIDEO_REMOVAL_CONTEXTS = 1;
+const MAX_VIDEO_REMOVAL_CONTEXT_BYTES = 96 * 1024 * 1024;
 
 function videoTargetLabel(target: VideoOutputTarget): string {
   if (target === 'animated-emoji') return 'Animated Regular Emoji';
@@ -140,17 +183,17 @@ export function invalidateColabVideoCurrent<T extends {
 
 export function videoRemoverVersion(
   mode: VideoBackgroundMode,
-  label: string | null,
+  _label: string | null,
   colabGeneration: number | null,
 ): string {
   if (mode === 'none') return 'none@1';
-  if (!label) throw new Error(`${mode} remover 尚未啟用`);
-  if (mode === 'color-key') return `${label}@4`;
-  if (mode !== 'colab-birefnet') return `${label}@1`;
+  if (mode === 'color-key') return 'browser-color-key@5';
+  if (mode === 'imgly') return 'imgly-medium@1.4.5';
+  if (mode === 'local-birefnet') return 'local-birefnet@1';
   if (!Number.isSafeInteger(colabGeneration) || colabGeneration === null || colabGeneration < 1) {
     throw new Error('Colab 多模型去背 connection generation 無效');
   }
-  return `${label}@1:connection-${colabGeneration}`;
+  return `colab-birefnet@1:connection-${colabGeneration}`;
 }
 
 function defaultSettings(args: {
@@ -161,6 +204,7 @@ function defaultSettings(args: {
   sourceFrames: number;
   backgroundMode: VideoBackgroundMode;
   color: string;
+  colorAutomatic: boolean;
   colorKeyOptions: ColorKeyOptions;
 }): VideoStickerSettings {
   const contract = args.target === 'animated-emoji'
@@ -180,7 +224,11 @@ function defaultSettings(args: {
     perLoopDurationMs: (roundedSeconds * 1000) as VideoStickerSettings['perLoopDurationMs'],
     loops: 1,
     background: args.backgroundMode === 'color-key'
-      ? { mode: 'color-key', color: args.color, colorKey: { ...args.colorKeyOptions } }
+      ? {
+          mode: 'color-key',
+          ...((args.colorKeyOptions.scope === 'whole-image' || !args.colorAutomatic) ? { color: args.color } : {}),
+          colorKey: { ...args.colorKeyOptions },
+        }
       : { mode: args.backgroundMode },
     staticFrameIndex: args.target === 'popup' ? 0 : undefined,
     preserveColors: false,
@@ -202,6 +250,8 @@ export function VideoTab() {
   const masterStoreRef = useRef<VideoMasterStore | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const cacheRef = useRef(new VideoFrameRenderCache(RENDER_CACHE_BYTES));
+  const removalContextsRef = useRef(new Map<string, VideoRemovalContextSlot>());
+  const removalContextClockRef = useRef(0);
   const logger = useLogger();
   const { connection: colabConnection, registerActiveRemoval } = useColabBirefnetConnection();
   const colabGeneration = colabConnection?.generation ?? null;
@@ -218,6 +268,7 @@ export function VideoTab() {
   const [previews, setPreviews] = useState<Array<{ label: string; png: Uint8Array }>>([]);
   const [defaultBackground, setDefaultBackground] = useState<VideoBackgroundMode>('none');
   const [backgroundColor, setBackgroundColor] = useState('#00ff00');
+  const [backgroundColorAutomatic, setBackgroundColorAutomatic] = useState(true);
   const [colorKeyOptions, setColorKeyOptions] = useState<ColorKeyOptions>(
     () => copyColorKeyOptions(DEFAULT_COLOR_KEY_OPTIONS),
   );
@@ -226,9 +277,11 @@ export function VideoTab() {
   const [project, setProject] = useState<VideoProjectState | null>(null);
   const [posters, setPosters] = useState<Uint8Array[]>([]);
   const [activeIndex, setActiveIndex] = useState(0);
-  const [representativeFrames, setRepresentativeFrames] = useState<VideoRepresentativeFrame[]>([]);
-  const [representativeFramesLoading, setRepresentativeFramesLoading] = useState(false);
-  const [representativeFramesError, setRepresentativeFramesError] = useState<string | null>(null);
+  const [activeVisuals, setActiveVisuals] = useState<VideoRawVisualFrame[]>([]);
+  const [selectedVisualFrameId, setSelectedVisualFrameId] = useState<string | null>(null);
+  const [activeCorrectionPreview, setActiveCorrectionPreview] = useState<VideoCorrectionPreview | null>(null);
+  const [activeVisualsLoading, setActiveVisualsLoading] = useState(false);
+  const [activeVisualsError, setActiveVisualsError] = useState<string | null>(null);
   const [linePack, setLinePack] = useState<LinePackState | null>(null);
   const [invalidDialogOpen, setInvalidDialogOpen] = useState(false);
   const [commonDurationMs, setCommonDurationMs] = useState<VideoStickerSettings['perLoopDurationMs']>(2000);
@@ -241,11 +294,18 @@ export function VideoTab() {
   useEffect(() => () => {
     abortRef.current?.abort();
     sourceRef.current?.dispose();
+    for (const slot of removalContextsRef.current.values()) void slot.promise.then((context) => context.job.dispose(), () => {});
+    removalContextsRef.current.clear();
     void masterStoreRef.current?.clear();
   }, []);
 
   useEffect(() => {
-    cacheRef.current.clear();
+    for (const [key, slot] of removalContextsRef.current) {
+      if (!key.includes('colab-remover:generation-')) continue;
+      removalContextsRef.current.delete(key);
+      void slot.promise.then((context) => context.job.dispose(), () => {});
+    }
+    cacheRef.current.invalidateWhere((key) => key.includes('colab-birefnet'));
     setProject((previous) => {
       if (!previous) return previous;
       const current = invalidateColabVideoCurrent(previous.current);
@@ -257,50 +317,191 @@ export function VideoTab() {
   const activeSettings = project?.settings[activeIndex];
   const activeMaster = project?.master.stickers[activeIndex];
   const activeStore = project?.master.store;
-  const activeWholeImagePreview = activeSettings?.background.mode === 'color-key'
-    && activeSettings.background.colorKey.scope === 'whole-image';
+
+  function removalContextKey(settings: VideoStickerSettings): string {
+    const pickColor = settings.background.mode === 'color-key'
+      ? hexToRgb(settings.background.color ?? '')
+      : null;
+    const configurationIdentity = backgroundRemovalConfigurationIdentity({
+      mode: settings.background.mode,
+      pickColor,
+      ...(settings.background.mode === 'color-key' ? { colorKey: settings.background.colorKey } : {}),
+      colabGeneration,
+    });
+    return JSON.stringify({
+      stickerId: settings.stickerId,
+      rangeStartUs: settings.rangeStartUs,
+      rangeEndUs: settings.rangeEndUs,
+      configurationIdentity,
+    });
+  }
+
+  async function getRemovalContext(index: number, signal?: AbortSignal): Promise<VideoRemovalContext> {
+    if (!project) throw new Error('Project 不存在');
+    const settings = project.settings[index]!;
+    const master = project.master.stickers[index]!;
+    const key = removalContextKey(settings);
+    const cached = removalContextsRef.current.get(key);
+    if (cached) {
+      cached.lastUsed = ++removalContextClockRef.current;
+      return cached.promise;
+    }
+    const promise = (async (): Promise<VideoRemovalContext> => {
+      const visuals = await loadVideoRawVisualFrames({
+        master,
+        store: project.master.store,
+        rangeStartUs: settings.rangeStartUs,
+        rangeEndUs: settings.rangeEndUs,
+      });
+      if (visuals.length === 0) throw new Error('目前時間範圍沒有 raw visual');
+      const visualBytes = visuals.reduce((sum, visual) => sum + visual.frame.data.byteLength, 0);
+      if (visualBytes > MAX_VIDEO_REMOVAL_CONTEXT_BYTES) {
+        throw new Error('目前 raw visual 預覽超過 96 MiB 記憶體上限；請縮短本張時間範圍');
+      }
+      const mode = settings.background.mode;
+      const colabConfig = mode === 'colab-birefnet' ? colabConnection?.config : null;
+      if (mode === 'colab-birefnet' && !colabConfig) throw new Error('Colab 多模型去背尚未設定');
+      const pickColor = mode === 'color-key' ? hexToRgb(settings.background.color ?? '') : null;
+      const configurationIdentity = backgroundRemovalConfigurationIdentity({
+        mode,
+        pickColor,
+        ...(mode === 'color-key' ? { colorKey: settings.background.colorKey } : {}),
+        colabGeneration,
+      });
+      const job = await createBackgroundRemovalJob({
+        mode,
+        signal,
+        pickColor,
+        ...(mode === 'color-key' ? { colorKey: settings.background.colorKey } : {}),
+        colabConfig,
+        onStatus: (status) => status && setProgress(status),
+      });
+      try {
+        const session = await job.prepare(
+          selectVideoCalibrationFrames(visuals).map((visual) => visual.frame),
+          signal,
+        );
+        return {
+          key,
+          configurationIdentity,
+          removerVersion: videoRemoverVersion(mode, job.label, colabGeneration),
+          visuals,
+          sourceContentHashes: new Map(visuals.map((visual) => [visual.visualFrameId, visual.sourceContentHash])),
+          job,
+          session,
+        };
+      } catch (error) {
+        await job.dispose();
+        throw error;
+      }
+    })();
+    removalContextsRef.current.set(key, { key, promise, lastUsed: ++removalContextClockRef.current });
+    try {
+      const context = await promise;
+      while (removalContextsRef.current.size > MAX_VIDEO_REMOVAL_CONTEXTS) {
+        let oldest: VideoRemovalContextSlot | null = null;
+        for (const slot of removalContextsRef.current.values()) {
+          if (slot.key === key) continue;
+          if (!oldest || slot.lastUsed < oldest.lastUsed) oldest = slot;
+        }
+        if (!oldest) break;
+        removalContextsRef.current.delete(oldest.key);
+        void oldest.promise.then((expired) => expired.job.dispose(), () => {});
+      }
+      return context;
+    } catch (error) {
+      if (removalContextsRef.current.get(key)?.promise === promise) removalContextsRef.current.delete(key);
+      throw error;
+    }
+  }
+
+  useEffect(() => {
+    if (!project || busy) return;
+    const valid = new Set(project.settings.map(removalContextKey));
+    for (const [key, slot] of removalContextsRef.current) {
+      if (valid.has(key)) continue;
+      removalContextsRef.current.delete(key);
+      void slot.promise.then((context) => context.job.dispose(), () => {});
+    }
+  }, [project?.settings, colabGeneration, busy]);
+
   useEffect(() => {
     let cancelled = false;
     if (
       !activeSettings ||
       !activeMaster ||
       !activeStore ||
-      !activeWholeImagePreview ||
+      activeSettings.background.mode === 'none' ||
       project?.master.backgroundStage !== 'raw'
     ) {
-      setRepresentativeFrames([]);
-      setRepresentativeFramesLoading(false);
-      setRepresentativeFramesError(null);
+      setActiveVisuals([]);
+      setSelectedVisualFrameId(null);
+      setActiveCorrectionPreview(null);
+      setActiveVisualsLoading(false);
+      setActiveVisualsError(null);
       return () => { cancelled = true; };
     }
-    setRepresentativeFramesLoading(true);
-    setRepresentativeFramesError(null);
-    void loadVideoRepresentativeFrames({
-      master: activeMaster,
-      store: activeStore,
-      rangeStartUs: activeSettings.rangeStartUs,
-      rangeEndUs: activeSettings.rangeEndUs,
-      targetFrames: activeSettings.targetFrames,
-    }).then((frames) => {
-      if (!cancelled) setRepresentativeFrames(frames);
+    setActiveVisualsLoading(true);
+    setActiveVisualsError(null);
+    void getRemovalContext(activeIndex).then((context) => {
+      if (cancelled) return;
+      setActiveVisuals([...context.visuals]);
+      setSelectedVisualFrameId((current) => context.visuals.some((visual) => visual.visualFrameId === current)
+        ? current
+        : context.visuals[0]?.visualFrameId ?? null);
     }, (error) => {
       if (!cancelled) {
-        setRepresentativeFrames([]);
-        setRepresentativeFramesError(error instanceof Error ? error.message : String(error));
+        setActiveVisuals([]);
+        setSelectedVisualFrameId(null);
+        setActiveVisualsError(error instanceof Error ? error.message : String(error));
       }
     }).finally(() => {
-      if (!cancelled) setRepresentativeFramesLoading(false);
+      if (!cancelled) setActiveVisualsLoading(false);
     });
     return () => { cancelled = true; };
   }, [
+    activeIndex,
     activeMaster,
     activeSettings?.rangeStartUs,
     activeSettings?.rangeEndUs,
-    activeSettings?.targetFrames,
-    activeWholeImagePreview,
+    activeSettings?.background,
     activeStore,
     project?.master.backgroundStage,
+    colabGeneration,
   ]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const visual = activeVisuals.find((candidate) => candidate.visualFrameId === selectedVisualFrameId);
+    if (!project || !activeSettings || !visual) {
+      setActiveCorrectionPreview(null);
+      return () => { cancelled = true; };
+    }
+    void getRemovalContext(activeIndex).then(async (context) => {
+      const prepared = await prepareVideoFrame({
+        stickerId: activeSettings.stickerId,
+        visualFrameId: visual.visualFrameId,
+        source: visual.frame,
+        sourceContentHash: visual.sourceContentHash,
+        settings: activeSettings,
+        cache: cacheRef.current,
+        removerVersion: context.removerVersion,
+        preparedBackground: context.session,
+        corrections: project.corrections,
+      });
+      if (cancelled) return;
+      const record = project.corrections.get(videoCorrectionTargetKey(activeSettings.stickerId, visual.visualFrameId));
+      setActiveCorrectionPreview({
+        visual,
+        automatic: prepared.automatic,
+        mask: record?.keepMask ?? createKeepMask(visual.frame.width, visual.frame.height),
+        diagnostics: context.session.diagnostics,
+      });
+    }).catch((error) => {
+      if (!cancelled) setActiveVisualsError(error instanceof Error ? error.message : String(error));
+    });
+    return () => { cancelled = true; };
+  }, [activeIndex, activeSettings, activeVisuals, selectedVisualFrameId, project?.corrections]);
 
   function resetSourceCuts(sourceWidth: number, sourceHeight: number, nextCols: number, nextRows: number): void {
     try {
@@ -354,8 +555,30 @@ export function VideoTab() {
     if (estimatedBytes > PREFLIGHT_HARD_BYTES) {
       return `raw RGBA 上限估算 ${(estimatedBytes / 1024 / 1024).toFixed(0)} MiB 超過已驗證的 512 MiB beta 預算；請縮短 range 或減少格數。`;
     }
+    // buildRawVideoMaster writes one physical chunk per sticker per 20
+    // presentation frames. Reserve manifest/report plus one possible current
+    // render per sticker so a successful ingest remains exportable.
+    const projectedEntries = 2
+      + count * Math.ceil(selectedSourceFrames / 20)
+      + count
+      + count * selectedSourceFrames;
+    if (projectedEntries > VIDEO_PROJECT_ARCHIVE_LIMITS.maxEntries) {
+      return `若每個 raw visual 都有保留筆刷，Project ZIP 最多需要 ${projectedEntries} 個 entries，超過 ${VIDEO_PROJECT_ARCHIVE_LIMITS.maxEntries} 上限；請縮短 range 或減少格數。`;
+    }
+    const currentByteLimit = target === 'animated-emoji'
+      ? ANIMATED_EMOJI_SPEC.maxBytes
+      : target === 'popup'
+        ? POPUP_STICKER_SPEC.maxBytes
+        : ANIMATED_SPEC.maxBytes;
+    const projectedArchiveBytes = Math.ceil(estimatedBytes * 1.01)
+      + VIDEO_CORRECTION_LIMITS.maxAggregateAssetBytes
+      + currentByteLimit * count
+      + VIDEO_PROJECT_ARCHIVE_LIMITS.maxManifestBytes;
+    if (projectedArchiveBytes > VIDEO_PROJECT_ARCHIVE_LIMITS.maxUncompressedBytes) {
+      return 'raw master 加上可保存的筆刷與成品上限可能超過 Project ZIP 600MB 安全預算；請縮短 range 或減少格數。';
+    }
     return null;
-  }, [estimatedBytes, rangeEndUs, rangeStartUs, selectedSourceFrames]);
+  }, [count, estimatedBytes, rangeEndUs, rangeStartUs, selectedSourceFrames, target]);
 
   function updateSourceGrid(nextCols: number, nextRows: number): void {
     setCols(nextCols);
@@ -431,6 +654,8 @@ export function VideoTab() {
 
   async function clearCurrentProject(): Promise<void> {
     if (project) await project.master.store.clear();
+    for (const slot of removalContextsRef.current.values()) void slot.promise.then((context) => context.job.dispose(), () => {});
+    removalContextsRef.current.clear();
     masterStoreRef.current = null;
     cacheRef.current.clear();
     setProject(null);
@@ -500,6 +725,7 @@ export function VideoTab() {
         sourceFrames: master.sourceFrameCount,
         backgroundMode: defaultBackground,
         color: backgroundColor,
+        colorAutomatic: backgroundColorAutomatic,
         colorKeyOptions,
       }));
       const created: VideoProjectState = {
@@ -514,6 +740,7 @@ export function VideoTab() {
         master,
         settings,
         current: settings.map(() => null),
+        corrections: new Map(),
       };
       setPosters(await posterPngs(master));
       setProject(created);
@@ -522,6 +749,7 @@ export function VideoTab() {
       setCommonLoops(settings[0]?.loops ?? 1);
       setCommonBackground(settings[0]?.background.mode ?? 'none');
       setBackgroundColor(settings[0]?.background.color ?? backgroundColor);
+      setBackgroundColorAutomatic(settings[0]?.background.mode !== 'color-key' || settings[0].background.color === undefined);
       setColorKeyOptions(settings[0]?.background.colorKey
         ? { ...settings[0].background.colorKey }
         : copyColorKeyOptions(DEFAULT_COLOR_KEY_OPTIONS));
@@ -542,7 +770,30 @@ export function VideoTab() {
   function isDirty(index: number): boolean {
     if (!project) return false;
     const current = project.current[index];
-    return !current || !settingsEqual(project.settings[index]!, current.settings);
+    if (!current || !settingsEqual(project.settings[index]!, current.settings)) return true;
+    const settings = project.settings[index]!;
+    const activeVisualIds = activeVideoVisualFrameIds(
+      project.master.stickers[index]!,
+      settings.rangeStartUs,
+      settings.rangeEndUs,
+    );
+    const correctionIdentity = videoCorrectionSetIdentity(project.corrections, settings.stickerId, activeVisualIds);
+    if (!current.renderIdentity || current.renderIdentity.correctionIdentity !== correctionIdentity) return true;
+    const pickColor = settings.background.mode === 'color-key'
+      ? hexToRgb(settings.background.color ?? '')
+      : null;
+    const configurationIdentity = backgroundRemovalConfigurationIdentity({
+      mode: settings.background.mode,
+      pickColor,
+      ...(settings.background.mode === 'color-key' ? { colorKey: settings.background.colorKey } : {}),
+      colabGeneration,
+    });
+    return current.renderIdentity.configurationIdentity !== configurationIdentity
+      || current.renderIdentity.removerVersion !== videoRemoverVersion(
+        settings.background.mode,
+        null,
+        colabGeneration,
+      );
   }
 
   async function renderSticker(index: number): Promise<VideoRenderSnapshot> {
@@ -552,30 +803,28 @@ export function VideoTab() {
     if (!abortRef.current) abortRef.current = controller;
     const mode = settings.background.mode;
     const colabConfig = mode === 'colab-birefnet' ? colabConnection?.config : null;
-    if (mode === 'colab-birefnet' && !colabConfig) {
-      throw new Error('Colab 多模型去背尚未設定；請先完成臨時 session 連線');
-    }
-    let job: BackgroundRemovalJob | null = null;
+    if (mode === 'colab-birefnet' && !colabConfig) throw new Error('Colab 多模型去背尚未設定；請先完成臨時 session 連線');
     const unregister = colabConfig ? registerActiveRemoval(controller) : null;
     try {
-      if (mode !== 'none') {
-        job = await createBackgroundRemovalJob({
-          mode,
-          signal: controller.signal,
-          pickColor: mode === 'color-key' ? hexToRgb(settings.background.color ?? '#00ff00') : null,
-          ...(mode === 'color-key' ? { colorKey: settings.background.colorKey } : {}),
-          colabConfig,
-          onStatus: (status) => status && setProgress(status),
-        });
-      }
+      const context = await getRemovalContext(index, controller.signal);
+      const activeVisualIds = activeVideoVisualFrameIds(
+        project.master.stickers[index]!,
+        settings.rangeStartUs,
+        settings.rangeEndUs,
+      );
+      const correctionIdentity = videoCorrectionSetIdentity(project.corrections, settings.stickerId, activeVisualIds);
       const snapshot = await processMasterApngSticker({
         target: project.target,
         master: project.master.stickers[index]!,
         store: project.master.store,
         settings,
         cache: cacheRef.current,
-        removerVersion: videoRemoverVersion(mode, job?.label ?? null, colabGeneration),
-        removeBackground: job?.remove,
+        removerVersion: context.removerVersion,
+        configurationIdentity: context.configurationIdentity,
+        correctionIdentity,
+        preparedBackground: context.session,
+        sourceContentHashes: context.sourceContentHashes,
+        corrections: project.corrections,
         signal: controller.signal,
         onProgress: (stage) => setProgress(`第 ${index + 1} 張：${stage}`),
       });
@@ -584,7 +833,6 @@ export function VideoTab() {
       }
       return snapshot;
     } finally {
-      await job?.dispose();
       unregister?.();
     }
   }
@@ -664,8 +912,23 @@ export function VideoTab() {
         master: project.master,
         settings: project.settings,
         current: project.current,
+        corrections: [...project.corrections.values()].map((correction) => ({
+          stickerId: correction.stickerId,
+          visualFrameId: correction.visualFrameId,
+          sourceWidth: correction.width,
+          sourceHeight: correction.height,
+          sourceContentHash: correction.sourceContentHash,
+          mask: correction.keepMask.data,
+        })),
+        currentProvenance: project.current.map((snapshot) => snapshot?.renderIdentity ? ({
+          removerVersion: snapshot.renderIdentity.removerVersion,
+          configurationIdentity: snapshot.renderIdentity.configurationIdentity,
+          calibrationIdentity: snapshot.renderIdentity.calibrationIdentity,
+          correctionSetHash: snapshot.renderIdentity.correctionIdentity,
+          sourceSetHash: snapshot.renderIdentity.sourceIdentity,
+        }) : null),
       });
-      downloadBytes(`${safeName(project.name)}.video-apng-project-v6.zip`, built.zip, 'application/zip');
+      downloadBytes(`${safeName(project.name)}.video-apng-project-v7.zip`, built.zip, 'application/zip');
     } catch (error) {
       logger.log('err', error instanceof Error ? error.message : String(error));
     } finally {
@@ -676,16 +939,44 @@ export function VideoTab() {
   async function loadProject(file: File) {
     if (project && !window.confirm('開啟另一個 Project 會清除目前尚未下載的暫存 Project，要繼續嗎？')) return;
     logger.clear();
+    if (file.size > VIDEO_PROJECT_ARCHIVE_LIMITS.maxUncompressedBytes) {
+      logger.log('err', 'Project ZIP 壓縮檔本身已超過 600MB 安全上限');
+      return;
+    }
     setBusy(true);
     let imported: Awaited<ReturnType<typeof importVideoProjectZip>> | null = null;
     try {
       imported = await importVideoProjectZip(new Uint8Array(await file.arrayBuffer()));
+      const restoredPosters = await posterPngs(imported.master);
       await project?.master.store.clear();
       sourceRef.current?.dispose();
       sourceRef.current = null;
+      for (const slot of removalContextsRef.current.values()) void slot.promise.then((context) => context.job.dispose(), () => {});
+      removalContextsRef.current.clear();
       cacheRef.current.clear();
-      const manifest = imported.manifest;
+      const restoredImport = imported;
+      const manifest = restoredImport.manifest;
       const restoredSettings = manifest.settings.map(cloneVideoStickerDraft);
+      const restoredCurrent: Array<VideoRenderSnapshot | null> = [...invalidateColabVideoCurrent(restoredImport.current)].map((snapshot, index) => {
+        const provenance = restoredImport.currentProvenance[index];
+        if (!snapshot || !provenance) return snapshot;
+        const removerVersion = provenance.removerVersion ?? 'unknown';
+        const calibrationIdentity = provenance.calibrationIdentity ?? 'unknown';
+        const correctionIdentity = provenance.correctionSetHash ?? 'video-keep-set@1:0:cbf29ce484222325';
+        const sourceIdentity = provenance.sourceSetHash ?? 'unknown';
+        return {
+          ...snapshot,
+          renderIdentity: {
+            version: 'video-render-identity@1' as const,
+            removerVersion,
+            configurationIdentity: provenance.configurationIdentity ?? removerVersion,
+            calibrationIdentity,
+            correctionIdentity,
+            sourceIdentity,
+            digest: JSON.stringify(provenance),
+          },
+        };
+      });
       const restored: VideoProjectState = {
         target: manifest.target,
         name: manifest.name,
@@ -695,9 +986,26 @@ export function VideoTab() {
         editableStartUs: manifest.source.editableStartUs,
         editableEndUs: manifest.source.editableEndUs,
         grid: manifest.grid,
-        master: imported.master,
+        master: restoredImport.master,
         settings: restoredSettings,
-        current: [...invalidateColabVideoCurrent(imported.current)],
+        current: restoredCurrent,
+        corrections: new Map(restoredImport.corrections.map((correction) => {
+          const key = videoCorrectionTargetKey(correction.stickerId, correction.visualFrameId);
+          return [key, {
+            stickerId: correction.stickerId,
+            visualFrameId: correction.visualFrameId,
+            sourceContentHash: correction.sourceContentHash,
+            sourceIdentity: key,
+            label: correction.visualFrameId,
+            width: correction.sourceWidth,
+            height: correction.sourceHeight,
+            keepMask: {
+              width: correction.sourceWidth,
+              height: correction.sourceHeight,
+              data: new Uint8Array(correction.mask),
+            },
+          } satisfies VideoFrameCorrectionRecord];
+        })),
       };
       setMetadata(manifest.source);
       setTarget(manifest.target);
@@ -717,15 +1025,19 @@ export function VideoTab() {
       setCommonLoops(restored.settings[0]?.loops ?? 1);
       setCommonBackground(restored.settings[0]?.background.mode ?? 'none');
       setBackgroundColor(restored.settings[0]?.background.color ?? '#00ff00');
+      setBackgroundColorAutomatic(
+        restored.settings[0]?.background.mode !== 'color-key'
+          || restored.settings[0].background.color === undefined,
+      );
       setColorKeyOptions(restored.settings[0]?.background.colorKey
         ? { ...restored.settings[0].background.colorKey }
         : copyColorKeyOptions(DEFAULT_COLOR_KEY_OPTIONS));
-      setPosters(await posterPngs(imported.master));
+      setPosters(restoredPosters);
       setActiveIndex(0);
       setLinePack(null);
       logger.log('ok', manifest.legacy
         ? '已以 sampled/baked legacy 限制匯入 V1 Project，未製造缺失 frames 或 raw RGB'
-        : `已恢復 Project V6（${videoTargetLabel(manifest.target)}）的 ${manifest.master.sourceFrameCount} 個 sample refs，未啟動影片 decoder`);
+        : `已恢復 Project V7（${videoTargetLabel(manifest.target)}）的 ${manifest.master.sourceFrameCount} 個 sample refs，未啟動影片 decoder`);
       for (const note of imported.migrationNotes) logger.log('warn', note);
     } catch (error) {
       await imported?.master.store.clear();
@@ -739,6 +1051,24 @@ export function VideoTab() {
     if (!project) return;
     if (project.current.some((snapshot) => !snapshot)) {
       logger.log('err', '缺少必要成品 bytes；請先產生所有成品預覽。這是結構性失敗，不能略過。');
+      return;
+    }
+    const staleIndices: number[] = [];
+    for (let index = 0; index < project.settings.length; index++) {
+      if (isDirty(index)) {
+        staleIndices.push(index);
+        continue;
+      }
+      const snapshot = project.current[index]!;
+      const context = await getRemovalContext(index);
+      const expectedSourceIdentity = await videoSourceSetIdentity(context.visuals);
+      if (
+        snapshot.renderIdentity?.calibrationIdentity !== context.session.identity
+        || snapshot.renderIdentity.sourceIdentity !== expectedSourceIdentity
+      ) staleIndices.push(index);
+    }
+    if (staleIndices.length > 0) {
+      logger.log('err', `第 ${staleIndices.map((index) => index + 1).join('、')} 張 current 已過期；請重新產生後再打包。`);
       return;
     }
     setBusy(true);
@@ -843,9 +1173,7 @@ export function VideoTab() {
           zipBytes,
         });
       }
-      const dirtyIndices = project.settings.flatMap((settings, index) =>
-        settingsEqual(settings, snapshots[index]!.settings) ? [] : [index],
-      );
+      const dirtyIndices = project.settings.flatMap((_, index) => isDirty(index) ? [index] : []);
       if (dirtyIndices.length > 0) {
         validation = mergeResults(validation, {
           ok: false,
@@ -894,10 +1222,93 @@ export function VideoTab() {
           background: previous.master.backgroundStage === 'baked-legacy'
             ? { ...settings.background }
             : commonBackground === 'color-key'
-              ? { mode: 'color-key', color: backgroundColor, colorKey: { ...colorKeyOptions } }
+              ? {
+                  mode: 'color-key',
+                  ...((colorKeyOptions.scope === 'whole-image' || !backgroundColorAutomatic)
+                    ? { color: backgroundColor }
+                    : {}),
+                  colorKey: { ...colorKeyOptions },
+                }
               : { mode: commonBackground },
         })),
       };
+    });
+    setLinePack(null);
+  }
+
+  function updateActiveCorrection(mask: KeepMask): void {
+    if (!project || !activeSettings || !activeCorrectionPreview) return;
+    const visual = activeCorrectionPreview.visual;
+    const corrections = new Map(project.corrections);
+    const record = createVideoFrameCorrection({
+      stickerId: activeSettings.stickerId,
+      visualFrameId: visual.visualFrameId,
+      sourceContentHash: visual.sourceContentHash,
+      label: `raw visual ${(activeVisuals.findIndex((candidate) => candidate.visualFrameId === visual.visualFrameId) + 1)}`,
+      source: visual.frame,
+      mask,
+    });
+    const key = videoCorrectionTargetKey(activeSettings.stickerId, visual.visualFrameId);
+    if (mask.data.some((value) => value !== 0)) corrections.set(key, record);
+    else corrections.delete(key);
+    try {
+      assertVideoCorrectionBudget(corrections);
+    } catch (error) {
+      logger.log('err', error instanceof Error ? error.message : String(error));
+      return;
+    }
+    setProject({ ...project, corrections });
+    setLinePack(null);
+  }
+
+  function copyActiveCorrectionToRange(): void {
+    if (!project || !activeSettings || !activeCorrectionPreview) return;
+    const sourceMask = activeCorrectionPreview.mask;
+    const targets = [...activeVisuals];
+    const incompatible = targets.filter((visual) => (
+      visual.frame.width !== sourceMask.width || visual.frame.height !== sourceMask.height
+    ));
+    if (incompatible.length > 0) {
+      window.alert(`${incompatible.length} 個 raw visuals 尺寸不同，未套用任何修正。`);
+      return;
+    }
+    const targetLabels = targets.map((visual, index) => `${index + 1}. ${(visual.timestampUs / 1_000_000).toFixed(3)}s`);
+    if (!window.confirm(
+      `要把目前保留區固定座標複製到以下 ${targets.length} 個 raw visuals 嗎？\n\n${targetLabels.join('\n')}\n\n這不是物件追蹤；每個目標會收到獨立遮罩。`,
+    )) return;
+    const corrections = new Map(project.corrections);
+    for (let index = 0; index < targets.length; index++) {
+      const visual = targets[index]!;
+      const key = videoCorrectionTargetKey(activeSettings.stickerId, visual.visualFrameId);
+      if (!sourceMask.data.some((value) => value !== 0)) corrections.delete(key);
+      else corrections.set(key, createVideoFrameCorrection({
+          stickerId: activeSettings.stickerId,
+          visualFrameId: visual.visualFrameId,
+          sourceContentHash: visual.sourceContentHash,
+          label: `raw visual ${index + 1}`,
+          source: visual.frame,
+          mask: sourceMask,
+          copyMask: false,
+        }));
+    }
+    try {
+      assertVideoCorrectionBudget(corrections);
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : String(error));
+      return;
+    }
+    setProject({ ...project, corrections });
+    setLinePack(null);
+  }
+
+  function clearActiveStickerCorrections(): void {
+    if (!project || !activeSettings) return;
+    setProject((previous) => {
+      if (!previous) return previous;
+      const corrections = new Map([...previous.corrections].filter(([, record]) => (
+        record.stickerId !== activeSettings.stickerId
+      )));
+      return { ...previous, corrections };
     });
     setLinePack(null);
   }
@@ -925,6 +1336,7 @@ export function VideoTab() {
           cover={cover}
           defaultBackground={defaultBackground}
           color={backgroundColor}
+          colorAutomatic={backgroundColorAutomatic}
           colorKeyOptions={colorKeyOptions}
           grid={gridPlan}
           busy={busy}
@@ -936,6 +1348,7 @@ export function VideoTab() {
           onCover={setCover}
           onBackground={setDefaultBackground}
           onColor={setBackgroundColor}
+          onColorAutomatic={setBackgroundColorAutomatic}
           onColorKeyOptions={setColorKeyOptions}
           onBuild={() => void buildMaster()}
           range={{
@@ -999,7 +1412,15 @@ export function VideoTab() {
                   <option value="colab-birefnet">Colab 多模型去背</option>
                 </select>
               </label>
-              {commonBackground === 'color-key' && <label>共同背景色<input type="color" value={backgroundColor} onChange={(event) => setBackgroundColor(event.target.value)} /></label>}
+              {commonBackground === 'color-key' && colorKeyOptions.scope === 'edge-connected' && (
+                <label><input type="checkbox" checked={backgroundColorAutomatic} onChange={(event) => setBackgroundColorAutomatic(event.target.checked)} />自動取樣外框</label>
+              )}
+              {commonBackground === 'color-key' && <label>共同背景色<input
+                type="color"
+                value={backgroundColor}
+                disabled={colorKeyOptions.scope === 'edge-connected' && backgroundColorAutomatic}
+                onChange={(event) => { setBackgroundColor(event.target.value); setBackgroundColorAutomatic(false); }}
+              /></label>}
               <button className="btn small" disabled={busy} onClick={applyCommonSettings}>套用共同設定到所有貼圖</button>
             </div>
             {commonBackground === 'color-key' && (
@@ -1015,7 +1436,16 @@ export function VideoTab() {
             />
           </div>
           <div className="video-editor-layout">
-            <VideoStickerList target={project.target} settings={project.settings} current={project.current} posters={posters} activeIndex={activeIndex} onSelect={setActiveIndex} isDirty={isDirty} />
+            <VideoStickerList
+              target={project.target}
+              settings={project.settings}
+              current={project.current}
+              posters={posters}
+              activeIndex={activeIndex}
+              onSelect={setActiveIndex}
+              isDirty={isDirty}
+              editedVisualCount={(stickerId) => countEditedVideoVisuals(project.corrections, stickerId)}
+            />
             <VideoStickerEditor
               target={project.target}
               index={activeIndex}
@@ -1026,9 +1456,24 @@ export function VideoTab() {
               legacyBaked={project.master.backgroundStage === 'baked-legacy'}
               busy={busy}
               dirty={isDirty(activeIndex)}
-              representativeFrames={representativeFrames}
-              representativeFramesLoading={representativeFramesLoading}
-              representativeFramesError={representativeFramesError}
+              correctionPanel={project.settings[activeIndex]!.background.mode === 'none' ? undefined : (
+                <VideoForegroundCorrectionPanel
+                  mode={project.settings[activeIndex]!.background.mode}
+                  visuals={activeVisuals}
+                  selectedVisualFrameId={selectedVisualFrameId}
+                  preview={activeCorrectionPreview}
+                  editedVisualIds={new Set(activeVisuals.filter((visual) => project.corrections.has(
+                    videoCorrectionTargetKey(project.settings[activeIndex]!.stickerId, visual.visualFrameId),
+                  )).map((visual) => visual.visualFrameId))}
+                  loading={activeVisualsLoading}
+                  error={activeVisualsError}
+                  busy={busy}
+                  onSelect={setSelectedVisualFrameId}
+                  onMaskChange={updateActiveCorrection}
+                  onCopyToRange={copyActiveCorrectionToRange}
+                  onClearSticker={clearActiveStickerCorrections}
+                />
+              )}
               onChange={(settings) => {
                 setProject((previous) => {
                   if (!previous) return previous;
@@ -1043,7 +1488,7 @@ export function VideoTab() {
           </div>
           <div className="run-row">
             <button className="btn primary" disabled={busy || dirtyCount === 0} onClick={() => void rerenderAll()}>依序產生所有 dirty previews</button>
-            <button className="btn" disabled={busy} onClick={() => void downloadProject()}>下載 Project ZIP V6</button>
+            <button className="btn" disabled={busy} onClick={() => void downloadProject()}>下載 Project ZIP V7</button>
             <button className="btn" disabled={busy} onClick={() => void makeLinePack()}>建立 {videoTargetLabel(project.target)} LINE ZIP / 最終驗證</button>
             {busy && <button className="btn" onClick={() => abortRef.current?.abort()}>取消</button>}
             {progress && <span className="model-status">{progress}</span>}

@@ -6,10 +6,13 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "test": "npm run test:background-removal && npm run test:foreground-correction && npm run test:video-correction && npm run test:output-safety && npm run test:local-birefnet && npm run test:colab && npm run test:video",
     "typecheck": "tsc --noEmit",
     "build": "tsc --noEmit && vite build",
     "test:colab": "tsx --tsconfig tsconfig.json scripts/colab-birefnet-contract.mts && tsx --tsconfig tsconfig.json scripts/colab-video-invalidation-contract.mts",
     "test:background-removal": "tsx --tsconfig tsconfig.json scripts/background-removal-contract.mts",
+    "test:foreground-correction": "tsx --tsconfig tsconfig.json scripts/foreground-correction-contract.mts",
+    "test:video-correction": "tsx --tsconfig tsconfig.json scripts/video-correction-contract.mts",
     "test:output-safety": "tsx --tsconfig tsconfig.json scripts/output-safety-contract.mts",
     "test:local-birefnet": "tsx --tsconfig tsconfig.json scripts/local-birefnet-contract.mts",
     "test:video": "tsx --tsconfig tsconfig.json scripts/video-project-roundtrip.mts",

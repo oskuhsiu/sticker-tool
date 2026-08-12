@@ -20,8 +20,10 @@ export class VideoFrameRenderCache {
 
   static key(args: {
     stickerId: string;
-    rawFrameHash: string;
+    visualFrameId: string;
+    sourceContentHash: string;
     removerVersion: string;
+    calibrationIdentity: string;
     background: VideoBackgroundSettings;
   }): string {
     const background = {
@@ -32,7 +34,14 @@ export class VideoFrameRenderCache {
         ? { colorKey: args.background.colorKey ?? null }
         : {}),
     };
-    return `${args.stickerId}|${args.rawFrameHash}|${args.removerVersion}|${JSON.stringify(background)}`;
+    return JSON.stringify({
+      stickerId: args.stickerId,
+      visualFrameId: args.visualFrameId,
+      sourceIdentity: args.sourceContentHash,
+      removerVersion: args.removerVersion,
+      calibrationIdentity: args.calibrationIdentity,
+      background,
+    });
   }
 
   get(key: string): Raster | null {
@@ -71,6 +80,18 @@ export class VideoFrameRenderCache {
   clear(): void {
     this.entries.clear();
     this.totalBytes = 0;
+  }
+
+  /** Remove only affected automatic results; Keep-mask edits never call this. */
+  invalidateWhere(predicate: (key: string) => boolean): number {
+    let removed = 0;
+    for (const [key, entry] of this.entries) {
+      if (!predicate(key)) continue;
+      this.entries.delete(key);
+      this.totalBytes -= entry.bytes;
+      removed++;
+    }
+    return removed;
   }
 
   get bytesUsed(): number {

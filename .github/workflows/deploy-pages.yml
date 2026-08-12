@@ -31,6 +31,9 @@ jobs:
         run: npm ci
         env:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+      - name: Deterministic browser contracts
+        working-directory: web
+        run: npm test
       - name: Build（含 typecheck；@imgly 模型資源一併複製進 dist/imgly）
         working-directory: web
         run: npm run build

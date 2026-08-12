@@ -1,6 +1,6 @@
 /** Local images to a Regular Sticker, Big Sticker, or Regular Emoji upload pack. */
 
-import { useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { BIG_STICKER_SPEC, EMOJI_SPEC, STATIC_SPEC, ZIP_MAX_BYTES, allowedCounts, maxBounds } from '@core/spec.js';
 import { emojiFileName, stickerFileName } from '@core/naming.js';
 import { parseColor } from '@core/color.js';
@@ -9,9 +9,14 @@ import { validateCount, validateEmojiPack, validatePack } from '@core/validate.j
 import { decodeBlob, yieldToUI } from '../webpipe/raster.js';
 import {
   createBackgroundRemovalJob,
+  backgroundRemovalConfigurationIdentity,
   type BackgroundRemovalJob,
   type WebBackgroundRemovalMode,
 } from '../webpipe/backgroundRemovalJob.js';
+import {
+  removeWithForegroundCorrection,
+  type ForegroundCorrectionRecord,
+} from '../webpipe/backgroundCorrection.js';
 import { processStatic, type ProcessedSticker } from '../webpipe/processStatic.js';
 import { buildMainTab, buildTab } from '../webpipe/mainTab.js';
 import { buildEmojiPackZip } from '../webpipe/emojiZip.js';
@@ -20,6 +25,8 @@ import { Field, FilePick, LogPane, Row, kb, sortFiles, useLogger } from './commo
 import { ColorReductionPrompt, PackResult, type PackResultData } from './packResult.jsx';
 import { makeStroke } from './defaults.js';
 import { BackgroundRemovalControl } from './BackgroundRemovalControl.jsx';
+import { ForegroundCorrectionWorkspace } from './ForegroundCorrectionWorkspace.jsx';
+import { fileCorrectionSource, fileSourceIdentity } from './correctionSources.js';
 import { useColabBirefnetConnection } from './colabBirefnetConnection.jsx';
 
 type BuildTarget = 'static' | 'big' | 'emoji';
@@ -32,6 +39,7 @@ export function BuildTab() {
   const [name, setName] = useState('My Stickers');
   const [removeBgMode, setRemoveBgMode] = useState<WebBackgroundRemovalMode>('none');
   const [backgroundColor, setBackgroundColor] = useState('#00ff00');
+  const [backgroundColorAutomatic, setBackgroundColorAutomatic] = useState(true);
   const [colorKeyOptions, setColorKeyOptions] = useState<ColorKeyOptions>(() => ({ ...DEFAULT_COLOR_KEY_OPTIONS }));
   const [strokeOn, setStrokeOn] = useState(false);
   const [strokeWidth, setStrokeWidth] = useState(8);
@@ -41,10 +49,42 @@ export function BuildTab() {
   const [busy, setBusy] = useState(false);
   const [modelStatus, setModelStatus] = useState<string | null>(null);
   const [result, setResult] = useState<PackResultData | null>(null);
+  const [corrections, setCorrections] = useState<Map<string, ForegroundCorrectionRecord>>(() => new Map());
   const [zipOverBudget, setZipOverBudget] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const logger = useLogger();
   const { connection: colabConnection, registerActiveRemoval } = useColabBirefnetConnection();
+  const parsedBackgroundColor = parseColor(backgroundColor);
+  const manualColor: [number, number, number] = [
+    parsedBackgroundColor.r,
+    parsedBackgroundColor.g,
+    parsedBackgroundColor.b,
+  ];
+  const removalConfigurationIdentity = backgroundRemovalConfigurationIdentity({
+    mode: removeBgMode,
+    pickColor: removeBgMode === 'color-key' && (colorKeyOptions.scope === 'whole-image' || !backgroundColorAutomatic)
+      ? manualColor
+      : null,
+    ...(removeBgMode === 'color-key' ? { colorKey: colorKeyOptions } : {}),
+    colabGeneration: colabConnection?.generation,
+  });
+  const correctionItems = useMemo(
+    () => sortFiles(files).slice(0, count).map((file, index) => (
+      fileCorrectionSource(file, `${index + 1}. ${file.name}`)
+    )),
+    [files, count],
+  );
+
+  const createRemovalJob = (signal: AbortSignal) => createBackgroundRemovalJob({
+    mode: removeBgMode,
+    signal,
+    pickColor: removeBgMode === 'color-key' && (colorKeyOptions.scope === 'whole-image' || !backgroundColorAutomatic)
+      ? manualColor
+      : null,
+    ...(removeBgMode === 'color-key' ? { colorKey: colorKeyOptions } : {}),
+    colabConfig: colabConnection?.config,
+    onStatus: setModelStatus,
+  });
 
   async function run(reduceColorsOverride = reduceColors) {
     logger.clear();
@@ -75,24 +115,23 @@ export function BuildTab() {
           ? EMOJI_SPEC
           : STATIC_SPEC;
       const stroke = makeStroke(strokeOn, strokeWidth, strokeColor);
-      const parsedColor = parseColor(backgroundColor);
-      removalJob = await createBackgroundRemovalJob({
-        mode: removeBgMode,
-        signal: abort.signal,
-        pickColor: removeBgMode === 'color-key'
-          ? [parsedColor.r, parsedColor.g, parsedColor.b]
-          : null,
-        ...(removeBgMode === 'color-key' ? { colorKey: colorKeyOptions } : {}),
-        colabConfig: colabConnection?.config,
-        onStatus: setModelStatus,
-      });
+      removalJob = await createRemovalJob(abort.signal);
 
       const productLabel = target === 'emoji' ? 'Regular Emoji' : target === 'big' ? '大貼圖' : '一般靜態貼圖';
       logger.log('step', `處理 ${count} 張 ${productLabel}（${removalJob.label}）…`);
       const processed: ProcessedSticker[] = [];
       for (let i = 0; i < picked.length; i++) {
         const decoded = await decodeBlob(picked[i]!);
-        const raster = await removalJob.remove(decoded, abort.signal);
+        const raster = removeBgMode === 'none'
+          ? decoded
+          : (await removeWithForegroundCorrection({
+              input: decoded,
+              sourceIdentity: fileSourceIdentity(picked[i]!),
+              configurationIdentity: removalConfigurationIdentity,
+              job: removalJob,
+              record: corrections.get(fileSourceIdentity(picked[i]!)),
+              signal: abort.signal,
+            })).corrected;
         setModelStatus(`${removalJob.label}：${i + 1}/${picked.length} 張完成`);
         const r = await processStatic(raster, {
           bounds,
@@ -217,7 +256,12 @@ export function BuildTab() {
         support image → zip。Emoji 固定輸出 180×180，只上傳 tab.png，不產生 main.png。預設保留原色；超過容量才提示是否降色重試。
         預設只在瀏覽器處理；只有選擇 Colab 多模型去背時，處理用圖片才會送到你自己的臨時 session。
       </p>
-      <FilePick label={`輸入圖片（需 ≥ ${count} 張）`} multiple files={files} onChange={setFiles} />
+      <FilePick
+        label={`輸入圖片（需 ≥ ${count} 張）`}
+        multiple
+        files={files}
+        onChange={(next) => { setFiles(next); setResult(null); }}
+      />
       <Row>
         <Field label="輸出規格">
           <select
@@ -271,8 +315,20 @@ export function BuildTab() {
         inferenceCount={count}
         color={backgroundColor}
         onColorChange={setBackgroundColor}
+        colorAutomatic={backgroundColorAutomatic}
+        onColorAutomaticChange={setBackgroundColorAutomatic}
         colorKeyOptions={colorKeyOptions}
         onColorKeyOptionsChange={setColorKeyOptions}
+      />
+      <ForegroundCorrectionWorkspace
+        mode={removeBgMode}
+        configurationIdentity={removalConfigurationIdentity}
+        items={correctionItems}
+        records={corrections}
+        onRecordsChange={setCorrections}
+        createJob={createRemovalJob}
+        disabled={busy}
+        onDirty={() => setResult(null)}
       />
       <Row>
         <Field label="白色描邊">

@@ -23,6 +23,8 @@ export interface BackgroundRemovalControlProps {
   inferenceCount?: number | null;
   color?: string;
   onColorChange?: (color: string) => void;
+  colorAutomatic?: boolean;
+  onColorAutomaticChange?: (automatic: boolean) => void;
   colorHelp?: React.ReactNode;
   colorKeyOptions: ColorKeyOptions;
   onColorKeyOptionsChange: (options: ColorKeyOptions) => void;
@@ -168,13 +170,29 @@ export function BackgroundRemovalControl(props: BackgroundRemovalControlProps) {
             <option value="colab-birefnet">Colab 多模型去背</option>
           </select>
         </Field>
+        {props.value === 'color-key' && props.colorKeyOptions.scope === 'edge-connected' && props.onColorAutomaticChange && (
+          <Field label="背景中心">
+            <label>
+              <input
+                type="checkbox"
+                checked={props.colorAutomatic ?? true}
+                disabled={props.disabled}
+                onChange={(event) => props.onColorAutomaticChange?.(event.target.checked)}
+              />
+              自動取樣外框
+            </label>
+          </Field>
+        )}
         {props.value === 'color-key' && props.color && props.onColorChange && (
           <Field label="背景色">
             <input
               type="color"
               value={props.color}
-              disabled={props.disabled}
-              onChange={(event) => props.onColorChange?.(event.target.value)}
+              disabled={props.disabled || (props.colorKeyOptions.scope === 'edge-connected' && (props.colorAutomatic ?? false))}
+              onChange={(event) => {
+                props.onColorAutomaticChange?.(false);
+                props.onColorChange?.(event.target.value);
+              }}
             />
           </Field>
         )}
@@ -197,7 +215,7 @@ export function BackgroundRemovalControl(props: BackgroundRemovalControlProps) {
           {props.colorKeyOptions.scope === 'whole-image' ? (
             <><strong>全圖色碼：</strong>掃描整張圖，符合指定色碼與容差的像素會直接變透明；主體內同色像素也會被挖掉。</>
           ) : (
-            <><strong>外框連通：</strong>只清除與外框四向連通的近色背景，以保留被主體包住的同色細節；封閉背景洞可能保留。清除色暈可減少背景圈；硬邊可能產生鋸齒。</>
+            <><strong>外框連通：</strong>{props.colorAutomatic ?? false ? '自動學習外框的主要背景色；' : '使用指定背景中心並保留外框取樣到的色差；'}只清除與外框四向連通的近色背景，以保留被主體包住的同色細節；封閉背景洞可能保留。清除色暈可減少背景圈；硬邊可能產生鋸齒。</>
           )}
         </div>
       )}

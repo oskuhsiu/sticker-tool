@@ -13,10 +13,13 @@ import { inferAxisCells, planCutsFromProfile, type CutPlan } from '@core/sheet.j
 import { extractCells, type CellMeta } from '@core/cells.js';
 import {
   DEFAULT_COLOR_KEY_OPTIONS,
-  type EdgeConnectedColorKeyOptions,
   type ColorKeyOptions,
 } from '@core/colorKey.js';
-import { assertSupportedColorKeyOptions } from '@core/validate.js';
+import {
+  prepareColorKeySession,
+  type ColorKeyCalibrationDiagnostics,
+  type PreparedColorKeySession,
+} from './preparedColorKey.js';
 import type { Raster } from './raster.js';
 
 export type Background =
@@ -36,6 +39,8 @@ export interface SheetAnalysis {
   yPlan: CutPlan;
   /** 由前景縫隙推斷的實際網格（單軸不確定＝null）；網格防呆用 */
   inferredGrid: { cols: number | null; rows: number | null };
+  colorKeySessionIdentity?: string;
+  colorKeyDiagnostics?: ColorKeyCalibrationDiagnostics;
   warnings: string[];
 }
 
@@ -48,6 +53,14 @@ export interface KeyOptions {
   pickColor?: [number, number, number] | null;
   /** 僅供單色色鍵使用的範圍、容差與邊緣策略。 */
   colorKey?: ColorKeyOptions;
+  /** Preview and final analysis may share one immutable color-key calibration. */
+  preparedColorKey?: PreparedColorKeySession;
+  /** An automatic/corrected full-sheet raster prepared by the shared preview boundary. */
+  preparedResult?: {
+    raster: Raster;
+    sessionIdentity?: string;
+    diagnostics?: ColorKeyCalibrationDiagnostics;
+  };
 }
 
 const ALPHA_OPAQUE = 128;
@@ -94,170 +107,6 @@ export function detectBackground(src: Raster): Background {
   return { kind: 'opaque', color };
 }
 
-const KEY_LO = 12;
-const KEY_HI = 90;
-
-function selectEdgeConnected(
-  width: number,
-  height: number,
-  isCandidate: (pixel: number) => boolean,
-): Uint8Array {
-  const pixels = width * height;
-  // 0 = unseen, 1 = rejected, 2 = selected.
-  const state = new Uint8Array(pixels);
-  if (pixels === 0) return state;
-
-  // Rejected pixels are remembered so a non-candidate touching several selected
-  // pixels is still tested only once.
-  const queue = new Uint32Array(pixels);
-  let head = 0;
-  let tail = 0;
-  const visit = (pixel: number): void => {
-    if (state[pixel]) return;
-    if (!isCandidate(pixel)) {
-      state[pixel] = 1;
-      return;
-    }
-    state[pixel] = 2;
-    queue[tail++] = pixel;
-  };
-
-  for (let x = 0; x < width; x++) {
-    visit(x);
-    visit((height - 1) * width + x);
-  }
-  for (let y = 0; y < height; y++) {
-    visit(y * width);
-    visit(y * width + width - 1);
-  }
-  while (head < tail) {
-    const pixel = queue[head++]!;
-    const x = pixel % width;
-    const y = Math.floor(pixel / width);
-    if (x > 0) visit(pixel - 1);
-    if (x + 1 < width) visit(pixel + 1);
-    if (y > 0) visit(pixel - width);
-    if (y + 1 < height) visit(pixel + width);
-  }
-  return state;
-}
-
-/**
- * 綠幕色鍵。greenness 候選只選取外框 4 向連通區；soft 保留 RGB，
- * decontaminate 套用既有綠色 despill，hard 則把候選直接設為透明。
- */
-export function chromaKeyGreen(src: Raster, options: EdgeConnectedColorKeyOptions): Raster {
-  assertSupportedColorKeyOptions(options);
-  const { data, width: W, height: H } = src;
-  const out = new Uint8ClampedArray(data);
-  const selected = selectEdgeConnected(W, H, (pixel) => {
-    const i = pixel * 4;
-    const r = data[i]!;
-    const g = data[i + 1]!;
-    const b = data[i + 2]!;
-    return g > 90 && g - Math.max(r, b) > KEY_LO;
-  });
-  for (let p = 0; p < W * H; p++) {
-    if (selected[p] !== 2) continue;
-    const i = p * 4;
-    const r = data[i]!;
-    const g = data[i + 1]!;
-    const b = data[i + 2]!;
-    const a0 = data[i + 3]!;
-    const mx = Math.max(r, b);
-    const greenness = g - mx;
-    const keyA = options.edge === 'hard'
-      ? 0
-      : greenness >= KEY_HI
-        ? 0
-        : Math.round((255 * (KEY_HI - greenness)) / (KEY_HI - KEY_LO));
-    if (options.edge === 'decontaminate') out[i + 1] = Math.min(g, mx + 20);
-    out[i + 3] = Math.min(a0, keyA);
-  }
-  return { data: out, width: W, height: H };
-}
-
-/**
- * 單色色鍵：外框模式以固定候選距離 flood fill，edge 決定 soft matte／去色暈／hard alpha；
- * 全圖模式則依使用者的 0–20% Chebyshev 容差，把每個符合像素直接設為透明。
- */
-const SOLID_LO = 20;
-const SOLID_HI = 64;
-export function chromaKeySolid(
-  src: Raster,
-  color: [number, number, number],
-  options: ColorKeyOptions,
-): Raster {
-  assertSupportedColorKeyOptions(options);
-  const { data, width: W, height: H } = src;
-  const [r0, g0, b0] = color;
-  const pixels = W * H;
-  const out = new Uint8ClampedArray(data);
-  if (pixels === 0) return { data: out, width: W, height: H };
-
-  const distance = (p: number): number => {
-    const i = p * 4;
-    return Math.max(
-      Math.abs(data[i]! - r0),
-      Math.abs(data[i + 1]! - g0),
-      Math.abs(data[i + 2]! - b0),
-    );
-  };
-  if (options.scope === 'whole-image') {
-    const maximumDistance = options.tolerancePercent * 255 / 100;
-    for (let p = 0; p < pixels; p++) {
-      if (distance(p) <= maximumDistance) out[p * 4 + 3] = 0;
-    }
-    return { data: out, width: W, height: H };
-  }
-  const selected = selectEdgeConnected(W, H, (pixel) => distance(pixel) < SOLID_HI);
-  for (let p = 0; p < pixels; p++) {
-    if (selected[p] !== 2) continue;
-    const i = p * 4;
-    const d = distance(p);
-    const keyA = options.edge === 'hard'
-      ? 0
-      : d <= SOLID_LO
-        ? 0
-        : Math.round((255 * (d - SOLID_LO)) / (SOLID_HI - SOLID_LO));
-    if (options.edge === 'decontaminate' && keyA > 0 && data[i + 3] === 255) {
-      const inverseComposite = (channel: number, background: number): number => Math.max(
-        0,
-        Math.min(255, Math.round((255 * channel - (255 - keyA) * background) / keyA)),
-      );
-      out[i] = inverseComposite(data[i]!, r0);
-      out[i + 1] = inverseComposite(data[i + 1]!, g0);
-      out[i + 2] = inverseComposite(data[i + 2]!, b0);
-    }
-    out[i + 3] = Math.min(data[i + 3]!, keyA);
-  }
-  return { data: out, width: W, height: H };
-}
-
-/**
- * 依背景型態把整張 sheet 去背成透明前景。
- * 全程色鍵（無 ML 模型）：綠幕→綠色鍵；不透明→單色色鍵（點選色或邊框平均色）。
- */
-export function keyBackground(src: Raster, bg: Background, opts: KeyOptions = {}): Raster {
-  if (opts.autoRemove === false) return src;
-  const colorKey = opts.colorKey ?? DEFAULT_COLOR_KEY_OPTIONS;
-  if (opts.pickColor) return chromaKeySolid(src, opts.pickColor, colorKey);
-  if (bg.kind === 'transparent') return src;
-  if (colorKey.scope === 'whole-image') {
-    return chromaKeySolid(src, [
-      Math.round(bg.color[0]),
-      Math.round(bg.color[1]),
-      Math.round(bg.color[2]),
-    ], colorKey);
-  }
-  if (bg.kind === 'green') return chromaKeyGreen(src, colorKey);
-  return chromaKeySolid(src, [
-    Math.round(bg.color[0]),
-    Math.round(bg.color[1]),
-    Math.round(bg.color[2]),
-  ], colorKey);
-}
-
 /** 每欄/列的前景（alpha>門檻）像素數 */
 function foregroundProfiles(keyed: Raster): { colOcc: number[]; rowOcc: number[] } {
   const { data, width: W, height: H } = keyed;
@@ -284,7 +133,26 @@ export async function analyzeSheet(
   const warnings: string[] = [];
   const background = detectBackground(src);
   const colorKey = key.colorKey ?? DEFAULT_COLOR_KEY_OPTIONS;
-  const keyed = keyBackground(src, background, key);
+  let keyed = src;
+  let colorKeySessionIdentity: string | undefined;
+  let colorKeyDiagnostics: ColorKeyCalibrationDiagnostics | undefined;
+  if (key.preparedResult) {
+    if (key.preparedResult.raster.width !== src.width || key.preparedResult.raster.height !== src.height) {
+      throw new Error('預先準備的組圖去背結果尺寸與來源不一致');
+    }
+    keyed = key.preparedResult.raster;
+    colorKeySessionIdentity = key.preparedResult.sessionIdentity;
+    colorKeyDiagnostics = key.preparedResult.diagnostics;
+  } else if (key.autoRemove !== false) {
+    const prepared = key.preparedColorKey ?? await prepareColorKeySession([src], {
+      manualColor: key.pickColor,
+      colorKey,
+    });
+    const rendered = prepared.render(src);
+    keyed = rendered.raster;
+    colorKeySessionIdentity = rendered.sessionIdentity;
+    colorKeyDiagnostics = prepared.diagnostics;
+  }
   const { colOcc, rowOcc } = foregroundProfiles(keyed);
 
   const xPlan = planCutsFromProfile(colOcc, cols);
@@ -329,7 +197,28 @@ export async function analyzeSheet(
     );
   }
 
-  return { background, keyed, width: keyed.width, height: keyed.height, xs: xPlan.cuts, ys: yPlan.cuts, xPlan, yPlan, inferredGrid, warnings };
+  if (colorKeyDiagnostics?.detectedColor) {
+    const [r, g, b] = colorKeyDiagnostics.detectedColor;
+    warnings.push(
+      `背景群集 rgb(${r},${g},${b})，偵測信心 ${Math.round(colorKeyDiagnostics.confidence * 100)}%。`,
+    );
+  }
+  warnings.push(...(colorKeyDiagnostics?.warnings ?? []));
+
+  return {
+    background,
+    keyed,
+    width: keyed.width,
+    height: keyed.height,
+    xs: xPlan.cuts,
+    ys: yPlan.cuts,
+    xPlan,
+    yPlan,
+    inferredGrid,
+    ...(colorKeySessionIdentity ? { colorKeySessionIdentity } : {}),
+    ...(colorKeyDiagnostics ? { colorKeyDiagnostics } : {}),
+    warnings,
+  };
 }
 
 export interface CutSheetResult {

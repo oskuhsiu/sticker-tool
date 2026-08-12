@@ -118,7 +118,7 @@ reduction; quantized candidates remain truecolor RGBA and preserve the selected 
 APNG is encoded and inspected, its fitted 480×480 RGBA frame buffers are discarded instead of being
 retained for the rest of the pack.
 
-## Video → APNG V6
+## Video → APNG V7
 
 The video workflow accepts a local video that Mediabunny and the browser can demux and decode. It does
 not use `HTMLVideoElement.currentTime` seeking or a fixed 10/20/30/40/60-frame sampler.
@@ -140,12 +140,15 @@ not use `HTMLVideoElement.currentTime` seeking or a fixed 10/20/30/40/60-frame s
    per-loop duration, finite loop count, background mode, and compression mode. A Pop-up draft also
    chooses which final frame becomes its paired static image. Automatic
    color fitting is the default; advanced controls can preserve original colors or set a palette ceiling.
+   Solid-color keying learns its background from up to three time-stratified raw visuals unless the user
+   explicitly overrides the cluster center. Every automatic remover exposes the same independent Keep-mask
+   editor, so source pixels can be restored without rerunning the remover.
 5. Generate one preview or all dirty previews. Time-uniform candidates expand deterministically when
    adjacent equal results are removed. Delays are positive integers with the exact requested total.
    Color search may reduce colors, but never silently reduces the requested frame target.
 6. Inspect the controlled canvas player. It uses frames and delays decoded from current APNG bytes and
    supports play, pause, restart, frame position, elapsed time, and progress. Only the active editor runs.
-7. Save Project ZIP V6 at any time, or build a target-specific LINE ZIP after all required current bytes
+7. Save Project ZIP V7 at any time, or build a target-specific LINE ZIP after all required current bytes
    exist. Sticker ZIPs contain `main.png`, `tab.png`, and `01.png` onward. Animated Emoji ZIPs contain
    `tab.png` and `001.png` onward and never contain `main.png`. Pop-up ZIPs contain `png/main.png`,
    `png/tab.png`, paired `png/01.png` and `popup/01.png` sets, plus `popup/main_popup.png`.
@@ -154,7 +157,7 @@ The beta ingest budget is 512 MiB. If preflight exceeds it, shorten the range or
 budget is backed by the CFR/VFR/rotation/cancellation and 8/24-crop spike in
 `scripts/video-all-frames-spike.mts`.
 
-Background removal is never baked into V6 ingest. `none` preserves target-fitted raw pixels; color-keying is local;
+Background removal is never baked into V7 ingest. `none` preserves target-fitted raw pixels; color-keying is local;
 IMG.LY, local BiRefNet, and Colab multi-model removal are lazy, mutually exclusive render-stage choices. The
 time-uniform target candidates are processed sequentially with a bounded session cache. Unused source frames are tried only to replace adjacent visuals made identical by removal or quantization; exceeding the delivery byte limit does not process the rest of the range. A model or remote error
 does not silently fall back and does not overwrite the prior current render.
@@ -164,12 +167,14 @@ validation passes. Missing sticker bytes are a structural hard stop. If complete
 rule, the UI lists the errors and requires explicit confirmation before downloading a file named
 `NOT-LINE-COMPLIANT`.
 
-Project ZIP V6 contains the product target, checksummed raw chunks, complete sample/visual indices,
-drafts, current renders, selection/final-byte evidence, explicit color-key scope plus edge settings or whole-image tolerance, and implementation versions. It excludes source video, audio, model
-caches, endpoint URLs, and session keys. Import bounds entry count and expanded bytes, rejects unsafe,
-duplicate, missing, or undeclared paths, validates SHA-256 and decoded visual indices, and streams master
-entries directly to the project store. V5 edge-connected archives migrate losslessly. V4 imports strip the retired scope field: edge-connected current
-renders remain reusable, while all-matching current renders are cleared and reported for safe rerender.
+Project ZIP V7 contains the product target, checksummed raw chunks, complete sample/visual indices,
+drafts, current renders, full render provenance, selection/final-byte evidence, explicit color-key scope,
+and deduplicated lossless Keep-mask assets bound to exact source geometry and SHA-256. It excludes source
+video, audio, model caches, endpoint URLs, and session keys. Export and import share entry-count and
+expanded-byte budgets. Import buffers at most one bounded entry at a time, rejects unsafe, conflicting,
+missing, or undeclared paths, and validates SHA-256 plus decoded visual indices. V4–V6 settings and raw
+masters migrate without losing source data; obsolete color-key or Colab current renders are cleared and
+reported for safe rerender.
 V3 implicit global/soft color-key renders receive the same invalidation and are not treated as the new whole-image mode. V2 archives migrate to Animated Sticker. V1 archives import only
 as `sampled-legacy`/`baked-legacy`; the UI does not invent missing source frames or pre-removal RGB.
 
@@ -183,8 +188,12 @@ upload-ready Effect package.
 
 - **None:** keep source alpha/RGB. This is the default for local images, animation packs, and video.
 - **Solid-color key:** local Canvas operation with no model download. The default follows four-way
-  **outer-edge connected** candidate paths, preserving enclosed matching subject details but possibly
-  leaving enclosed background holes. **Decontaminate**, **soft**, and **hard** control that mode's edge.
+  **outer-edge connected** candidate paths after fitting a robust dominant RGB cluster from visible border
+  samples. It reports low confidence instead of silently widening an ambiguous range, preserves enclosed
+  matching subject details, and may leave enclosed background holes. Automatic sampling can be turned off
+  to use the visible color input as an explicit cluster-center override, then reset to automatic.
+  **Decontaminate** solves a narrow trimap against nearby background evidence and reconstructs edge RGB;
+  **soft** and **hard** remain explicit alternatives.
   The opt-in **whole-image color-code** mode instead hard-removes every pixel within a `0.0%–20.0%`
   Chebyshev RGB tolerance (`0.0%` is exact match), using a `0.1%` slider and `−/+ 0.1%` buttons.
   Matching foreground colors are intentionally removed. Video shows up to three representative initial
@@ -207,8 +216,10 @@ existing artwork, use **None** when the source is already transparent, use **Sol
 background is clearly different from the text, or remove the subject first and composite text or a speech
 bubble afterward. Thick opaque lettering with a strong outline and contact with an opaque subject or bubble
 is more likely to survive, but no model guarantees it. Thresholding or mask dilation cannot reconstruct a
-glyph whose mask is already zero; reliable in-app recovery would require a protected mask or a post-removal
-text-overlay workflow, neither of which the current Video editor provides.
+glyph whose mask is already zero. After preview, **Restore Original** paints immutable source RGBA back
+through a feathered 8-bit Keep mask; **Clear Correction** subtracts Keep paint and returns to the exact
+automatic result. Undo/redo, zoom/pan, edited-source labels, clear-current/all, and an explicitly confirmed
+equal-geometry coordinate copy are available. This is fixed-coordinate correction, not motion tracking.
 
 No model choice silently falls back to color keying. Sprite-sheet semantic removal uses overlapping
 nominal crops, merges their masks over the original sheet, and then runs component-aware extraction so a
@@ -227,7 +238,7 @@ subject crossing a grid line is not clipped at a mask boundary.
 - `rawVideoMaster.ts`, `masterApng.ts`, and `videoMasterStore.ts` own all-frame raw storage.
 - `processMasterApngSticker.ts` owns exact-target selection, lazy transforms, encoding, and final-byte
   evidence. `videoFrameRenderCache.ts` bounds session transform results.
-- `videoProjectZip.ts` owns asynchronous V6 export, strict streaming import, V2/V3/V4/V5 migration, and explicit V1 mapping.
+- `videoProjectZip.ts` owns asynchronous V7 export, strict bounded streaming import, V2–V6 migration, and explicit V1 mapping.
 - `upng-js` encodes PNG/APNG and `fflate` handles archive streams.
 - IMG.LY and Transformers.js runtime assets are copied into the build for local lazy loading.
 - `public/coi-serviceworker.js` supplies COOP/COEP behavior where static hosting cannot set headers.
@@ -244,7 +255,7 @@ npm run test:local-birefnet
 npm run test:background-removal
 npm run test:output-safety # truecolor Big/Pop-up and opt-in reduction contracts
 npx tsx --tsconfig tsconfig.json scripts/emoji-processing-contract.mts
-npm run test:video          # V6 round-trip, V2/V3/V4/V5 migration, strict rejection, V1 mapping, render contracts
+npm run test:video          # V7 correction round-trip, V2–V6 migration, strict rejection, V1 mapping, render contracts
 npm run test:video-spike    # requires ffmpeg/ffprobe
 npm run preview -- --port 4179
 node scripts/smoke.mjs http://127.0.0.1:4179/
@@ -253,7 +264,7 @@ node scripts/video-smoke.mjs http://127.0.0.1:4179/ # requires ffmpeg and Chrome
 ```
 
 The video browser smoke asserts that a 12-frame fixture persists all 12 sample references, exercises
-exact-target editing, whole-image representative-frame preview, and controlled playback, round-trips Project V6 without a source decoder, verifies
+exact-target editing, whole-image representative-frame preview, and controlled playback, round-trips Project V7 without a source decoder, verifies
 invalid-package confirmation, and builds a valid eight-sticker LINE package.
 
 The main browser smoke also rejects an extreme custom preview grid, checks truecolor Big output, builds

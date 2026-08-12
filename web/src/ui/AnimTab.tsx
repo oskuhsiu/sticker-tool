@@ -23,10 +23,16 @@ import {
 } from '@core/validate.js';
 import { decodeBlob, yieldToUI, type Raster } from '../webpipe/raster.js';
 import {
+  backgroundRemovalConfigurationIdentity,
   createBackgroundRemovalJob,
   type BackgroundRemovalJob,
   type WebBackgroundRemovalMode,
 } from '../webpipe/backgroundRemovalJob.js';
+import {
+  backgroundRemovalRenderFromRaster,
+  removeWithForegroundCorrection,
+  type ForegroundCorrectionRecord,
+} from '../webpipe/backgroundCorrection.js';
 import { removeSheetBackgroundByCells } from '../webpipe/sheetBackgroundRemoval.js';
 import { cutSheet } from '../webpipe/sheetAnalysis.js';
 import { setApngNumPlays } from '../webpipe/apng.js';
@@ -40,6 +46,8 @@ import { DEFAULT_TEXT_STYLE, makeAnimation, makeStroke, makeText, parseGridText,
 import { ManualLayout } from './ManualLayout.jsx';
 import { reportCut } from './cutReport.js';
 import { BackgroundRemovalControl } from './BackgroundRemovalControl.jsx';
+import { ForegroundCorrectionWorkspace } from './ForegroundCorrectionWorkspace.jsx';
+import { fileCorrectionSource, fileSourceIdentity } from './correctionSources.js';
 import { useColabBirefnetConnection } from './colabBirefnetConnection.jsx';
 import type { ValidationResult } from '@core/types.js';
 import { PopupPackMode } from './PopupPackMode.jsx';
@@ -66,6 +74,13 @@ function assertAnimatedEmojiFrameCount(frameCount: number): void {
       `Animated Regular Emoji 影格數須為 ${ANIMATED_EMOJI_SPEC.minFrames}–${ANIMATED_EMOJI_SPEC.maxFrames}，收到 ${frameCount}；不會自動抽格`,
     );
   }
+}
+
+function stratified<T>(values: readonly T[], maximum = 3): T[] {
+  if (values.length <= maximum) return [...values];
+  return Array.from({ length: maximum }, (_, index) => (
+    values[Math.round(index * (values.length - 1) / (maximum - 1))]!
+  ));
 }
 
 export function AnimTab() {
@@ -122,9 +137,29 @@ function SheetMode() {
   // 切好的影格（手動排版用）；id 區分每次切格，讓編輯器重設偏移
   const [editor, setEditor] = useState<{ frames: Raster[]; id: number } | null>(null);
   const [result, setResult] = useState<{ png: Uint8Array; caption: string; validation: ValidationResult } | null>(null);
+  const [corrections, setCorrections] = useState<Map<string, ForegroundCorrectionRecord>>(() => new Map());
   const logger = useLogger();
   const { connection: colabConnection, registerActiveRemoval } = useColabBirefnetConnection();
   const isEmoji = target === 'animated-emoji';
+  const parsedGrid = parseGridText(gridText);
+  const removalConfigurationIdentity = `${backgroundRemovalConfigurationIdentity({
+    mode: removeBgMode,
+    pickColor: removeBgMode === 'color-key' ? pickColor : null,
+    ...(removeBgMode === 'color-key' ? { colorKey: colorKeyOptions } : {}),
+    colabGeneration: colabConnection?.generation,
+  })}:sheet-grid:${parsedGrid?.cols ?? 0}x${parsedGrid?.rows ?? 0}`;
+  const correctionItems = useMemo(
+    () => sheet[0] ? [fileCorrectionSource(sheet[0], `影格組圖：${sheet[0].name}`)] : [],
+    [sheet],
+  );
+  const createRemovalJob = (signal: AbortSignal) => createBackgroundRemovalJob({
+    mode: removeBgMode,
+    signal,
+    pickColor: removeBgMode === 'color-key' ? pickColor : null,
+    ...(removeBgMode === 'color-key' ? { colorKey: colorKeyOptions } : {}),
+    colabConfig: colabConnection?.config,
+    onStatus: setModelStatus,
+  });
 
   // 編好的 APNG 循環次數是 LINE 規格的 1–4；預覽循環＝把副本的 acTL num_plays 改 0（無限）
   const previewPng = useMemo(
@@ -218,40 +253,67 @@ function SheetMode() {
       }
       const count = framesN.trim() ? Number(framesN) : grid.cols * grid.rows;
       if (isEmoji) assertAnimatedEmojiFrameCount(count);
-      removalJob = await createBackgroundRemovalJob({
-        mode: removeBgMode,
-        signal: abort.signal,
-        pickColor: removeBgMode === 'color-key' ? pickColor : null,
-        ...(removeBgMode === 'color-key' ? { colorKey: colorKeyOptions } : {}),
-        colabConfig: colabConnection?.config,
-        onStatus: setModelStatus,
-      });
+      removalJob = await createRemovalJob(abort.signal);
 
       logger.log('step', `切格 ${grid.cols}×${grid.rows}（取前 ${count} 格）← ${file.name}`);
       const raster = await decodeBlob(file);
       const semantic = removeBgMode === 'imgly'
         || removeBgMode === 'local-birefnet'
         || removeBgMode === 'colab-birefnet';
-      const prepared = semantic
-        ? await removeSheetBackgroundByCells(raster, {
-            cols: grid.cols,
-            rows: grid.rows,
-            remove: removalJob.remove,
+      const sourceIdentity = fileSourceIdentity(file);
+      const removal = removeBgMode === 'none'
+        ? null
+        : await removeWithForegroundCorrection({
+            input: raster,
+            sourceIdentity,
+            configurationIdentity: removalConfigurationIdentity,
+            job: removalJob,
+            record: corrections.get(sourceIdentity),
             signal: abort.signal,
-            onProgress: (done, total) => setModelStatus(`${removalJob!.label}：crop ${done}/${total}`),
-          })
-        : raster;
+            ...(semantic ? {
+              removeAutomatic: async () => {
+                const cellSession = await removalJob!.prepare([raster], abort.signal);
+                return backgroundRemovalRenderFromRaster(
+                await removeSheetBackgroundByCells(raster, {
+                  cols: grid.cols,
+                  rows: grid.rows,
+                  remove: async (crop, signal) => (await cellSession.remove(crop, signal)).raster,
+                  signal: abort.signal,
+                  onProgress: (done, total) => setModelStatus(`${removalJob!.label}：crop ${done}/${total}`),
+                }),
+                `${removalConfigurationIdentity}:sheet-cells`,
+              );
+              },
+            } : {}),
+          });
       // align 'grid'：元件式抽格＋按原圖等分格座標對齊——場景固定不閃，
       // 不再做頭錨點穩定化（錨點平移會把場景物件推出畫布）
-      const cut = await cutSheet(prepared, {
+      const cut = await cutSheet(raster, {
         cols: grid.cols,
         rows: grid.rows,
         count,
         align: 'grid',
         key: semantic
-          ? { autoRemove: false, preRemovedLabel: removalJob.label }
+          ? {
+              autoRemove: false,
+              preRemovedLabel: removalJob.label,
+              preparedResult: {
+                raster: removal!.corrected,
+                sessionIdentity: removal!.sessionIdentity,
+                diagnostics: removal!.diagnostics,
+              },
+            }
           : removeBgMode === 'color-key'
-            ? { autoRemove: true, pickColor, colorKey: colorKeyOptions }
+            ? {
+                autoRemove: true,
+                pickColor,
+                colorKey: colorKeyOptions,
+                preparedResult: {
+                  raster: removal!.corrected,
+                  sessionIdentity: removal!.sessionIdentity,
+                  diagnostics: removal!.diagnostics,
+                },
+              }
             : { autoRemove: false },
       });
       reportCut(cut, logger);
@@ -333,6 +395,34 @@ function SheetMode() {
         colorHelp={<span className="layout-hint">可自動偵測，或在下方直接點選背景色</span>}
         colorKeyOptions={colorKeyOptions}
         onColorKeyOptionsChange={setColorKeyOptions}
+      />
+      <ForegroundCorrectionWorkspace
+        mode={removeBgMode}
+        configurationIdentity={removalConfigurationIdentity}
+        items={correctionItems}
+        records={corrections}
+        onRecordsChange={setCorrections}
+        createJob={createRemovalJob}
+        disabled={busy || !parsedGrid}
+        onDirty={() => { setResult(null); setEditor(null); }}
+        prepareAutomatic={async ({ source, job, session, signal, onProgress }) => {
+          const semantic = removeBgMode === 'imgly'
+            || removeBgMode === 'local-birefnet'
+            || removeBgMode === 'colab-birefnet';
+          if (!semantic) return session.remove(source, signal);
+          if (!parsedGrid) throw new Error('請先設定有效的動畫組圖網格');
+          const raster = await removeSheetBackgroundByCells(source, {
+            cols: parsedGrid.cols,
+            rows: parsedGrid.rows,
+            remove: async (crop, cropSignal) => (await session.remove(crop, cropSignal)).raster,
+            signal,
+            onProgress: (done, total) => onProgress(`${job.label}：crop ${done}/${total}`),
+          });
+          return backgroundRemovalRenderFromRaster(
+            raster,
+            `${removalConfigurationIdentity}:sheet-cells`,
+          );
+        }}
       />
       <Row>
         <Field label="輸出規格">
@@ -534,6 +624,7 @@ function PackMode() {
   const [maxColorsPack, setMaxColorsPack] = useState(0);
   const [removeBgMode, setRemoveBgMode] = useState<WebBackgroundRemovalMode>('none');
   const [backgroundColor, setBackgroundColor] = useState('#00ff00');
+  const [backgroundColorAutomatic, setBackgroundColorAutomatic] = useState(true);
   const [colorKeyOptions, setColorKeyOptions] = useState<ColorKeyOptions>(
     () => copyColorKeyOptions(DEFAULT_COLOR_KEY_OPTIONS),
   );
@@ -547,9 +638,43 @@ function PackMode() {
   const [modelStatus, setModelStatus] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const [result, setResult] = useState<PackResultData | null>(null);
+  const [corrections, setCorrections] = useState<Map<string, ForegroundCorrectionRecord>>(() => new Map());
   const logger = useLogger();
   const { connection: colabConnection, registerActiveRemoval } = useColabBirefnetConnection();
   const isEmoji = target === 'animated-emoji';
+  const parsedBackgroundColor = parseColor(backgroundColor);
+  const manualColor: [number, number, number] = [
+    parsedBackgroundColor.r,
+    parsedBackgroundColor.g,
+    parsedBackgroundColor.b,
+  ];
+  const removalConfigurationIdentity = backgroundRemovalConfigurationIdentity({
+    mode: removeBgMode,
+    pickColor: removeBgMode === 'color-key' && (colorKeyOptions.scope === 'whole-image' || !backgroundColorAutomatic)
+      ? manualColor
+      : null,
+    ...(removeBgMode === 'color-key' ? { colorKey: colorKeyOptions } : {}),
+    colabGeneration: colabConnection?.generation,
+  });
+  const correctionItems = useMemo(
+    () => frameSets.slice(0, count).flatMap((files, stickerIndex) => (
+      sortFiles(files).map((file, frameIndex) => fileCorrectionSource(
+        file,
+        `${isEmoji ? emojiFileName(stickerIndex + 1) : stickerFileName(stickerIndex + 1)} · 格 ${frameIndex + 1} · ${file.name}`,
+      ))
+    )),
+    [frameSets, count, isEmoji],
+  );
+  const createRemovalJob = (signal: AbortSignal) => createBackgroundRemovalJob({
+    mode: removeBgMode,
+    signal,
+    pickColor: removeBgMode === 'color-key' && (colorKeyOptions.scope === 'whole-image' || !backgroundColorAutomatic)
+      ? manualColor
+      : null,
+    ...(removeBgMode === 'color-key' ? { colorKey: colorKeyOptions } : {}),
+    colabConfig: colabConnection?.config,
+    onStatus: setModelStatus,
+  });
 
   function changeCount(n: number) {
     setCount(n);
@@ -626,28 +751,36 @@ function PackMode() {
       const stroke = makeStroke(strokeOn, strokeWidth, strokeColor);
       const texts = textsRaw.split('\n');
       const bounds = maxBounds(target);
-      const parsedColor = parseColor(backgroundColor);
-      removalJob = await createBackgroundRemovalJob({
-        mode: removeBgMode,
-        signal: abort.signal,
-        pickColor: removeBgMode === 'color-key'
-          ? [parsedColor.r, parsedColor.g, parsedColor.b]
-          : null,
-        ...(removeBgMode === 'color-key' ? { colorKey: colorKeyOptions } : {}),
-        colabConfig: colabConnection?.config,
-        onStatus: setModelStatus,
-      });
+      removalJob = await createRemovalJob(abort.signal);
+      const sharedPreparedSession = removeBgMode === 'none'
+        ? null
+        : await removalJob.prepare(
+            await Promise.all(stratified(correctionItems).map((item) => item.load())),
+            abort.signal,
+          );
 
       const processedList: ProcessedAnimated[] = [];
       for (let i = 0; i < count; i++) {
-        const files = frameSets[i] ?? [];
+        const files = sortFiles(frameSets[i] ?? []);
         logger.log('step', `處理第 ${i + 1}/${count} 張（${files.length} 格）…`);
         const frames: Raster[] = [];
-        for (const f of sortFiles(files)) frames.push(await decodeBlob(f));
+        for (const f of files) frames.push(await decodeBlob(f));
+        const frameIdentities = files.map(fileSourceIdentity);
         const proc = await processAnimated(frames, {
           bounds,
           removeBackground: false,
-          removeBackgroundRaster: removeBgMode === 'none' ? undefined : removalJob.remove,
+          frameIdentities,
+          prepareBackgroundRaster: removeBgMode === 'none' ? undefined : async (input, frame, signal) => (
+            await removeWithForegroundCorrection({
+              input,
+              sourceIdentity: frame.sourceIdentity,
+              configurationIdentity: removalConfigurationIdentity,
+              job: removalJob!,
+              record: corrections.get(frame.sourceIdentity),
+              preparedSession: sharedPreparedSession!,
+              signal,
+            })
+          ).corrected,
           signal: abort.signal,
           onBackgroundProgress: (done, total) => setModelStatus(
             `${removalJob!.label}：第 ${i + 1}/${count} 張，影格 ${done}/${total}`,
@@ -837,8 +970,21 @@ function PackMode() {
         inferenceCount={inferenceEstimate}
         color={backgroundColor}
         onColorChange={setBackgroundColor}
+        colorAutomatic={backgroundColorAutomatic}
+        onColorAutomaticChange={setBackgroundColorAutomatic}
         colorKeyOptions={colorKeyOptions}
         onColorKeyOptionsChange={setColorKeyOptions}
+      />
+      <ForegroundCorrectionWorkspace
+        mode={removeBgMode}
+        configurationIdentity={removalConfigurationIdentity}
+        items={correctionItems}
+        records={corrections}
+        onRecordsChange={setCorrections}
+        createJob={createRemovalJob}
+        sharedCalibration
+        disabled={busy}
+        onDirty={() => setResult(null)}
       />
       <Row>
         <Field label="主體穩定化">
