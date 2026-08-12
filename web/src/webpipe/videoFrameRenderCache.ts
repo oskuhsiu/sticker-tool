@@ -1,3 +1,4 @@
+import { copyColorKeyOptions } from '@core/colorKey.js';
 import type { VideoBackgroundSettings } from '@core/videoProject.js';
 import { cloneRaster, type Raster } from './raster.js';
 
@@ -31,7 +32,7 @@ export class VideoFrameRenderCache {
       color: args.background.color ?? null,
       tolerance: args.background.tolerance ?? null,
       ...(args.background.mode === 'color-key'
-        ? { colorKey: args.background.colorKey ?? null }
+        ? { colorKey: args.background.colorKey ? copyColorKeyOptions(args.background.colorKey) : null }
         : {}),
     };
     return JSON.stringify({

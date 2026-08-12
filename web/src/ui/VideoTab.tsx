@@ -37,6 +37,7 @@ import {
   inspectAnimatedBytes,
   activeVideoVisualFrameIds,
   loadVideoRawVisualFrames,
+  pickedVideoVisualFrameIds,
   prepareVideoFrame,
   processMasterApngSticker,
   selectVideoCalibrationFrames,
@@ -316,6 +317,48 @@ export function VideoTab() {
   const activeSettings = project?.settings[activeIndex];
   const activeMaster = project?.master.stickers[activeIndex];
   const activeStore = project?.master.store;
+  const pickedVisualState = useMemo(() => {
+    if (!project || !activeSettings || !activeMaster) {
+      return { kind: 'planned' as const, visuals: [] as VideoRawVisualFrame[] };
+    }
+    const targetContract = project.target === 'animated-emoji'
+      ? ANIMATED_EMOJI_SPEC
+      : project.target === 'popup'
+        ? POPUP_STICKER_SPEC
+        : ANIMATED_SPEC;
+    if (
+      !Number.isSafeInteger(activeSettings.targetFrames)
+      || activeSettings.targetFrames < targetContract.minFrames
+      || activeSettings.targetFrames > targetContract.maxFrames
+    ) {
+      return { kind: 'planned' as const, visuals: [] as VideoRawVisualFrame[] };
+    }
+    const current = project.current[activeIndex] ?? null;
+    const actual = current !== null && !isDirty(activeIndex);
+    const visualIds = pickedVideoVisualFrameIds(
+      activeMaster,
+      activeSettings.rangeStartUs,
+      activeSettings.rangeEndUs,
+      activeSettings.targetFrames,
+      actual ? current.selection.selectedSourceIndices : undefined,
+    );
+    const visualById = new Map(activeVisuals.map((visual) => [visual.visualFrameId, visual]));
+    return {
+      kind: actual ? 'actual' as const : 'planned' as const,
+      visuals: visualIds.flatMap((visualFrameId) => {
+        const visual = visualById.get(visualFrameId);
+        return visual ? [visual] : [];
+      }),
+    };
+  }, [project, activeIndex, activeSettings, activeMaster, activeVisuals, colabGeneration]);
+  const pickedVisualIdentity = pickedVisualState.visuals.map((visual) => visual.visualFrameId).join('\n');
+
+  useEffect(() => {
+    setSelectedVisualFrameId((current) => {
+      if (pickedVisualState.visuals.some((visual) => visual.visualFrameId === current)) return current;
+      return pickedVisualState.visuals[0]?.visualFrameId ?? null;
+    });
+  }, [activeIndex, pickedVisualIdentity]);
 
   function removalContextKey(settings: VideoStickerSettings): string {
     const pickColor = settings.background.mode === 'color-key'
@@ -1458,10 +1501,11 @@ export function VideoTab() {
               correctionPanel={project.settings[activeIndex]!.background.mode === 'none' ? undefined : (
                 <VideoForegroundCorrectionPanel
                   mode={project.settings[activeIndex]!.background.mode}
-                  visuals={activeVisuals}
+                  visuals={pickedVisualState.visuals}
+                  selectionKind={pickedVisualState.kind}
                   selectedVisualFrameId={selectedVisualFrameId}
                   preview={activeCorrectionPreview}
-                  editedVisualIds={new Set(activeVisuals.filter((visual) => project.corrections.has(
+                  editedVisualIds={new Set(pickedVisualState.visuals.filter((visual) => project.corrections.has(
                     videoCorrectionTargetKey(project.settings[activeIndex]!.stickerId, visual.visualFrameId),
                   )).map((visual) => visual.visualFrameId))}
                   loading={activeVisualsLoading}

@@ -142,7 +142,13 @@ not use `HTMLVideoElement.currentTime` seeking or a fixed 10/20/30/40/60-frame s
    color fitting is the default; advanced controls can preserve original colors or set a palette ceiling.
    Solid-color keying learns its background from up to three time-stratified raw visuals unless the user
    explicitly overrides the cluster center. Every automatic remover exposes the same independent Keep-mask
-   editor, so source pixels can be restored without rerunning the remover.
+   editor, so source pixels can be restored without rerunning the remover. The **`選取 raw visual`**
+   control starts collapsed while the active correction editor remains visible. Before a fresh render it
+   shows only the deterministic time-uniform **`目標格數`** planned picks; after rendering it shows the
+   actual final picks, including deterministic replacements. Repeated presentation samples that share one
+   raw visual produce one correction chip. This display filter does not truncate the raw timeline used for
+   calibration, correction copy-to-range, duplicate/replacement processing, or Project ZIP data. Changing
+   the target frame count updates these planned picks and does not auto-fit clip lines.
 5. Generate one preview or all dirty previews. Time-uniform candidates expand deterministically when
    adjacent equal results are removed. Delays are positive integers with the exact requested total.
    Color search may reduce colors, but never silently reduces the requested frame target.
@@ -177,6 +183,8 @@ masters migrate without losing source data; obsolete color-key or Colab current 
 reported for safe rerender.
 V3 implicit global/soft color-key renders receive the same invalidation and are not treated as the new whole-image mode. V2 archives migrate to Animated Sticker. V1 archives import only
 as `sampled-legacy`/`baked-legacy`; the UI does not invent missing source frames or pre-removal RGB.
+An omitted edge-connected tolerance in an older V7 project resolves to `100%`, preserving the learned
+automatic baseline.
 
 Pop-up is a paired Video target: after rendering, the user selects one frame from each APNG and the app
 fits it into the required static `png/` track before packaging. The dedicated static-plus-animation
@@ -193,10 +201,14 @@ upload-ready Effect package.
   matching subject details, and may leave enclosed background holes. Automatic sampling can be turned off
   to use the visible color input as an explicit cluster-center override, then reset to automatic.
   **Decontaminate** solves a narrow trimap against nearby background evidence and reconstructs edge RGB;
-  **soft** and **hard** remain explicit alternatives.
+  **soft** and **hard** remain explicit alternatives. **Outer-edge color-code tolerance** scales the
+  learned definite and transition thresholds from `0%` through `200%` in `1%` steps. `100%` is the
+  existing learned automatic baseline and default; lower values narrow both thresholds and higher values
+  widen them, while removal remains limited to matching pixels connected to an edge by four-way paths.
   The opt-in **whole-image color-code** mode instead hard-removes every pixel within a `0.0%–20.0%`
   Chebyshev RGB tolerance (`0.0%` is exact match), using a `0.1%` slider and `−/+ 0.1%` buttons.
-  Matching foreground colors are intentionally removed. Video shows up to three representative initial
+  Matching foreground colors are intentionally removed. Combined mode exposes the edge and whole-image
+  tolerances independently. Video shows up to three representative initial
   target-frame candidates with an immediate before/after Canvas preview. None, IMG.LY, local BiRefNet,
   and Colab do not show or consume color-key controls.
 - **IMG.LY local:** lazy-loads the self-hosted medium model and WASM assets (about 84 MiB). Pixels stay

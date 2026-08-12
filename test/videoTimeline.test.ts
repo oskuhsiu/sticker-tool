@@ -4,6 +4,8 @@ import {
   allocateExactDelays,
   candidateExpansionOrder,
   clipFrameIntervals,
+  initialCandidateIndices,
+  pickedVisualFrameIds,
   representativeSelectionDurations,
   selectTimeUniformIndices,
   type SourceFrameTiming,
@@ -25,9 +27,28 @@ test('clipFrameIntervals preserves VFR samples and clips both range boundaries',
   ]);
 });
 
+test('clipFrameIntervals preserves adapter metadata', () => {
+  const visualFrames = frames.map((frame, index) => ({ ...frame, visualFrameId: `visual-${index}` }));
+  const clipped = clipFrameIntervals(visualFrames, 550_000, 1_100_000);
+  assert.deepEqual(clipped.map((frame) => frame.visualFrameId), ['visual-0', 'visual-1', 'visual-2', 'visual-3']);
+});
+
 test('time-uniform selection and expansion are deterministic on non-zero timestamps', () => {
   assert.deepEqual(selectTimeUniformIndices(frames, 3), [0, 1, 3]);
+  assert.deepEqual(initialCandidateIndices(frames, 3), [0, 1, 3]);
+  assert.deepEqual(initialCandidateIndices([], 3), []);
   assert.deepEqual(candidateExpansionOrder(frames, 2), [0, 3, 1, 2]);
+});
+
+test('picked visuals follow planned or final source selections and deduplicate shared visuals', () => {
+  const visuals = [
+    { ...frames[0]!, visualFrameId: 'visual-a' },
+    { ...frames[1]!, visualFrameId: 'visual-a' },
+    { ...frames[2]!, visualFrameId: 'visual-b' },
+    { ...frames[3]!, visualFrameId: 'visual-c' },
+  ];
+  assert.deepEqual(pickedVisualFrameIds(visuals, 3), ['visual-a', 'visual-c']);
+  assert.deepEqual(pickedVisualFrameIds(visuals, 3, [0, 2, 3]), ['visual-a', 'visual-b', 'visual-c']);
 });
 
 test('selected durations include skipped VFR presentation intervals and the final tail', () => {

@@ -4,12 +4,15 @@ import { ANIMATED_EMOJI_SPEC, ANIMATED_SPEC, POPUP_STICKER_SPEC } from '@core/sp
 import {
   candidateExpansionOrder,
   allocateExactDelays,
+  clipFrameIntervals,
+  pickedVisualFrameIds,
   representativeSelectionDurations,
   selectTimeUniformIndices,
   type SourceFrameTiming,
 } from '@core/videoTimeline.js';
 import {
   cloneVideoStickerDraft,
+  type SourceFrameRef,
   type VideoOutputTarget,
   VideoSelectionPlanV2,
   VideoStickerDraftV2,
@@ -107,6 +110,16 @@ export interface VideoRawVisualFrame {
   durationUs: number;
 }
 
+function clippedVideoSamples(
+  master: MasterApngSticker,
+  rangeStartUs: number,
+  rangeEndUs: number,
+): SourceFrameRef[] {
+  const samples = master.chunks.flatMap((chunk) => chunk.sampleRefs);
+  samples.sort((a, b) => a.timestampUs - b.timestampUs || a.sourceIndex - b.sourceIndex);
+  return clipFrameIntervals(samples, rangeStartUs, rangeEndUs);
+}
+
 async function sha256Text(value: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
   return [...new Uint8Array(digest)]
@@ -119,12 +132,20 @@ export function activeVideoVisualFrameIds(
   rangeStartUs: number,
   rangeEndUs: number,
 ): string[] {
-  const samples = master.chunks.flatMap((chunk) => chunk.sampleRefs).filter((sample) => (
-    sample.timestampUs < rangeEndUs
-    && sample.timestampUs + sample.durationUs > rangeStartUs
-  ));
-  samples.sort((a, b) => a.timestampUs - b.timestampUs || a.sourceIndex - b.sourceIndex);
+  const samples = clippedVideoSamples(master, rangeStartUs, rangeEndUs);
   return [...new Set(samples.map((sample) => sample.visualFrameId))];
+}
+
+/** Resolve draft candidates or a final render selection to display-only raw visual IDs. */
+export function pickedVideoVisualFrameIds(
+  master: MasterApngSticker,
+  rangeStartUs: number,
+  rangeEndUs: number,
+  targetFrames: number,
+  selectedSourceIndices?: readonly number[],
+): string[] {
+  const samples = clippedVideoSamples(master, rangeStartUs, rangeEndUs);
+  return pickedVisualFrameIds(samples, targetFrames, selectedSourceIndices);
 }
 
 /** Load every unique raw visual in range. Repeated presentation samples share one result. */

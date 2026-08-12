@@ -218,6 +218,7 @@ The background-removal implementation differs by runtime:
 
 - Node: transparency pass-through, green chroma key, or semantic removal for opaque sheets.
 - Browser none/color-key: preserve alpha, or apply one of three explicit deterministic color-key paths. The safe default fits a dominant radial RGB cluster from visible border samples with robust spread, dominance, confidence, and outlier rejection, then selects compatible pixels four-way connected to the outer edge. Enclosed matching regions remain RGBA-identical, while enclosed background holes may remain. A narrow trimap solves alpha and foreground RGB against the learned background and despills only its unknown band; soft and hard alternatives remain explicit. The composed outer-edge-plus-whole-image path runs that connected treatment first and then hard-removes whole-image matches, while the standalone whole-image path skips connectivity. Both whole-image passes compare every pixel to one target RGB with Chebyshev tolerance from 0.0% through 20.0%; 0.0% means exact RGB only, and matching subject pixels are intentionally removed. None and semantic removers neither receive nor include color-key options in cache identity.
+- Browser edge-connected color key scales its learned definite and transition thresholds with an independent `edgeToleranceScalePercent` from 0 through 200 in integer steps. Missing and 100 are equivalent to the existing learned automatic baseline; lower values narrow both thresholds and higher values widen them. The scale never broadens removal beyond four-way edge-connected matching pixels. Combined edge-plus-whole-image mode retains separate edge and 0.0–20.0% whole-image tolerances.
 - Browser semantic modes: run IMG.LY, local BiRefNet, or the Colab multi-model remover over overlapping nominal-cell crops; merge alpha masks onto the original sheet; then run foreground projections and component-aware extraction. Overlap plus mask merging preserves subjects that cross nominal grid boundaries without sending a whole video frame to Colab.
 
 ### Animated sticker processing
@@ -317,11 +318,19 @@ The source index is authoritative for time. Raw visual APNG delays are container
 `sampleRef` carries its own clipped `timestampUs` and `durationUs` and points to a `visualFrameId`.
 Visual deduplication therefore cannot collapse the editable timeline.
 
+The correction UI presents a display-only projection of that timeline. Its raw-visual selector starts
+collapsed while the active correction editor remains visible. Before a current render exists, it shows
+only the deterministic time-uniform picks for the draft's target frame count; afterward it resolves the
+render's final selected source indices, including deterministic replacements. Presentation samples that
+share a `visualFrameId` produce one correction chip. The complete raw timeline remains authoritative for
+calibration, copy-to-range corrections, duplicate/replacement processing, and project persistence.
+
 Changing the source, columns, or rows restores the full-source equal grid; changing only the active output count,
 time selection, product target, or background setting preserves them. The editor's derived
 `VideoGridPlan.rects` drives preflight, every raw-master crop, and the Project ZIP V7 grid. Grid editing is
 pre-ingest only because the source decoder is disposed after the raw master is baked and imported projects
-do not embed the original video.
+do not embed the original video. Changing the output target frame count updates planned picks but does not
+auto-fit clip lines.
 
 The same decoded source sample feeds every crop before its `VideoSample` is closed. Ingest never removes
 backgrounds. IMG.LY, local BiRefNet, and Colab multi-model removal run serially on the time-uniform target candidates.
@@ -345,11 +354,12 @@ Popup creates its required second track deterministically from the final frame s
 each item; the separate paired workflow remains for independently authored static artwork. Effect is
 excluded because it still has no implemented product, project, validation, or upload-package contract.
 Solid-color keying is disabled by default for Video. When selected, it defaults to four-way outer-edge
-connectivity and decontamination. Users may add a whole-image cleanup pass after the connected pass, opt
+connectivity and decontamination. Its 0–200% edge tolerance scales the learned definite and transition
+thresholds in 1% steps; 100% is the baseline/default, and missing values in older V7 projects resolve to
+100%. Users may add a whole-image cleanup pass after the connected pass, opt
 into standalone whole-image hard removal, or switch the connected edge treatment to soft or hard. Both
-whole-image variants use a 0.0–20.0% tolerance and require preview inspection because matching subject
-colors are intentionally removed. The raw-visual thumbnail selector is collapsible independently of the
-active correction editor.
+whole-image variants use an independent 0.0–20.0% tolerance in 0.1% steps and require preview inspection
+because matching subject colors are intentionally removed.
 
 ### Prompt generation
 

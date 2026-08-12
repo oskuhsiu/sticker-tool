@@ -3,6 +3,7 @@ import {
   colorKeyUsesEdge,
   colorKeyUsesWholeImage,
   copyColorKeyOptions,
+  edgeToleranceScalePercent,
   type ColorKeyOptions,
 } from '@core/colorKey.js';
 import { assertSupportedColorKeyOptions } from '@core/validate.js';
@@ -551,6 +552,7 @@ function renderEdgeConnected(
       && transparentOrWithin(pixel, cluster.transitionDistance);
     const inwardUnknown = !connectedTransition
       && !disconnectedCandidate
+      && cluster.transitionDistance > 0
       && inwardDistance[pixel]! > 0
       && inwardDistance[pixel]! <= TRIMAP_INWARD_RADIUS;
     if (!connectedTransition && !inwardUnknown) continue;
@@ -687,8 +689,14 @@ export async function prepareColorKeySession(
     : immutableRgb(manualColor ?? sampledCluster?.center ?? null);
   const spread = sampledCluster?.spread ?? 0;
   const dominance = sampledCluster?.dominance ?? 0;
-  const definiteDistance = sampledCluster?.definiteDistance ?? BASE_DEFINITE_DISTANCE;
-  const transitionDistance = sampledCluster?.transitionDistance ?? BASE_TRANSITION_DISTANCE;
+  const learnedDefiniteDistance = sampledCluster?.definiteDistance ?? BASE_DEFINITE_DISTANCE;
+  const learnedTransitionDistance = sampledCluster?.transitionDistance ?? BASE_TRANSITION_DISTANCE;
+  const edgeScale = colorKeyUsesEdge(colorKey) ? edgeToleranceScalePercent(colorKey) / 100 : 1;
+  const definiteDistance = clamp(learnedDefiniteDistance * edgeScale, 0, 255);
+  const transitionDistance = Math.max(
+    definiteDistance,
+    clamp(learnedTransitionDistance * edgeScale, 0, 255),
+  );
   const uniformity = 1 - clamp(spread / 32, 0, 1);
   const confidence = treatAsTransparent
     ? 1

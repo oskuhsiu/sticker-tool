@@ -579,6 +579,48 @@ assert.deepEqual(restoredWholeImage.manifest.settings[0]!.background.colorKey, {
 });
 console.log('Project V7 preserves explicit whole-image tolerance without aliasing legacy all-matching');
 
+const edgeToleranceSettings = settings.map((setting, index): VideoStickerSettings => index === 0
+  ? {
+      ...setting,
+      background: {
+        mode: 'color-key',
+        color: '#00ff00',
+        colorKey: {
+          scope: 'edge-connected',
+          edge: 'decontaminate',
+          edgeToleranceScalePercent: 135,
+        },
+      },
+    }
+  : setting);
+const edgeToleranceProject = await buildVideoProjectZip({ ...projectArgs, settings: edgeToleranceSettings });
+const restoredEdgeTolerance = await importVideoProjectZip(edgeToleranceProject.zip);
+assert.deepEqual(restoredEdgeTolerance.manifest.settings[0]!.background.colorKey, {
+  scope: 'edge-connected',
+  edge: 'decontaminate',
+  edgeToleranceScalePercent: 135,
+});
+const automaticEdgeToleranceSettings = edgeToleranceSettings.map((setting, index): VideoStickerSettings => index === 0
+  ? {
+      ...setting,
+      background: {
+        ...setting.background,
+        colorKey: {
+          scope: 'edge-connected',
+          edge: 'decontaminate',
+          edgeToleranceScalePercent: 100,
+        },
+      },
+    } as VideoStickerSettings
+  : setting);
+const automaticEdgeToleranceProject = await buildVideoProjectZip({ ...projectArgs, settings: automaticEdgeToleranceSettings });
+const restoredAutomaticEdgeTolerance = await importVideoProjectZip(automaticEdgeToleranceProject.zip);
+assert.deepEqual(restoredAutomaticEdgeTolerance.manifest.settings[0]!.background.colorKey, {
+  scope: 'edge-connected',
+  edge: 'decontaminate',
+});
+console.log('Project V7 preserves non-default edge tolerance and canonicalizes explicit 100% to the legacy shape');
+
 const combinedSettings = settings.map((setting, index): VideoStickerSettings => index === 0
   ? {
       ...setting,
@@ -1200,6 +1242,32 @@ const softEdgeCacheKey = VideoFrameRenderCache.key({
   },
 });
 assert.notEqual(cleanEdgeCacheKey, softEdgeCacheKey, 'color-key edge changes must invalidate rendered frames');
+const tolerantEdgeCacheKey = VideoFrameRenderCache.key({
+  stickerId: 'sticker-01',
+  ...strongCacheIdentity,
+  removerVersion: 'color-key@4',
+  background: {
+    mode: 'color-key',
+    color: '#00ff00',
+    colorKey: { scope: 'edge-connected', edge: 'decontaminate', edgeToleranceScalePercent: 135 },
+  },
+});
+assert.notEqual(cleanEdgeCacheKey, tolerantEdgeCacheKey, 'edge tolerance changes must invalidate rendered frames');
+const automaticEdgeCacheKey = VideoFrameRenderCache.key({
+  stickerId: 'sticker-01',
+  ...strongCacheIdentity,
+  removerVersion: 'color-key@4',
+  background: {
+    mode: 'color-key',
+    color: '#00ff00',
+    colorKey: { scope: 'edge-connected', edge: 'decontaminate', edgeToleranceScalePercent: 100 },
+  },
+});
+assert.equal(
+  cleanEdgeCacheKey,
+  automaticEdgeCacheKey,
+  'explicit 100% edge tolerance shares the default rendered-frame cache key',
+);
 const exactWholeImageCacheKey = VideoFrameRenderCache.key({
   stickerId: 'sticker-01',
   ...strongCacheIdentity,

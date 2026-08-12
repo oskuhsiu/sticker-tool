@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import type { VideoStickerSettings } from '../src/webpipe/processMasterApngSticker.js';
 import {
   activeVideoVisualFrameIds,
+  pickedVideoVisualFrameIds,
   prepareVideoFrame,
   selectVideoCalibrationFrames,
   type VideoRawVisualFrame,
@@ -164,6 +165,64 @@ const master: MasterApngSticker = {
 };
 assert.deepEqual(activeVideoVisualFrameIds(master, 0, 300), ['visual-0', 'visual-1']);
 assert.deepEqual(activeVideoVisualFrameIds(master, 0, 400), ['visual-0', 'visual-1', 'visual-2']);
+
+const pickedMaster: MasterApngSticker = {
+  ...master,
+  chunks: [{
+    ...master.chunks[0]!,
+    visualRefs: [0, 1, 2, 3].map((index) => ({
+      visualFrameId: `picked-${index}`,
+      rgbaHash: `picked-weak-${index}`,
+      chunkId: 'chunk-1',
+      frameInChunk: index,
+    })),
+    sampleRefs: [
+      { sourceIndex: 10, timestampUs: 0, durationUs: 90, chunkId: 'chunk-1', visualFrameId: 'picked-0' },
+      { sourceIndex: 11, timestampUs: 90, durationUs: 130, chunkId: 'chunk-1', visualFrameId: 'picked-0' },
+      { sourceIndex: 12, timestampUs: 220, durationUs: 780, chunkId: 'chunk-1', visualFrameId: 'picked-1' },
+      { sourceIndex: 13, timestampUs: 1000, durationUs: 110, chunkId: 'chunk-1', visualFrameId: 'picked-2' },
+      { sourceIndex: 14, timestampUs: 1110, durationUs: 90, chunkId: 'chunk-1', visualFrameId: 'picked-3' },
+    ],
+  }],
+};
+assert.deepEqual(
+  pickedVideoVisualFrameIds(pickedMaster, 0, 1200, 3),
+  ['picked-0', 'picked-1', 'picked-3'],
+  'planned chips use the renderer time-uniform candidates rather than first-N samples',
+);
+assert.deepEqual(
+  pickedVideoVisualFrameIds(pickedMaster, 0, 1200, 3, [10, 13, 14]),
+  ['picked-0', 'picked-2', 'picked-3'],
+  'final selected source indices replace the planned chip with actual replacement evidence',
+);
+assert.deepEqual(
+  pickedVideoVisualFrameIds(pickedMaster, 0, 1200, 3, [10, 11, 13]),
+  ['picked-0', 'picked-2'],
+  'repeated presentation samples display one shared correction chip in presentation order',
+);
+const clippedPickMaster: MasterApngSticker = {
+  ...master,
+  chunks: [{
+    ...master.chunks[0]!,
+    visualRefs: [0, 1, 2, 3].map((index) => ({
+      visualFrameId: `clipped-${index}`,
+      rgbaHash: `clipped-weak-${index}`,
+      chunkId: 'chunk-1',
+      frameInChunk: index,
+    })),
+    sampleRefs: [
+      { sourceIndex: 20, timestampUs: 0, durationUs: 200, chunkId: 'chunk-1', visualFrameId: 'clipped-0' },
+      { sourceIndex: 21, timestampUs: 510, durationUs: 60, chunkId: 'chunk-1', visualFrameId: 'clipped-1' },
+      { sourceIndex: 22, timestampUs: 570, durationUs: 430, chunkId: 'chunk-1', visualFrameId: 'clipped-2' },
+      { sourceIndex: 23, timestampUs: 1000, durationUs: 100, chunkId: 'chunk-1', visualFrameId: 'clipped-3' },
+    ],
+  }],
+};
+assert.deepEqual(
+  pickedVideoVisualFrameIds(clippedPickMaster, 100, 1100, 3),
+  ['clipped-0', 'clipped-2', 'clipped-3'],
+  'planned chip selection clips boundary sample intervals exactly like the renderer',
+);
 const beforeIdentity = videoCorrectionSetIdentity(corrections, 'sticker-1', ['visual-0']);
 const afterIdentity = videoCorrectionSetIdentity(corrections, 'sticker-1', ['visual-0', 'visual-1']);
 assert.notEqual(beforeIdentity, afterIdentity, 'newly included edited visuals alter current-render freshness');

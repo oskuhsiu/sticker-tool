@@ -291,6 +291,15 @@ async function buildRawMaster(expectedCount) {
 
 async function assertWholeImageCorrectionPreview() {
   const editor = page.locator('[data-tab="video"] .video-sticker-editor');
+  const targetFrames = editor.getByLabel('目標格數');
+  const draftSelector = page.getByTestId('video-raw-visual-selector');
+  await targetFrames.fill('');
+  await editor.getByText('目標格數必須是 5–20').waitFor();
+  if (await draftSelector.count() !== 0) throw new Error('無效目標格數草稿不應產生預選 chips');
+  await targetFrames.fill('5.5');
+  await editor.getByText('目標格數必須是 5–20').waitFor();
+  if (await draftSelector.count() !== 0) throw new Error('小數目標格數草稿不應產生預選 chips');
+  await targetFrames.fill('5');
   const scope = editor.getByLabel('單色色鍵去背範圍');
   await scope.selectOption('edge-and-whole-image');
   if (await editor.getByLabel('單色色鍵邊緣處理').inputValue() !== 'decontaminate') {
@@ -312,9 +321,19 @@ async function assertWholeImageCorrectionPreview() {
   const panel = page.locator('[data-testid="video-foreground-correction"]');
   await panel.waitFor();
   const frameButtons = panel.getByRole('button', { name: /選擇 raw visual/ });
+  const selector = draftSelector;
+  await selector.waitFor();
+  if (await selector.getAttribute('open') !== null || await frameButtons.first().isVisible()) {
+    throw new Error('Raw visual 分格選取區預設應收合');
+  }
+  if (!(await selector.locator('summary').textContent())?.includes('預選 5 格')) {
+    throw new Error('尚未 render 時應標示目標格數的預選 chips');
+  }
+  await selector.locator('summary').click();
   await frameButtons.first().waitFor();
-  if (await frameButtons.count() !== 12) throw new Error('Video 應提供時間範圍內全部 12 個唯一 raw visuals');
-  const selector = panel.getByTestId('video-raw-visual-selector');
+  if (await frameButtons.count() !== 5) {
+    throw new Error(`目標 5 格時只應顯示 5 個 time-uniform 預選 raw visuals，實際 ${await frameButtons.count()}`);
+  }
   await selector.locator('summary').click();
   if (await selector.getAttribute('open') !== null || await frameButtons.first().isVisible()) {
     throw new Error('Raw visual 分格選取區應可收合');
@@ -340,6 +359,8 @@ async function assertWholeImageCorrectionPreview() {
 async function paintActiveRestoreCorrection() {
   const panel = page.locator('[data-testid="video-foreground-correction"]');
   await panel.waitFor();
+  const selector = panel.getByTestId('video-raw-visual-selector');
+  if (await selector.getAttribute('open') === null) await selector.locator('summary').click();
   const firstVisual = panel.getByRole('button', { name: /^選擇 raw visual 1(?:，|$)/ });
   await firstVisual.waitFor();
   await firstVisual.click();
@@ -414,6 +435,11 @@ try {
   await page.getByRole('button', { name: '產生這張預覽' }).click();
   await page.waitForSelector('[data-tab="video"] >> text=第 1 張 exact-target 成品已通過 final-byte gate', { timeout: 120_000 });
   await page.waitForSelector('[data-tab="video"] >> text=final 5/5 格');
+  const renderedSelector = page.getByTestId('video-raw-visual-selector');
+  await page.waitForFunction(() => document.querySelector('[data-testid="video-raw-visual-selector"] summary')?.textContent?.includes('成品實選 5 格'));
+  if (await renderedSelector.getByRole('button', { name: /選擇 raw visual/ }).count() !== 5) {
+    throw new Error('target=5 的 current render 應只顯示 5 個成品實選 raw visuals');
+  }
   await page.waitForSelector('[data-tab="video"] canvas[aria-label="第 1 張成品預覽"]');
   await page.getByRole('button', { name: '暫停' }).click();
   await page.getByRole('button', { name: '重新開始' }).click();

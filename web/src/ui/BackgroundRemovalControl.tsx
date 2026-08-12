@@ -1,8 +1,11 @@
 import { useEffect, useState } from 'react';
 import {
+  DEFAULT_EDGE_TOLERANCE_SCALE_PERCENT,
   DEFAULT_WHOLE_IMAGE_TOLERANCE_PERCENT,
+  EDGE_TOLERANCE_SCALE_PERCENT_CONTRACT,
   colorKeyUsesEdge,
   colorKeyUsesWholeImage,
+  edgeToleranceScalePercent,
   type ColorKeyEdge,
   type ColorKeyOptions,
 } from '@core/colorKey.js';
@@ -41,6 +44,16 @@ export interface ColorKeyOptionFieldsProps {
 export function ColorKeyOptionFields(props: ColorKeyOptionFieldsProps) {
   const edgeOptions = colorKeyUsesEdge(props.value) ? props.value : null;
   const wholeImageOptions = colorKeyUsesWholeImage(props.value) ? props.value : null;
+  const setEdgeTolerance = (value: number) => {
+    if (!edgeOptions) return;
+    const contract = EDGE_TOLERANCE_SCALE_PERCENT_CONTRACT;
+    const clamped = Math.max(contract.min, Math.min(contract.max, value));
+    const scale = contract.min + Math.round((clamped - contract.min) / contract.step) * contract.step;
+    const { edgeToleranceScalePercent: _ignored, ...base } = edgeOptions;
+    props.onChange(scale === DEFAULT_EDGE_TOLERANCE_SCALE_PERCENT
+      ? base
+      : { ...base, edgeToleranceScalePercent: scale });
+  };
   const setTolerance = (value: number) => {
     const tolerancePercent = Math.round(Math.max(0, Math.min(20, value)) * 10) / 10;
     props.onChange(props.value.scope === 'edge-and-whole-image'
@@ -49,10 +62,14 @@ export function ColorKeyOptionFields(props: ColorKeyOptionFieldsProps) {
   };
   const setScope = (scope: ColorKeyOptions['scope']): void => {
     const edge = edgeOptions?.edge ?? 'decontaminate';
+    const edgeTolerance = edgeOptions ? edgeToleranceScalePercent(edgeOptions) : DEFAULT_EDGE_TOLERANCE_SCALE_PERCENT;
+    const edgeSettings = edgeTolerance === DEFAULT_EDGE_TOLERANCE_SCALE_PERCENT
+      ? { edge }
+      : { edge, edgeToleranceScalePercent: edgeTolerance };
     const tolerancePercent = wholeImageOptions?.tolerancePercent ?? DEFAULT_WHOLE_IMAGE_TOLERANCE_PERCENT;
-    if (scope === 'edge-connected') props.onChange({ scope, edge });
+    if (scope === 'edge-connected') props.onChange({ scope, ...edgeSettings });
     else if (scope === 'whole-image') props.onChange({ scope, tolerancePercent });
-    else props.onChange({ scope, edge, tolerancePercent });
+    else props.onChange({ scope, ...edgeSettings, tolerancePercent });
   };
   return (
     <>
@@ -74,9 +91,10 @@ export function ColorKeyOptionFields(props: ColorKeyOptionFieldsProps) {
           aria-label="單色色鍵邊緣處理"
           value={edgeOptions.edge}
           disabled={props.disabled}
-          onChange={(event) => props.onChange(props.value.scope === 'edge-and-whole-image'
-            ? { ...props.value, edge: event.target.value as ColorKeyEdge }
-            : { scope: 'edge-connected', edge: event.target.value as ColorKeyEdge })}
+          onChange={(event) => props.onChange({
+            ...edgeOptions,
+            edge: event.target.value as ColorKeyEdge,
+          })}
         >
           <option value="decontaminate">清除色暈（建議）</option>
           <option value="soft">柔和邊緣（可能留背景圈）</option>
@@ -84,6 +102,49 @@ export function ColorKeyOptionFields(props: ColorKeyOptionFieldsProps) {
         </select>
         </Field>}
       </Row>
+      {edgeOptions && (
+        <Row>
+          <Field label="外框色碼容差">
+            <div className="color-key-tolerance-control">
+              <input
+                aria-label="外框色碼容差"
+                type="range"
+                min={EDGE_TOLERANCE_SCALE_PERCENT_CONTRACT.min}
+                max={EDGE_TOLERANCE_SCALE_PERCENT_CONTRACT.max}
+                step={EDGE_TOLERANCE_SCALE_PERCENT_CONTRACT.step}
+                value={edgeToleranceScalePercent(edgeOptions)}
+                disabled={props.disabled}
+                onChange={(event) => setEdgeTolerance(Number(event.target.value))}
+              />
+              <output aria-live="polite">
+                {edgeToleranceScalePercent(edgeOptions)}%
+                {edgeToleranceScalePercent(edgeOptions) === DEFAULT_EDGE_TOLERANCE_SCALE_PERCENT ? '（自動基準）' : ''}
+              </output>
+              <button
+                type="button"
+                className="btn small"
+                aria-label={`降低外框色碼容差 ${EDGE_TOLERANCE_SCALE_PERCENT_CONTRACT.step}%`}
+                disabled={props.disabled || edgeToleranceScalePercent(edgeOptions) <= EDGE_TOLERANCE_SCALE_PERCENT_CONTRACT.min}
+                onClick={() => setEdgeTolerance(edgeToleranceScalePercent(edgeOptions) - EDGE_TOLERANCE_SCALE_PERCENT_CONTRACT.step)}
+              >−{EDGE_TOLERANCE_SCALE_PERCENT_CONTRACT.step}%</button>
+              <button
+                type="button"
+                className="btn small"
+                aria-label="重設外框色碼容差為自動基準"
+                disabled={props.disabled || edgeToleranceScalePercent(edgeOptions) === DEFAULT_EDGE_TOLERANCE_SCALE_PERCENT}
+                onClick={() => setEdgeTolerance(DEFAULT_EDGE_TOLERANCE_SCALE_PERCENT)}
+              >自動 100%</button>
+              <button
+                type="button"
+                className="btn small"
+                aria-label={`提高外框色碼容差 ${EDGE_TOLERANCE_SCALE_PERCENT_CONTRACT.step}%`}
+                disabled={props.disabled || edgeToleranceScalePercent(edgeOptions) >= EDGE_TOLERANCE_SCALE_PERCENT_CONTRACT.max}
+                onClick={() => setEdgeTolerance(edgeToleranceScalePercent(edgeOptions) + EDGE_TOLERANCE_SCALE_PERCENT_CONTRACT.step)}
+              >+{EDGE_TOLERANCE_SCALE_PERCENT_CONTRACT.step}%</button>
+            </div>
+          </Field>
+        </Row>
+      )}
       {wholeImageOptions && (
         <Row>
           <Field label="全圖色碼容差">

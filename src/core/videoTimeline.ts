@@ -6,6 +6,10 @@ export interface SourceFrameTiming {
   durationUs: number;
 }
 
+export interface SourceVisualTiming extends SourceFrameTiming {
+  visualFrameId: string;
+}
+
 function positiveInteger(name: string, value: number): number {
   if (!Number.isSafeInteger(value) || value <= 0) {
     throw new RangeError(`${name} must be a positive safe integer, got ${value}`);
@@ -30,22 +34,23 @@ function validateTimeline(frames: readonly SourceFrameTiming[]): void {
 }
 
 /** Keep sample intervals that intersect [startUs, endUs), clipping boundary durations exactly. */
-export function clipFrameIntervals(
-  frames: readonly SourceFrameTiming[],
+export function clipFrameIntervals<T extends SourceFrameTiming>(
+  frames: readonly T[],
   startUs: number,
   endUs: number,
-): SourceFrameTiming[] {
+): T[] {
   if (!Number.isSafeInteger(startUs) || !Number.isSafeInteger(endUs) || endUs <= startUs) {
     throw new RangeError(`invalid microsecond range ${startUs}..${endUs}`);
   }
   validateTimeline(frames);
-  const clipped: SourceFrameTiming[] = [];
+  const clipped: T[] = [];
   for (const frame of frames) {
     const frameEndUs = frame.timestampUs + frame.durationUs;
     const intersectionStartUs = Math.max(startUs, frame.timestampUs);
     const intersectionEndUs = Math.min(endUs, frameEndUs);
     if (intersectionEndUs <= intersectionStartUs) continue;
     clipped.push({
+      ...frame,
       sourceIndex: frame.sourceIndex,
       timestampUs: intersectionStartUs,
       durationUs: intersectionEndUs - intersectionStartUs,
@@ -87,6 +92,39 @@ export function selectTimeUniformIndices(
   return selected;
 }
 
+/** Return the renderer's deterministic initial candidate positions. */
+export function initialCandidateIndices(
+  frames: readonly SourceFrameTiming[],
+  targetFrames: number,
+): number[] {
+  positiveInteger('targetFrames', targetFrames);
+  if (frames.length === 0) return [];
+  return selectTimeUniformIndices(frames, Math.min(targetFrames, frames.length));
+}
+
+/**
+ * Resolve planned or final source picks to unique raw visuals in presentation order.
+ * Repeated samples may intentionally share one visual/correction identity.
+ */
+export function pickedVisualFrameIds(
+  frames: readonly SourceVisualTiming[],
+  targetFrames: number,
+  selectedSourceIndices?: readonly number[],
+): string[] {
+  validateTimeline(frames);
+  const selected = selectedSourceIndices === undefined
+    ? new Set(initialCandidateIndices(frames, targetFrames).map((index) => frames[index]!.sourceIndex))
+    : new Set(selectedSourceIndices);
+  const visualIds: string[] = [];
+  const seen = new Set<string>();
+  for (const frame of frames) {
+    if (!selected.has(frame.sourceIndex) || seen.has(frame.visualFrameId)) continue;
+    seen.add(frame.visualFrameId);
+    visualIds.push(frame.visualFrameId);
+  }
+  return visualIds;
+}
+
 /**
  * Return the initial time-uniform candidates followed by deterministic replacements.
  * Each replacement is the unused frame furthest from the currently selected timestamps.
@@ -95,7 +133,7 @@ export function candidateExpansionOrder(
   frames: readonly SourceFrameTiming[],
   targetFrames: number,
 ): number[] {
-  const initial = selectTimeUniformIndices(frames, Math.min(targetFrames, frames.length));
+  const initial = initialCandidateIndices(frames, targetFrames);
   const selected = new Set(initial);
   const replacements: number[] = [];
   while (selected.size < frames.length) {

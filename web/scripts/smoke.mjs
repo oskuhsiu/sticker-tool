@@ -229,6 +229,7 @@ try {
   if (await buildRemoval.inputValue() !== 'none') throw new Error('本機圖片打包應預設不去背');
   const colorKeyScope = buildTab.getByLabel('單色色鍵去背範圍');
   const colorKeyEdge = buildTab.getByLabel('單色色鍵邊緣處理');
+  const colorKeyEdgeTolerance = buildTab.getByRole('slider', { name: '外框色碼容差', exact: true });
   const colorKeyTolerance = buildTab.getByRole('slider', { name: '全圖色碼容差', exact: true });
   if (await colorKeyScope.count() || await colorKeyEdge.count()) {
     throw new Error('非單色色鍵模式不應顯示單色色鍵選項');
@@ -236,6 +237,21 @@ try {
   await buildRemoval.selectOption('color-key');
   if (await colorKeyScope.inputValue() !== 'edge-connected' || await colorKeyEdge.inputValue() !== 'decontaminate') {
     throw new Error('單色色鍵應預設外框連通與清除色暈');
+  }
+  if (
+    await colorKeyEdgeTolerance.getAttribute('min') !== '0' ||
+    await colorKeyEdgeTolerance.getAttribute('max') !== '200' ||
+    await colorKeyEdgeTolerance.getAttribute('step') !== '1' ||
+    await colorKeyEdgeTolerance.inputValue() !== '100'
+  ) throw new Error('外框色碼容差應以 100% 自動基準開始，範圍 0–200%，step 1%');
+  await buildTab.getByRole('button', { name: '提高外框色碼容差 1%' }).click();
+  await colorKeyScope.selectOption('edge-and-whole-image');
+  if (await colorKeyEdgeTolerance.inputValue() !== '101' || await colorKeyTolerance.inputValue() !== '0') {
+    throw new Error('組合模式應保留外框容差，並獨立顯示全圖容差');
+  }
+  await colorKeyScope.selectOption('edge-connected');
+  if (await colorKeyEdgeTolerance.inputValue() !== '101' || await colorKeyTolerance.count()) {
+    throw new Error('外框範圍切換應保留外框容差');
   }
   await colorKeyScope.selectOption('whole-image');
   if (
@@ -247,7 +263,7 @@ try {
   await buildTab.getByRole('button', { name: '提高全圖色碼容差 0.1%' }).click();
   if (await colorKeyTolerance.inputValue() !== '0.1') throw new Error('全圖色碼 +0.1% 微調失敗');
   await buildRemoval.selectOption('imgly');
-  if (await colorKeyScope.count() || await colorKeyEdge.count() || await colorKeyTolerance.count()) {
+  if (await colorKeyScope.count() || await colorKeyEdge.count() || await colorKeyEdgeTolerance.count() || await colorKeyTolerance.count()) {
     throw new Error('IMG.LY 不應顯示單色色鍵選項');
   }
   await buildRemoval.selectOption('color-key');
@@ -257,7 +273,7 @@ try {
   await colorKeyScope.selectOption('edge-connected');
   await colorKeyEdge.selectOption('hard');
   await buildRemoval.selectOption('none');
-  results.push('✓ 單色色鍵可選外框連通／全圖色碼；0.0–20.0% slider 與 0.1% 微調只在該模式顯示');
+  results.push('✓ 單色色鍵可獨立調整外框 0–200% 與全圖 0.0–20.0% 色碼容差');
   await page.click('text=開始打包');
   await expectText('build', '全部符合 LINE 規格');
   const nImgs = await page.locator('[data-tab="build"] .sticker-grid img').count();

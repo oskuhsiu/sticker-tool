@@ -31,6 +31,7 @@ export interface VideoCorrectionPreview {
 export function VideoForegroundCorrectionPanel(props: {
   mode: string;
   visuals: readonly VideoRawVisualFrame[];
+  selectionKind: 'planned' | 'actual';
   selectedVisualFrameId: string | null;
   preview: VideoCorrectionPreview | null;
   editedVisualIds: ReadonlySet<string>;
@@ -42,13 +43,13 @@ export function VideoForegroundCorrectionPanel(props: {
   onCopyToRange: () => void;
   onClearSticker: () => void;
 }) {
-  const [selectorOpen, setSelectorOpen] = useState(true);
+  const [selectorOpen, setSelectorOpen] = useState(false);
   const selectedIndex = props.visuals.findIndex((visual) => visual.visualFrameId === props.selectedVisualFrameId);
   return (
     <section className="video-key-preview" data-testid="video-foreground-correction">
       <h4>Raw visual 去背與保留筆刷</h4>
       <p className="tab-desc">
-        這裡顯示目前時間範圍內的唯一 raw visuals；重複的 presentation samples 共用同一筆修正。
+        這裡依目標格數顯示預選或成品實選 raw visuals；重複的 presentation samples 共用同一筆修正。
         複製到全範圍是固定座標複製，不是物件追蹤。
       </p>
       {props.loading && <div role="status">正在載入並校準 raw visuals…</div>}
@@ -61,7 +62,7 @@ export function VideoForegroundCorrectionPanel(props: {
           onToggle={(event) => setSelectorOpen(event.currentTarget.open)}
         >
           <summary>
-            選取 raw visual（{props.visuals.length} 格；{props.editedVisualIds.size} 格有修正）
+            選取 raw visual（{props.selectionKind === 'actual' ? '成品實選' : '預選'} {props.visuals.length} 格；{props.editedVisualIds.size} 格有修正）
           </summary>
           <div className="video-key-frame-selector" role="group" aria-label="Raw visual 選擇">
             {props.visuals.map((visual, index) => {

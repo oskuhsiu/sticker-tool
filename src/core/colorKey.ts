@@ -3,6 +3,8 @@ export type ColorKeyEdge = 'soft' | 'decontaminate' | 'hard';
 export interface EdgeConnectedColorKeyOptions {
   scope: 'edge-connected';
   edge: ColorKeyEdge;
+  /** Multiplier for learned connected-edge thresholds. Missing and 100 are equivalent. */
+  edgeToleranceScalePercent?: number;
 }
 
 export interface WholeImageColorKeyOptions {
@@ -14,6 +16,8 @@ export interface WholeImageColorKeyOptions {
 export interface EdgeAndWholeImageColorKeyOptions {
   scope: 'edge-and-whole-image';
   edge: ColorKeyEdge;
+  /** Multiplier for learned connected-edge thresholds. Missing and 100 are equivalent. */
+  edgeToleranceScalePercent?: number;
   /** Maximum RGB Chebyshev distance for the whole-image cleanup pass, normalized to 0–100%. */
   tolerancePercent: number;
 }
@@ -31,6 +35,13 @@ export const DEFAULT_COLOR_KEY_OPTIONS: Readonly<ColorKeyOptions> = Object.freez
 });
 
 export const DEFAULT_WHOLE_IMAGE_TOLERANCE_PERCENT = 0;
+export const EDGE_TOLERANCE_SCALE_PERCENT_CONTRACT = Object.freeze({
+  min: 0,
+  max: 200,
+  step: 1,
+  default: 100,
+} as const);
+export const DEFAULT_EDGE_TOLERANCE_SCALE_PERCENT = EDGE_TOLERANCE_SCALE_PERCENT_CONTRACT.default;
 
 /** Historical V3 browser behavior. Import upgrades consume this shape but new jobs reject it. */
 export const LEGACY_COLOR_KEY_OPTIONS = Object.freeze({
@@ -46,10 +57,27 @@ export function copyColorKeyOptions(options: Readonly<ColorKeyOptions>): ColorKe
     return {
       scope: options.scope,
       edge: options.edge,
+      ...(options.edgeToleranceScalePercent !== undefined
+        && options.edgeToleranceScalePercent !== DEFAULT_EDGE_TOLERANCE_SCALE_PERCENT
+        ? { edgeToleranceScalePercent: options.edgeToleranceScalePercent }
+        : {}),
       tolerancePercent: options.tolerancePercent,
     };
   }
-  return { scope: options.scope, edge: options.edge };
+  return {
+    scope: options.scope,
+    edge: options.edge,
+    ...(options.edgeToleranceScalePercent !== undefined
+      && options.edgeToleranceScalePercent !== DEFAULT_EDGE_TOLERANCE_SCALE_PERCENT
+      ? { edgeToleranceScalePercent: options.edgeToleranceScalePercent }
+      : {}),
+  };
+}
+
+export function edgeToleranceScalePercent(
+  options: Readonly<EdgeConnectedColorKeyOptions | EdgeAndWholeImageColorKeyOptions>,
+): number {
+  return options.edgeToleranceScalePercent ?? DEFAULT_EDGE_TOLERANCE_SCALE_PERCENT;
 }
 
 export function colorKeyUsesEdge(
@@ -70,7 +98,11 @@ export function colorKeyOptionsEqual(
 ): boolean {
   if (left.scope !== right.scope) return false;
   if (left.scope === 'edge-connected') {
-    return right.scope === 'edge-connected' && left.edge === right.edge;
+    return (
+      right.scope === 'edge-connected' &&
+      left.edge === right.edge &&
+      edgeToleranceScalePercent(left) === edgeToleranceScalePercent(right)
+    );
   }
   if (left.scope === 'whole-image') {
     return right.scope === 'whole-image' && left.tolerancePercent === right.tolerancePercent;
@@ -78,6 +110,7 @@ export function colorKeyOptionsEqual(
   return (
     right.scope === 'edge-and-whole-image' &&
     left.edge === right.edge &&
+    edgeToleranceScalePercent(left) === edgeToleranceScalePercent(right) &&
     left.tolerancePercent === right.tolerancePercent
   );
 }

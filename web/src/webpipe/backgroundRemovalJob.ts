@@ -1,4 +1,8 @@
-import { DEFAULT_COLOR_KEY_OPTIONS, type ColorKeyOptions } from '@core/colorKey.js';
+import {
+  copyColorKeyOptions,
+  DEFAULT_COLOR_KEY_OPTIONS,
+  type ColorKeyOptions,
+} from '@core/colorKey.js';
 import { assertSupportedColorKeyOptions } from '@core/validate.js';
 import type { ColabBirefnetConnectionConfig } from './colabBirefnet.js';
 import { removeBackgroundWithColabBirefnet } from './colabBirefnet.js';
@@ -65,8 +69,9 @@ export function backgroundRemovalConfigurationIdentity(
 ): string {
   if (options.mode === 'none') return 'background-none@1';
   if (options.mode === 'color-key') {
-    const colorKey = options.colorKey ?? DEFAULT_COLOR_KEY_OPTIONS;
-    assertSupportedColorKeyOptions(colorKey);
+    const configuredColorKey = options.colorKey ?? DEFAULT_COLOR_KEY_OPTIONS;
+    assertSupportedColorKeyOptions(configuredColorKey);
+    const colorKey = copyColorKeyOptions(configuredColorKey);
     return JSON.stringify({
       remover: PREPARED_COLOR_KEY_VERSION,
       colorKey,

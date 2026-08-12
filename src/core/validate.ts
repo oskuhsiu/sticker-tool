@@ -33,7 +33,10 @@ import {
   popupStaticFilePath,
 } from './naming.js';
 import type { ValidationIssue, ValidationResult } from './types.js';
-import type { ColorKeyOptions } from './colorKey.js';
+import {
+  EDGE_TOLERANCE_SCALE_PERCENT_CONTRACT,
+  type ColorKeyOptions,
+} from './colorKey.js';
 
 function isWholeImageTolerance(value: unknown): value is number {
   return (
@@ -45,13 +48,32 @@ function isWholeImageTolerance(value: unknown): value is number {
   );
 }
 
+function isEdgeToleranceScale(value: unknown): value is number {
+  const contract = EDGE_TOLERANCE_SCALE_PERCENT_CONTRACT;
+  return (
+    typeof value === 'number' &&
+    Number.isFinite(value) &&
+    value >= contract.min &&
+    value <= contract.max &&
+    Number.isInteger((value - contract.min) / contract.step)
+  );
+}
+
+function hasOptionalEdgeToleranceScale(options: Record<string, unknown>): boolean {
+  return (
+    options.edgeToleranceScalePercent === undefined ||
+    isEdgeToleranceScale(options.edgeToleranceScalePercent)
+  );
+}
+
 export function isColorKeyOptions(value: unknown): value is ColorKeyOptions {
   if (!value || typeof value !== 'object') return false;
   const options = value as Record<string, unknown>;
   if (options.scope === 'edge-connected') {
     return (
-      Object.keys(options).length === 2 &&
+      Object.keys(options).every((key) => ['scope', 'edge', 'edgeToleranceScalePercent'].includes(key)) &&
       (options.edge === 'soft' || options.edge === 'decontaminate' || options.edge === 'hard')
+      && hasOptionalEdgeToleranceScale(options)
     );
   }
   if (options.scope === 'whole-image') {
@@ -59,15 +81,17 @@ export function isColorKeyOptions(value: unknown): value is ColorKeyOptions {
   }
   return (
     options.scope === 'edge-and-whole-image' &&
-    Object.keys(options).length === 3 &&
+    Object.keys(options).every((key) => ['scope', 'edge', 'edgeToleranceScalePercent', 'tolerancePercent'].includes(key)) &&
     (options.edge === 'soft' || options.edge === 'decontaminate' || options.edge === 'hard') &&
+    hasOptionalEdgeToleranceScale(options) &&
     isWholeImageTolerance(options.tolerancePercent)
   );
 }
 
 export function assertSupportedColorKeyOptions(value: unknown): asserts value is ColorKeyOptions {
   if (!isColorKeyOptions(value)) {
-    throw new Error('單色色鍵選項無效；全圖色碼容差必須是 0.0–20.0%，step 0.1%');
+    const edge = EDGE_TOLERANCE_SCALE_PERCENT_CONTRACT;
+    throw new Error(`單色色鍵選項無效；外框色碼容差必須是 ${edge.min}–${edge.max}%，step ${edge.step}%；全圖色碼容差必須是 0.0–20.0%，step 0.1%`);
   }
 }
 

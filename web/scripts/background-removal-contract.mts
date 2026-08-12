@@ -1,12 +1,19 @@
 import assert from 'node:assert/strict';
-import { createBackgroundRemovalJob } from '../src/webpipe/backgroundRemovalJob.js';
+import {
+  backgroundRemovalConfigurationIdentity,
+  createBackgroundRemovalJob,
+} from '../src/webpipe/backgroundRemovalJob.js';
 import { removeSheetBackgroundByCells } from '../src/webpipe/sheetBackgroundRemoval.js';
 import { processAnimated } from '../src/webpipe/processAnimated.js';
 import { prepareColorKeySession } from '../src/webpipe/preparedColorKey.js';
 import { analyzeSheet, cutSheet } from '../src/webpipe/sheetAnalysis.js';
 import { makeAnimation } from '../src/ui/defaults.js';
 import type { Raster } from '../src/webpipe/raster.js';
-import type { ColorKeyOptions } from '../../src/core/colorKey.js';
+import {
+  colorKeyOptionsEqual,
+  copyColorKeyOptions,
+  type ColorKeyOptions,
+} from '../../src/core/colorKey.js';
 
 function solid(width: number, height: number, rgba: [number, number, number, number]): Raster {
   const data = new Uint8ClampedArray(width * height * 4);
@@ -117,6 +124,98 @@ async function main(): Promise<void> {
     'prepared render exposes the automatic alpha matte',
   );
 
+  const explicitAutomaticTolerance = await prepareColorKeySession([keyedSource], {
+    manualColor: [255, 255, 255],
+    colorKey: { scope: 'edge-connected', edge: 'soft', edgeToleranceScalePercent: 100 },
+  });
+  assert.equal(
+    explicitAutomaticTolerance.identity,
+    prepared.identity,
+    'explicit 100% edge tolerance canonicalizes to the legacy/default calibration identity',
+  );
+  assert.deepEqual(
+    [...explicitAutomaticTolerance.render(keyedSource).raster.data],
+    [...preparedPreview.raster.data],
+    'explicit 100% edge tolerance is byte-identical to the old omitted setting',
+  );
+  assert.deepEqual(
+    copyColorKeyOptions({ scope: 'edge-connected', edge: 'soft', edgeToleranceScalePercent: 100 }),
+    { scope: 'edge-connected', edge: 'soft' },
+    'canonical copies omit redundant automatic edge tolerance',
+  );
+  assert.equal(
+    colorKeyOptionsEqual(
+      { scope: 'edge-connected', edge: 'soft' },
+      { scope: 'edge-connected', edge: 'soft', edgeToleranceScalePercent: 100 },
+    ),
+    true,
+    'option equality treats missing and explicit 100% edge tolerance as equivalent',
+  );
+  assert.equal(
+    backgroundRemovalConfigurationIdentity({
+      mode: 'color-key',
+      colorKey: { scope: 'edge-connected', edge: 'soft' },
+    }),
+    backgroundRemovalConfigurationIdentity({
+      mode: 'color-key',
+      colorKey: { scope: 'edge-connected', edge: 'soft', edgeToleranceScalePercent: 100 },
+    }),
+    'configuration identity treats missing and explicit 100% edge tolerance as equivalent',
+  );
+
+  const edgeToleranceCalibration = solid(8, 8, [255, 255, 255, 255]);
+  const edgeToleranceFixture = solid(4, 1, [255, 255, 255, 255]);
+  setPixel(edgeToleranceFixture, 1, 0, [225, 225, 225, 255]);
+  setPixel(edgeToleranceFixture, 2, 0, [180, 180, 180, 255]);
+  setPixel(edgeToleranceFixture, 3, 0, [100, 100, 100, 255]);
+  const edgeToleranceResults = [];
+  for (const edgeToleranceScalePercent of [0, 50, 100, 200]) {
+    const session = await prepareColorKeySession([edgeToleranceCalibration], {
+      manualColor: [255, 255, 255],
+      colorKey: { scope: 'edge-connected', edge: 'hard', edgeToleranceScalePercent },
+    });
+    edgeToleranceResults.push({ session, raster: session.render(edgeToleranceFixture).raster });
+  }
+  assert.deepEqual(
+    edgeToleranceResults.map(({ raster }) => Array.from({ length: raster.width }, (_, x) => alphaAt(raster, x, 0) === 0)
+      .filter(Boolean).length),
+    [1, 2, 2, 3],
+    '0–200% edge tolerance monotonically narrows/widens four-way connected candidates',
+  );
+  assert.equal(edgeToleranceResults[0]!.session.diagnostics.definiteDistance, 0);
+  assert.equal(edgeToleranceResults[0]!.session.diagnostics.transitionDistance, 0);
+  assert.equal(
+    edgeToleranceResults[2]!.session.diagnostics.transitionDistance * 2,
+    edgeToleranceResults[3]!.session.diagnostics.transitionDistance,
+    'diagnostics expose the effective scaled thresholds',
+  );
+  assert.notEqual(
+    edgeToleranceResults[1]!.session.identity,
+    edgeToleranceResults[2]!.session.identity,
+    'non-default edge tolerance changes calibration identity',
+  );
+  const exactOnlyDecontaminate = (await prepareColorKeySession([edgeToleranceCalibration], {
+    manualColor: [255, 255, 255],
+    colorKey: { scope: 'edge-connected', edge: 'decontaminate', edgeToleranceScalePercent: 0 },
+  })).render(edgeToleranceFixture).raster;
+  assert.deepEqual(
+    [...exactOnlyDecontaminate.data.slice(4, 8)],
+    [225, 225, 225, 255],
+    '0% decontamination leaves adjacent non-exact pixels source-identical',
+  );
+
+  const enclosedToleranceFixture = solid(5, 5, [255, 255, 255, 255]);
+  for (let y = 1; y <= 3; y++) {
+    for (let x = 1; x <= 3; x++) setPixel(enclosedToleranceFixture, x, y, [220, 40, 30, 255]);
+  }
+  setPixel(enclosedToleranceFixture, 2, 2, [255, 255, 255, 173]);
+  const wideConnected = edgeToleranceResults[3]!.session.render(enclosedToleranceFixture).raster;
+  assert.deepEqual(
+    [...wideConnected.data.slice((2 * 5 + 2) * 4, (2 * 5 + 2) * 4 + 4)],
+    [255, 255, 255, 173],
+    'higher tolerance still protects enclosed matching subject details',
+  );
+
   const pink = [207, 86, 123, 255] as const;
   const pinkVariant = [209, 86, 123, 255] as const;
   const pinkFixture = solid(11, 11, pink);
@@ -211,6 +310,34 @@ async function main(): Promise<void> {
     Math.max(...combinedEdge.slice(0, 3)) - Math.min(...combinedEdge.slice(0, 3)) <= 4,
     'combined mode removes pink spill from the retained white outline',
   );
+
+  const independentCombinedFixture = solid(5, 5, [255, 255, 255, 255]);
+  for (let y = 1; y <= 3; y++) {
+    for (let x = 1; x <= 3; x++) setPixel(independentCombinedFixture, x, y, [220, 40, 30, 255]);
+  }
+  setPixel(independentCombinedFixture, 0, 2, [245, 245, 245, 255]);
+  setPixel(independentCombinedFixture, 2, 2, [245, 245, 245, 255]);
+  const combinedEdgeOnlyWide = (await prepareColorKeySession([edgeToleranceCalibration], {
+    manualColor: [255, 255, 255],
+    colorKey: {
+      scope: 'edge-and-whole-image',
+      edge: 'hard',
+      edgeToleranceScalePercent: 200,
+      tolerancePercent: 0,
+    },
+  })).render(independentCombinedFixture).raster;
+  assert.equal(alphaAt(combinedEdgeOnlyWide, 0, 2), 0, 'combined edge tolerance widens only connected matching pixels');
+  assert.equal(alphaAt(combinedEdgeOnlyWide, 2, 2), 255, 'combined exact whole-image pass leaves enclosed near matches');
+  const combinedWholeOnlyWide = (await prepareColorKeySession([edgeToleranceCalibration], {
+    manualColor: [255, 255, 255],
+    colorKey: {
+      scope: 'edge-and-whole-image',
+      edge: 'hard',
+      edgeToleranceScalePercent: 0,
+      tolerancePercent: 10,
+    },
+  })).render(independentCombinedFixture).raster;
+  assert.equal(alphaAt(combinedWholeOnlyWide, 2, 2), 0, 'combined whole-image tolerance independently removes enclosed near matches');
 
   const colorManagedPink = solid(11, 11, [191, 94, 122, 255]);
   for (let y = 3; y <= 7; y++) {
@@ -434,6 +561,18 @@ async function main(): Promise<void> {
     }),
     /0\.0–20\.0%/,
     'whole-image tolerance above 20.0% is rejected',
+  );
+  await assert.rejects(
+    createBackgroundRemovalJob({
+      mode: 'color-key',
+      colorKey: {
+        scope: 'edge-connected',
+        edge: 'soft',
+        edgeToleranceScalePercent: 200.1,
+      } as ColorKeyOptions,
+    }),
+    /0–200%/,
+    'fractional or above-range edge tolerance is rejected',
   );
   await connectedGreenJob.dispose();
 
